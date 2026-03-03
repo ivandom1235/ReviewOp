@@ -1,0 +1,179 @@
+# proto/backend/services/open_aspect.py
+""" """
+from __future__ import annotations
+
+import re
+from functools import lru_cache
+from typing import List, Tuple
+
+import spacy
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+
+
+STOP = {
+    "the","a","an","and","or","but","is","are","was","were","to","of","in","on","for","with","it","this","that",
+    "during","very","really","just","too","also","so","as","at","from","by","be","been","being","i","we","you",
+    "they","he","she","them","us","my","our","your","their"
+}
+
+# words that are too generic to be useful as open aspects
+GENERIC = {
+    "thing","things","stuff","product","item","phone","device","service","time","day","days","month","months"
+}
+
+# adjectives that often produce junk “aspect” phrases when they end a chunk
+ADJ_TRAIL = {"good","great","nice","bad","poor","terrible","excellent","amazing","awful"}
+
+
+def _clean_text(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _normalize_phrase(p: str) -> str:
+    p = _clean_text(p).lower()
+    # drop trailing punctuation
+    p = re.sub(r"[^\w\s\-]+$", "", p)
+    p = p.strip(" -_")
+    return p
+
+
+def _valid_phrase(p: str) -> bool:
+    if not p:
+        return False
+    toks = p.split()
+    if len(toks) == 0:
+        return False
+    if len(toks) > 6:
+        return False
+
+    # reject all-stopword phrases
+    if all(t in STOP for t in toks):
+        return False
+
+    # reject too-short single tokens
+    if len(toks) == 1:
+        t = toks[0]
+        if len(t) < 4:
+            return False
+        if t in STOP or t in GENERIC:
+            return False
+
+    # reject phrases ending in a pure sentiment adjective
+    if toks[-1] in ADJ_TRAIL and len(toks) <= 2:
+        return False
+
+    # reject if it’s basically generic
+    if toks[0] in GENERIC and len(toks) == 1:
+        return False
+
+    return True
+
+
+@lru_cache(maxsize=1)
+def _nlp():
+    return spacy.load("en_core_web_sm")
+
+
+@lru_cache(maxsize=1)
+def _embedder():
+    # CPU friendly
+    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+
+def _extract_noun_chunks(text: str) -> List[str]:
+    doc = _nlp()(text)
+    out: List[str] = []
+
+    for chunk in doc.noun_chunks:
+        phrase = _normalize_phrase(chunk.text)
+
+        # remove leading determiners/pronouns inside chunk
+        phrase = re.sub(r"^(the|a|an|this|that|these|those)\s+", "", phrase).strip()
+
+        # trim trailing adjectives sometimes included by chunker
+        toks = phrase.split()
+        while toks and toks[-1] in ADJ_TRAIL:
+            toks = toks[:-1]
+        phrase = " ".join(toks).strip()
+
+        if _valid_phrase(phrase):
+            out.append(phrase)
+
+    # also capture some domain-like “noun-ish” tokens not in noun_chunks (e.g., “overheating”)
+    extra_tokens = []
+    for t in doc:
+        if t.pos_ in {"NOUN", "PROPN"} and not t.is_stop:
+            w = _normalize_phrase(t.text)
+            if _valid_phrase(w):
+                extra_tokens.append(w)
+
+    out.extend(extra_tokens)
+    return out
+
+
+def _dedup_by_embedding(phrases: List[str], sim_thresh: float = 0.82, max_keep: int = 8) -> List[str]:
+    """
+    Merge near-duplicates using embeddings.
+    Keep longer phrases preferentially when similar.
+    """
+    if not phrases:
+        return []
+
+    # rank: longer phrases first, then frequency
+    from collections import Counter
+    c = Counter(phrases)
+
+    ranked = sorted(c.keys(), key=lambda x: (-len(x), -c[x], x))
+
+    emb = _embedder().encode(ranked, normalize_embeddings=True)
+    kept: List[str] = []
+
+    for i, p in enumerate(ranked):
+        if not kept:
+            kept.append(p)
+            if len(kept) >= max_keep:
+                break
+            continue
+
+        kept_idx = [ranked.index(k) for k in kept]
+        sims = cosine_similarity([emb[i]], emb[kept_idx])[0]
+        if sims.max() < sim_thresh:
+            kept.append(p)
+            if len(kept) >= max_keep:
+                break
+
+    return kept
+
+
+def extract_open_aspects(review_text: str, max_aspects: int = 8) -> List[str]:
+    """
+    Open aspect extraction:
+      1) noun chunks + noun tokens
+      2) normalize + filter
+      3) embedding dedup to get canonical list
+    """
+    text = _clean_text(review_text)
+    if not text:
+        return []
+
+    phrases = _extract_noun_chunks(text)
+    # remove exact duplicates early
+    phrases = list(dict.fromkeys(phrases))
+
+    # remove phrases that are strict substrings of longer kept phrases (after dedup)
+    deduped = _dedup_by_embedding(phrases, sim_thresh=0.82, max_keep=max_aspects)
+
+    # substring cleanup: if "battery" and "battery life" both exist, drop shorter substring
+    final: List[str] = []
+    for p in sorted(deduped, key=lambda s: (-len(s), s)):
+        if any(p != q and p in q for q in final):
+            continue
+        final.append(p)
+
+    # restore readable order by appearance in text
+    text_l = text.lower()
+    final.sort(key=lambda s: text_l.find(s) if text_l.find(s) != -1 else 10**9)
+    return final[:max_aspects]
