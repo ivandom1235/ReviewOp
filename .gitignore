@@ -1,7 +1,7 @@
 .env
 .env.*
 .venv
-frontend.txt
+*.txt
 requirements.in
 backend/__pycache__/
 backend/core/__pycache__/

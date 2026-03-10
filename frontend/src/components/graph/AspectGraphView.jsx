@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import ForceGraph2D from "react-force-graph-2d";
+import { DataSet } from "vis-data";
+import { Network } from "vis-network";
 
 import EdgeDetailsPanel from "./EdgeDetailsPanel";
 import GraphLegend from "./GraphLegend";
@@ -88,57 +89,63 @@ function normalizeGraph(graph, scope) {
   };
 }
 
-function buildGraphData(graph, scope) {
-  const nodes = graph?.nodes || [];
-  const edges = graph?.edges || [];
+function buildVisData(normalizedGraph, scope, isDark) {
+  const nodes = normalizedGraph?.nodes || [];
+  const edges = normalizedGraph?.edges || [];
   const maxFrequency = Math.max(...nodes.map((node) => Number(node.frequency || 1)), 1);
   const maxWeight = Math.max(...edges.map((edge) => Number(edge.weight || 1)), 1);
+  const labelById = new Map(nodes.map((n) => [n.id, n.label]));
 
-  const nodeMap = new Map(
-    nodes.map((node) => {
-      const size =
-        scope === "single_review"
-          ? clamp(8 + Number(node.confidence || 0) * 8, 8, 16)
-          : clamp(7 + (Number(node.frequency || 1) / maxFrequency) * 14, 7, 21);
+  const visNodes = nodes.map((node) => {
+    const size =
+      scope === "single_review"
+        ? clamp(16 + Number(node.confidence || 0) * 10, 16, 28)
+        : clamp(14 + (Number(node.frequency || 1) / maxFrequency) * 16, 14, 30);
 
-      return [
-        node.id,
-        {
-          ...node,
-          id: node.id,
-          color: sentimentColors[node._sentiment_key] || sentimentColors.neutral,
-          radius: size,
+    return {
+      id: node.id,
+      label: node.label,
+      size,
+      color: {
+        background: sentimentColors[node._sentiment_key] || sentimentColors.neutral,
+        border: isDark ? "#0f172a" : "#ffffff",
+        highlight: {
+          background: sentimentColors[node._sentiment_key] || sentimentColors.neutral,
+          border: "#f59e0b",
         },
-      ];
-    }),
-  );
+      },
+      font: {
+        color: isDark ? "#e5eefc" : "#10223d",
+        size: 14,
+        face: "Segoe UI",
+        strokeWidth: 0,
+      },
+      payload: node,
+    };
+  });
 
-  const rawLinks = edges
-    .map((edge) => {
-      const src = nodeMap.get(edge.source);
-      const dst = nodeMap.get(edge.target);
-      if (!src || !dst) return null;
-      return {
-        ...edge,
-        source: src,
-        target: dst,
-        width: clamp(1 + (Number(edge.weight || 1) / maxWeight) * 4, 1, 5),
-        color: edgeColor(edge),
-        sourceLabel: src.label,
-        targetLabel: dst.label,
-      };
-    })
-    .filter(Boolean);
-
-  // Protect UI responsiveness on dense corpus graphs.
-  const linkList =
-    scope === "batch" && rawLinks.length > 900
-      ? rawLinks.sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0)).slice(0, 900)
-      : rawLinks;
+  const visEdges = edges.map((edge) => ({
+    id: edge.id,
+    from: edge.source,
+    to: edge.target,
+    width: clamp(1 + (Number(edge.weight || 1) / maxWeight) * 4, 1, 5),
+    color: {
+      color: edgeColor(edge),
+      opacity: 0.9,
+      highlight: "#f59e0b",
+    },
+    arrows: scope === "single_review" ? "to" : "",
+    smooth: { enabled: true, type: "dynamic" },
+    payload: {
+      ...edge,
+      sourceLabel: labelById.get(edge.source) || edge.source,
+      targetLabel: labelById.get(edge.target) || edge.target,
+    },
+  }));
 
   return {
-    nodes: Array.from(nodeMap.values()),
-    links: linkList,
+    nodes: visNodes,
+    edges: visEdges,
   };
 }
 
@@ -150,33 +157,104 @@ export default function AspectGraphView({
   emptyMessage = "No graph data available yet.",
 }) {
   const [selection, setSelection] = useState({ type: "node", data: null });
-  const fgRef = useRef(null);
-  const didFitRef = useRef(false);
+  const containerRef = useRef(null);
+  const networkRef = useRef(null);
+
   const normalizedGraph = useMemo(() => normalizeGraph(graph, scope), [graph, scope]);
-  const forceData = useMemo(() => buildGraphData(normalizedGraph, scope), [normalizedGraph, scope]);
-  const hasGraph = Boolean((forceData?.nodes || []).length);
+  const hasGraph = Boolean((normalizedGraph?.nodes || []).length);
+  const visData = useMemo(() => buildVisData(normalizedGraph, scope, isDark), [normalizedGraph, scope, isDark]);
 
   useEffect(() => {
     setSelection({ type: "node", data: null });
   }, [normalizedGraph, scope]);
 
   useEffect(() => {
-    if (!fgRef.current || !hasGraph) return;
-    const fg = fgRef.current;
-    didFitRef.current = false;
-
-    const linkDistance = scope === "single_review" ? 120 : 140;
-    const chargeStrength = scope === "single_review" ? -260 : -380;
-
-    const linkForce = fg.d3Force("link");
-    if (linkForce && typeof linkForce.distance === "function") {
-      linkForce.distance(linkDistance);
+    const container = containerRef.current;
+    if (!container || !hasGraph) {
+      if (networkRef.current) {
+        networkRef.current.destroy();
+        networkRef.current = null;
+      }
+      return;
     }
-    const chargeForce = fg.d3Force("charge");
-    if (chargeForce && typeof chargeForce.strength === "function") {
-      chargeForce.strength(chargeStrength);
+
+    if (networkRef.current) {
+      networkRef.current.destroy();
+      networkRef.current = null;
     }
-  }, [forceData, scope, hasGraph]);
+
+    const nodes = new DataSet(visData.nodes);
+    const edges = new DataSet(visData.edges);
+
+    const options = {
+      autoResize: true,
+      interaction: {
+        hover: true,
+        multiselect: false,
+        dragNodes: true,
+        dragView: true,
+        zoomView: true,
+      },
+      nodes: {
+        shape: "dot",
+      },
+      edges: {
+        selectionWidth: 2,
+      },
+      physics: {
+        enabled: true,
+        stabilization: { enabled: true, iterations: scope === "single_review" ? 180 : 240, fit: true },
+        barnesHut: {
+          gravitationalConstant: scope === "single_review" ? -2200 : -2800,
+          springLength: scope === "single_review" ? 130 : 150,
+          springConstant: 0.04,
+          damping: 0.25,
+        },
+      },
+    };
+
+    const network = new Network(container, { nodes, edges }, options);
+    networkRef.current = network;
+
+    network.on("click", (params) => {
+      const nodeId = params.nodes?.[0];
+      const edgeId = params.edges?.[0];
+
+      if (nodeId) {
+        const node = nodes.get(nodeId);
+        setSelection({ type: "node", data: node?.payload || null });
+        return;
+      }
+
+      if (edgeId) {
+        const edge = edges.get(edgeId);
+        setSelection({ type: "edge", data: edge?.payload || null });
+        return;
+      }
+
+      setSelection({ type: "node", data: null });
+    });
+
+    network.on("dragEnd", (params) => {
+      if (!params.nodes?.length) return;
+      const positions = network.getPositions(params.nodes);
+      params.nodes.forEach((nodeId) => {
+        const pos = positions[nodeId];
+        if (!pos) return;
+        nodes.update({ id: nodeId, x: pos.x, y: pos.y, fixed: { x: true, y: true } });
+      });
+    });
+
+    network.once("stabilizationIterationsDone", () => {
+      network.setOptions({ physics: false });
+      network.fit({ animation: { duration: 350, easingFunction: "easeInOutQuad" } });
+    });
+
+    return () => {
+      network.destroy();
+      if (networkRef.current === network) networkRef.current = null;
+    };
+  }, [visData, hasGraph, scope]);
 
   return (
     <div className="space-y-4">
@@ -201,54 +279,7 @@ export default function AspectGraphView({
           </div>
 
           {hasGraph ? (
-            <div className="h-[540px] w-full">
-              <ForceGraph2D
-                ref={fgRef}
-                graphData={forceData}
-                nodeRelSize={6}
-                linkDirectionalArrowLength={scope === "single_review" ? 9 : 0}
-                linkDirectionalArrowRelPos={scope === "single_review" ? 0.96 : 0}
-                linkDirectionalArrowColor={(link) => (scope === "single_review" ? link.color || "#38bdf8" : "transparent")}
-                cooldownTicks={70}
-                onNodeClick={(node) => {
-                  setSelection({ type: "node", data: node || null });
-                }}
-                onLinkClick={(link) => {
-                  setSelection({ type: "edge", data: link || null });
-                }}
-                onBackgroundClick={() => setSelection({ type: "node", data: null })}
-                onNodeDragEnd={(node) => {
-                  node.fx = node.x;
-                  node.fy = node.y;
-                }}
-                onEngineStop={() => {
-                  if (!didFitRef.current && fgRef.current) {
-                    didFitRef.current = true;
-                    fgRef.current.zoomToFit(500, 40);
-                  }
-                }}
-                nodeCanvasObject={(node, ctx, globalScale) => {
-                  const radius = Number(node.radius || 9);
-                  ctx.beginPath();
-                  ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
-                  ctx.fillStyle = node.color || "#94a3b8";
-                  ctx.fill();
-
-                  const rawLabel = String(node.label || node.id || "");
-                  if (!rawLabel) return;
-                  const label = rawLabel.length > 20 ? `${rawLabel.slice(0, 20)}...` : rawLabel;
-                  const fontSize = Math.max(9, 11 / Math.max(globalScale, 0.8));
-                  ctx.font = `${fontSize}px sans-serif`;
-                  ctx.textAlign = "center";
-                  ctx.textBaseline = "top";
-                  ctx.fillStyle = isDark ? "#e5eefc" : "#10223d";
-                  ctx.fillText(label, node.x, node.y + radius + 2);
-                }}
-                linkWidth={(link) => Number(link.width || 1)}
-                linkColor={(link) => link.color || "#38bdf8"}
-                nodeLabel="label"
-              />
-            </div>
+            <div ref={containerRef} className="h-[540px] w-full" />
           ) : (
             <div className={`grid h-[540px] place-items-center px-6 text-center text-sm ${isDark ? "text-slate-400" : "text-slate-500"}`}>
               {emptyMessage}

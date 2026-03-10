@@ -8,6 +8,7 @@ import {
   getAspectSentimentDistribution,
   getTrends,
   getKgCentrality,
+  rebuildKg,
   getReviewGraph,
   getBatchAspectGraph,
 } from "./api/client";
@@ -213,6 +214,7 @@ export default function App() {
   const [centrality, setCentrality] = useState([]);
   const [loading, setLoading] = useState(false);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [kgLoading, setKgLoading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -262,13 +264,14 @@ export default function App() {
     setCentrality([]);
   }
 
-  async function refreshAnalytics() {
+  async function refreshAnalytics(domain = "") {
+    const kgPromise = domain ? getKgCentrality(20, domain) : getKgCentrality();
     const [o, ta, ad, tr, c] = await Promise.all([
       getOverview(),
       getTopAspects(),
       getAspectSentimentDistribution(),
       getTrends("day"),
-      getKgCentrality(),
+      kgPromise,
     ]);
 
     setOverview(o);
@@ -276,6 +279,20 @@ export default function App() {
     setAspectDist(ad || []);
     setTrends(tr || []);
     setCentrality(c || []);
+  }
+
+  async function handleRebuildKg() {
+    setError("");
+    setKgLoading(true);
+    try {
+      const domain = (graphFilters.domain || "").trim();
+      await rebuildKg(domain);
+      await refreshAnalytics(domain);
+    } catch (ex) {
+      setError(ex.message || "KG rebuild failed");
+    } finally {
+      setKgLoading(false);
+    }
   }
 
   async function refreshBatchGraph(nextFilters = graphFilters) {
@@ -580,7 +597,17 @@ export default function App() {
           </div>
 
           <div className={cardClass(isDark)}>
-            <h3 className="mb-3 text-lg font-semibold">KG Centrality</h3>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-lg font-semibold">KG Centrality</h3>
+              <button
+                type="button"
+                onClick={handleRebuildKg}
+                disabled={kgLoading}
+                className="rounded-lg bg-cyan-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
+              >
+                {kgLoading ? "Rebuilding..." : "Rebuild KG"}
+              </button>
+            </div>
             <DataGridTable
               isDark={isDark}
               height={350}
@@ -598,6 +625,11 @@ export default function App() {
               ]}
               rows={centralityRows}
             />
+            {!centralityRows.length ? (
+              <p className={`mt-3 text-sm ${isDark ? "text-slate-400" : "text-slate-500"}`}>
+                No KG centrality yet. Click <span className="font-semibold">Rebuild KG</span> to compute graph centrality values.
+              </p>
+            ) : null}
           </div>
         </section>
 

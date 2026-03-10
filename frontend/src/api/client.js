@@ -65,8 +65,16 @@ export async function getTrends(interval = "day") {
   return request(`/analytics/trends?interval=${interval}`);
 }
 
-export async function getKgCentrality(limit = 20) {
-  return request(`/analytics/kg/centrality?limit=${limit}`);
+export async function getKgCentrality(limit = 20, domain = "") {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  if (domain) params.set("domain", domain);
+  return request(`/analytics/kg/centrality?${params.toString()}`);
+}
+
+export async function rebuildKg(domain = "") {
+  const query = domain ? `?domain=${encodeURIComponent(domain)}` : "";
+  return request(`/jobs/kg_rebuild${query}`, { method: "POST" });
 }
 
 export async function getReviewGraph(reviewId) {
