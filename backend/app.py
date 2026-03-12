@@ -14,6 +14,7 @@ from services.evidence import find_evidence_for_aspect
 from services.open_aspect import extract_open_aspects
 
 from routes.analytics import router as analytics_router
+from routes.graph import router as graph_router
 from routes.jobs import router as jobs_router
 from routes.infer import router as infer_router
 
@@ -110,3 +111,4 @@ def infer_review(payload: InferReviewIn, db: Session = Depends(get_db)):
 app.include_router(infer_router)  # contains /infer/csv
 app.include_router(jobs_router)
 app.include_router(analytics_router)
+app.include_router(graph_router)

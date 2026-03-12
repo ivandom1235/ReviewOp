@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
         "/infer": { target: backendTarget, changeOrigin: true },
         "/jobs": { target: backendTarget, changeOrigin: true },
         "/analytics": { target: backendTarget, changeOrigin: true },
+        "/graph": { target: backendTarget, changeOrigin: true },
       },
     },
   };

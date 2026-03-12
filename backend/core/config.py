@@ -1,7 +1,5 @@
 # proto/backend/core/config.py
 from pydantic_settings import BaseSettings
-
-
 class Settings(BaseSettings):
     # MySQL
     mysql_host: str = "127.0.0.1"
