@@ -198,11 +198,12 @@ export async function getProductSuggestions(token) {
   });
 }
 
-export async function searchProducts(token, { q = "", min_rating = 1, sort = "most_recent" } = {}) {
+export async function searchProducts(token, { q = "", min_rating = 1, sort = "most_recent", offset = 0 } = {}) {
   const params = new URLSearchParams();
   if (q) params.set("q", q);
   params.set("min_rating", String(min_rating));
   params.set("sort", sort);
+  params.set("offset", String(offset));
   return request(`/user/products/search?${params.toString()}`, {
     headers: { ...authHeaders(token) },
   });

@@ -22,7 +22,7 @@ cd frontend
 npm run dev
 ```
 
-### Option 2: Automatic Service Launch (Experimental)
+### Option 2: Automatic Service Launch (Quicker Method)
 After setup, run both services with one command:
 ```powershell
 .\run-services.ps1

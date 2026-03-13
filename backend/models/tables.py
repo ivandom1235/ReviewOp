@@ -197,8 +197,16 @@ class ProductCatalog(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     category: Mapped[str | None] = mapped_column(String(120), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
+    # NEW: Caching for performance
+    cached_average_rating: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    cached_review_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cached_latest_review_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cached_helpful_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
 
 
 class UserProductReview(Base):
