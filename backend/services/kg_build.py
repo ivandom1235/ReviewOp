@@ -89,7 +89,10 @@ class KGConfig:
 class KGBuilder:
 
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-        self.embedder = SentenceTransformer(model_name)
+        try:
+            self.embedder = SentenceTransformer(model_name)
+        except Exception:
+            self.embedder = None
 
     # ---------------------------------------------------------
     # Main rebuild pipeline
@@ -178,7 +181,7 @@ class KGBuilder:
         for a in aspects:
             g.add_node(a)
 
-        if not aspects:
+        if not aspects or self.embedder is None:
             return g
 
         emb = self.embedder.encode(aspects, normalize_embeddings=True, show_progress_bar=False)

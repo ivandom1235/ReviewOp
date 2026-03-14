@@ -1,3 +1,4 @@
+
 # ReviewOp - Run Both Frontend and Backend Services
 # This script starts both services in new terminal windows
 

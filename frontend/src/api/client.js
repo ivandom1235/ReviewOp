@@ -147,6 +147,12 @@ export async function getAlerts(domain = "") {
   return request(`/analytics/alerts${query}`);
 }
 
+export async function clearAlert(alertId) {
+  return request(`/analytics/alerts/${alertId}`, {
+    method: "DELETE",
+  });
+}
+
 export async function getImpactMatrix(limit = 20, domain = "") {
   const params = new URLSearchParams();
   params.set("limit", String(limit));
@@ -164,6 +170,56 @@ export async function getSegments(limit = 20, domain = "") {
 export async function getWeeklySummary(domain = "") {
   const query = domain ? `?domain=${encodeURIComponent(domain)}` : "";
   return request(`/analytics/weekly_summary${query}`);
+}
+
+export async function getUserReviewsSummary(domain = "") {
+  const query = domain ? `?domain=${encodeURIComponent(domain)}` : "";
+  return request(`/analytics/user_reviews/summary${query}`);
+}
+
+export async function getUserReviewsList({
+  domain = "",
+  product_id = "",
+  username = "",
+  min_rating = "",
+  max_rating = "",
+  limit = 50,
+  offset = 0,
+} = {}) {
+  const params = new URLSearchParams();
+  if (domain) params.set("domain", domain);
+  if (product_id) params.set("product_id", product_id);
+  if (username) params.set("username", username);
+  if (min_rating !== "") params.set("min_rating", String(min_rating));
+  if (max_rating !== "") params.set("max_rating", String(max_rating));
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  return request(`/analytics/user_reviews/list?${params.toString()}`);
+}
+
+async function downloadFile(path, filename) {
+  const response = await fetch(`${API_BASE}${path}`);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Download failed: ${response.status}`);
+  }
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+export async function exportAdminJson() {
+  await downloadFile("/analytics/export/json", "reviewop-admin-export.json");
+}
+
+export async function exportAdminPdf() {
+  await downloadFile("/analytics/export/pdf", "reviewop-admin-export.pdf");
 }
 
 function authHeaders(token) {

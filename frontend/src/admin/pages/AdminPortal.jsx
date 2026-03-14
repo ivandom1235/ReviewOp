@@ -16,6 +16,11 @@ import {
   getImpactMatrix,
   getSegments,
   getWeeklySummary,
+  clearAlert,
+  exportAdminJson,
+  exportAdminPdf,
+  getUserReviewsList,
+  getUserReviewsSummary,
 } from "../../api/client";
 import Dashboard from "./Dashboard";
 import AspectAnalytics from "./AspectAnalytics";
@@ -23,6 +28,7 @@ import GraphExplorer from "./GraphExplorer";
 import ReviewExplorer from "./ReviewExplorer";
 import AlertsPage from "./AlertsPage";
 import AlertDetailPage from "./AlertDetailPage";
+import UserReviewsInsights from "./UserReviewsInsights";
 import { useAuth } from "../../auth/AuthContext";
 
 const initialGraphFilters = {
@@ -59,6 +65,8 @@ export default function AdminPortal() {
   const [impactMatrix, setImpactMatrix] = useState([]);
   const [segmentRows, setSegmentRows] = useState([]);
   const [weeklySummary, setWeeklySummary] = useState(null);
+  const [userReviewSummary, setUserReviewSummary] = useState(null);
+  const [userReviewList, setUserReviewList] = useState({ total: 0, limit: 50, offset: 0, rows: [] });
 
   const [loading, setLoading] = useState(false);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -83,7 +91,7 @@ export default function AdminPortal() {
   }, []);
 
   async function refreshAnalytics() {
-    const [k, l, t, e, ev, a, impact, segments, weekly] = await Promise.all([
+    const [k, l, t, e, ev, a, impact, segments, weekly, urs, url] = await Promise.all([
       getDashboardKpis(),
       getAspectLeaderboard(),
       getAspectTrends("day"),
@@ -93,6 +101,8 @@ export default function AdminPortal() {
       getImpactMatrix(),
       getSegments(),
       getWeeklySummary(),
+      getUserReviewsSummary(),
+      getUserReviewsList({ limit: 100, offset: 0 }),
     ]);
     setKpis(k);
     setLeaderboard(l || []);
@@ -103,6 +113,8 @@ export default function AdminPortal() {
     setImpactMatrix(impact || []);
     setSegmentRows(segments || []);
     setWeeklySummary(weekly || null);
+    setUserReviewSummary(urs || null);
+    setUserReviewList(url || { total: 0, limit: 50, offset: 0, rows: [] });
 
     if (l?.length) {
       const detail = await getAspectDetail(l[0].aspect);
@@ -175,12 +187,42 @@ export default function AdminPortal() {
   }
 
   const leaderboardRows = useMemo(() => leaderboard.map((row, idx) => ({ id: `${row.aspect}-${idx}`, ...row })), [leaderboard]);
-  const pageNav = ["Dashboard", "AspectAnalytics", "GraphExplorer", "ReviewExplorer", "Alerts"];
+  const pageNav = ["Dashboard", "AspectAnalytics", "GraphExplorer", "ReviewExplorer", "Alerts", "UserReviews"];
 
   const handleAlertClick = (alert) => {
     setSelectedAlert(alert);
     setActivePage("AlertDetail");
   };
+
+  async function handleAlertClear(alert) {
+    if (!alert?.id) return;
+    try {
+      await clearAlert(alert.id);
+      await refreshAnalytics();
+      if (selectedAlert?.id === alert.id) {
+        setSelectedAlert(null);
+        setActivePage("Alerts");
+      }
+    } catch (ex) {
+      setError(ex.message || "Failed to clear alert");
+    }
+  }
+
+  async function handleExportJson() {
+    try {
+      await exportAdminJson();
+    } catch (ex) {
+      setError(ex.message || "Failed to export JSON");
+    }
+  }
+
+  async function handleExportPdf() {
+    try {
+      await exportAdminPdf();
+    } catch (ex) {
+      setError(ex.message || "Failed to export PDF");
+    }
+  }
 
 
   return (
@@ -197,6 +239,20 @@ export default function AdminPortal() {
 
           </div>
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleExportJson}
+              className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-cyan-700 text-cyan-100" : "bg-cyan-100 text-cyan-800"}`}
+            >
+              Export JSON
+            </button>
+            <button
+              type="button"
+              onClick={handleExportPdf}
+              className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-violet-700 text-violet-100" : "bg-violet-100 text-violet-800"}`}
+            >
+              Export PDF
+            </button>
             <label className="inline-flex items-center gap-3 text-sm">
               <span className={isDark ? "text-slate-300" : "text-slate-600"}>Day</span>
               <span className="relative inline-flex items-center">
@@ -270,7 +326,15 @@ export default function AdminPortal() {
             <AlertsPage 
               alerts={alerts} 
               isDark={isDark} 
-              onAlertClick={handleAlertClick} 
+              onAlertClick={handleAlertClick}
+              onAlertClear={handleAlertClear}
+            />
+          ) : null}
+          {activePage === "UserReviews" ? (
+            <UserReviewsInsights
+              summary={userReviewSummary}
+              list={userReviewList}
+              isDark={isDark}
             />
           ) : null}
           {activePage === "AlertDetail" ? (
