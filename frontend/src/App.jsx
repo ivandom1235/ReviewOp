@@ -1,5 +1,5 @@
 import { Navigate, Route, Routes } from "react-router-dom";
-import AdminPortal from "./pages/AdminPortal";
+import AdminPortal from "./admin/pages/AdminPortal";
 import LoginPage from "./pages/user/LoginPage";
 import RegisterPage from "./pages/user/RegisterPage";
 import UserHomePage from "./pages/user/UserHomePage";

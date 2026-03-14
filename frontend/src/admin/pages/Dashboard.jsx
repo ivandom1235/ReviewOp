@@ -9,7 +9,7 @@ function Stat({ label, value, isDark }) {
   );
 }
 
-export default function Dashboard({ kpis, alerts, leaderboardRows, impactRows = [], segmentRows = [], weeklySummary, isDark }) {
+export default function Dashboard({ kpis, alerts, leaderboardRows, impactRows = [], segmentRows = [], weeklySummary, isDark, onSeeMoreAlerts }) {
   return (
     <section className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
@@ -33,10 +33,20 @@ export default function Dashboard({ kpis, alerts, leaderboardRows, impactRows = 
         )}
       </div>
       <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
-        <h3 className="mb-3 text-lg font-semibold">Alerts</h3>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-lg font-semibold">Alerts</h3>
+          {alerts?.length > 10 && (
+            <button
+              onClick={onSeeMoreAlerts}
+              className="text-sm font-semibold text-indigo-500 hover:text-indigo-400"
+            >
+              See More
+            </button>
+          )}
+        </div>
         <div className="space-y-2">
           {(alerts || []).length ? (
-            alerts.map((a, idx) => (
+            alerts.slice(0, 10).map((a, idx) => (
               <div key={`${a.aspect}-${idx}`} className={`rounded-lg p-3 text-sm ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
                 [{a.severity}] {a.message}
               </div>

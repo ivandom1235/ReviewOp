@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session
 
 from core.db import engine, Base, get_db, SessionLocal
@@ -23,15 +23,59 @@ from routes.user_portal import router as user_portal_router, seed_default_accoun
 app = FastAPI(title="Proto ReviewOps MVP (Phase 1-2)", version="0.3.0")
 
 
+def _safe_extract_aspects(text: str, max_aspects: int = 8) -> list[str]:
+    try:
+        aspects = extract_open_aspects(text, max_aspects=max_aspects)
+        if aspects:
+            return aspects
+    except Exception:
+        pass
+    return ["general"]
+
+
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
+    _apply_schema_patches()
     db = SessionLocal()
     try:
         seed_default_accounts(db)
     finally:
         db.close()
     app.state.seq2seq_engine = Seq2SeqEngine.load()
+
+
+def _apply_schema_patches() -> None:
+    """Apply minimal in-place schema patches for legacy local databases."""
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        if inspector.has_table("products"):
+            product_cols = {c["name"] for c in inspector.get_columns("products")}
+            if "cached_average_rating" not in product_cols:
+                conn.execute(text("ALTER TABLE products ADD COLUMN cached_average_rating FLOAT NOT NULL DEFAULT 0.0"))
+            if "cached_review_count" not in product_cols:
+                conn.execute(text("ALTER TABLE products ADD COLUMN cached_review_count INTEGER NOT NULL DEFAULT 0"))
+            if "cached_latest_review_at" not in product_cols:
+                conn.execute(text("ALTER TABLE products ADD COLUMN cached_latest_review_at DATETIME NULL"))
+            if "cached_helpful_count" not in product_cols:
+                conn.execute(text("ALTER TABLE products ADD COLUMN cached_helpful_count INTEGER NOT NULL DEFAULT 0"))
+
+        if not inspector.has_table("admin_dismissed_alerts"):
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE admin_dismissed_alerts (
+                        id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                        type VARCHAR(64) NOT NULL,
+                        aspect VARCHAR(255) NOT NULL,
+                        message VARCHAR(512) NOT NULL,
+                        domain VARCHAR(64) NULL,
+                        signature VARCHAR(64) NOT NULL UNIQUE,
+                        dismissed_at DATETIME NOT NULL
+                    )
+                    """
+                )
+            )
 
 
 @app.get("/health")
@@ -60,7 +104,7 @@ def infer_review(payload: InferReviewIn, db: Session = Depends(get_db)):
 
     engine_ = app.state.seq2seq_engine
 
-    aspects = extract_open_aspects(text_in, max_aspects=8)
+    aspects = _safe_extract_aspects(text_in, max_aspects=8)
 
     preds_out: list[PredictionOut] = []
 

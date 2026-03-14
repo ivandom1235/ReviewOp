@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306
     mysql_user: str = "root"
-    mysql_password: str = "H4ppyNY!"
+    mysql_password: str = "12345"
     mysql_db: str = "protodb"
 
     # Seq2Seq

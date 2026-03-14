@@ -140,12 +140,57 @@ class AspectDetailOut(BaseModel):
 
 
 class AlertOut(BaseModel):
+    id: int
     type: str
     aspect: str
     severity: str
     message: str
     value: float
     threshold: float
+
+
+class UserReviewSummaryOut(BaseModel):
+    total_user_reviews: int
+    unique_reviewers: int
+    average_rating: float
+    recommendation_rate: float
+    reviews_last_7_days: int
+    top_products: List[dict] = Field(default_factory=list)
+
+
+class AdminUserReviewRowOut(BaseModel):
+    review_id: int
+    product_id: str
+    product_name: Optional[str] = None
+    username: str
+    rating: int
+    recommendation: Optional[bool] = None
+    helpful_count: int = 0
+    review_title: Optional[str] = None
+    review_text: str
+    created_at: str
+
+
+class UserReviewListOut(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    rows: List[AdminUserReviewRowOut] = Field(default_factory=list)
+
+
+class AdminExportOut(BaseModel):
+    generated_at: str
+    dashboard_kpis: DashboardKpiOut
+    aspect_leaderboard: List[AspectLeaderboardRowOut] = Field(default_factory=list)
+    aspect_trends: List[AspectTrendPointOut] = Field(default_factory=list)
+    emerging_aspects: List[dict] = Field(default_factory=list)
+    evidence: List[EvidenceRowOut] = Field(default_factory=list)
+    alerts: List[AlertOut] = Field(default_factory=list)
+    impact_matrix: List["ImpactMatrixRowOut"] = Field(default_factory=list)
+    segments: List["SegmentDrilldownOut"] = Field(default_factory=list)
+    weekly_summary: "WeeklySummaryOut"
+    user_reviews_summary: UserReviewSummaryOut
+    user_reviews: UserReviewListOut
 
 
 class ImpactMatrixRowOut(BaseModel):

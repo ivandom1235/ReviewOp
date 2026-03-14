@@ -14,6 +14,16 @@ from services.seq2seq_infer import Seq2SeqEngine
 from services.open_aspect import extract_open_aspects
 
 
+def _safe_extract_aspects(text: str, max_aspects: int = 8) -> list[str]:
+    try:
+        aspects = extract_open_aspects(text, max_aspects=max_aspects)
+        if aspects:
+            return aspects
+    except Exception:
+        pass
+    return ["general"]
+
+
 def detect_review_column(df: pd.DataFrame) -> str:
     candidates = ["reviews", "review", "text", "content", "sentence", "comment"]
     lower_map = {c.lower(): c for c in df.columns}
@@ -58,7 +68,7 @@ def process_csv_sync(
             db.flush()
 
             # Phase 2 behavior: open-aspect extraction + per-aspect sentiment on evidence sentence
-            aspects = extract_open_aspects(text, max_aspects=8)
+            aspects = _safe_extract_aspects(text, max_aspects=8)
 
             for aspect_raw in aspects:
                 s, e, snippet = find_evidence_for_aspect(text, aspect_raw)

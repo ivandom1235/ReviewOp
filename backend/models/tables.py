@@ -197,8 +197,16 @@ class ProductCatalog(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     category: Mapped[str | None] = mapped_column(String(120), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
+    # NEW: Caching for performance
+    cached_average_rating: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    cached_review_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cached_latest_review_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cached_helpful_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
 
 
 class UserProductReview(Base):
@@ -220,3 +228,30 @@ class UserProductReview(Base):
 
     user: Mapped["User"] = relationship(lazy="joined")
     linked_review: Mapped["Review"] = relationship(lazy="joined")
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    aspect: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(String(512), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    domain: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    signature: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class DismissedAlert(Base):
+    __tablename__ = "admin_dismissed_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    aspect: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(String(512), nullable=False)
+    domain: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    signature: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    dismissed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

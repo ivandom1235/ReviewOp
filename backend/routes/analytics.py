@@ -1,9 +1,18 @@
 # proto/backend/routes/analytics.py
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from core.db import get_db
-from models.schemas import OverviewOut, TopAspectOut, AspectSentimentDistOut, TrendPointOut
+from models.schemas import (
+    AdminExportOut,
+    OverviewOut,
+    TopAspectOut,
+    AspectSentimentDistOut,
+    TrendPointOut,
+    UserReviewListOut,
+    UserReviewSummaryOut,
+)
 from services.analytics import (
     overview,
     top_aspects,
@@ -19,6 +28,11 @@ from services.analytics import (
     impact_matrix,
     segment_drilldown,
     weekly_summary,
+    clear_alert,
+    export_payload,
+    export_pdf_bytes,
+    user_reviews_list,
+    user_reviews_summary,
 )
 
 # add imports
@@ -150,6 +164,14 @@ def analytics_alerts(domain: str | None = None, db: Session = Depends(get_db)):
     return alerts(db, domain=domain)
 
 
+@router.delete("/alerts/{alert_id}")
+def analytics_clear_alert(alert_id: int, db: Session = Depends(get_db)):
+    ok = clear_alert(db, alert_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="alert not found")
+    return {"ok": True}
+
+
 @router.get("/impact_matrix", response_model=list[ImpactMatrixRowOut])
 def analytics_impact_matrix(limit: int = 20, domain: str | None = None, db: Session = Depends(get_db)):
     return impact_matrix(db, domain=domain, limit=limit)
@@ -163,6 +185,59 @@ def analytics_segments(limit: int = 20, domain: str | None = None, db: Session =
 @router.get("/weekly_summary", response_model=WeeklySummaryOut)
 def analytics_weekly_summary(domain: str | None = None, db: Session = Depends(get_db)):
     return weekly_summary(db, domain=domain)
+
+
+@router.get("/user_reviews/summary", response_model=UserReviewSummaryOut)
+def analytics_user_reviews_summary(domain: str | None = None, db: Session = Depends(get_db)):
+    return user_reviews_summary(db, domain=domain)
+
+
+@router.get("/user_reviews/list", response_model=UserReviewListOut)
+def analytics_user_reviews_list(
+    domain: str | None = None,
+    product_id: str | None = None,
+    username: str | None = None,
+    min_rating: int | None = None,
+    max_rating: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    return user_reviews_list(
+        db,
+        domain=domain,
+        product_id=product_id,
+        username=username,
+        min_rating=min_rating,
+        max_rating=max_rating,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/export/json", response_model=AdminExportOut)
+def analytics_export_json(
+    domain: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    return export_payload(db, domain=domain, limit=limit, offset=offset)
+
+
+@router.get("/export/pdf")
+def analytics_export_pdf(
+    domain: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    pdf_bytes = export_pdf_bytes(db, domain=domain, limit=limit, offset=offset)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=reviewop-admin-export.pdf"},
+    )
 
 @router.get("/kg/centrality", response_model=list[CentralityOut])
 def analytics_kg_centrality(

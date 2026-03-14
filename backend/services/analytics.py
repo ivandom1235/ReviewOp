@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta
+import hashlib
 from math import sqrt
 from statistics import pstdev
 from typing import Optional, List, Tuple
@@ -10,7 +11,7 @@ from typing import Optional, List, Tuple
 from sqlalchemy import func, case, text
 from sqlalchemy.orm import Session
 
-from models.tables import Review, Prediction
+from models.tables import Alert, DismissedAlert, ProductCatalog, Review, Prediction, User, UserProductReview
 from services.graph_builders import _infer_origin
 
 
@@ -433,7 +434,7 @@ def aspect_detail(db: Session, aspect: str, interval: str = "day", domain: Optio
     }
 
 
-def alerts(db: Session, domain: Optional[str] = None) -> list[dict]:
+def _generate_alert_candidates(db: Session, domain: Optional[str] = None) -> list[dict]:
     out = []
     leaderboard = aspect_leaderboard(db, limit=20, domain=domain)
     change_series = [float(row["change_7d_vs_prev_7d"]) for row in leaderboard]
@@ -471,6 +472,127 @@ def alerts(db: Session, domain: Optional[str] = None) -> list[dict]:
             "threshold": float(item["baseline_mentions"]),
         })
     return out[:50]
+
+
+def _alert_signature(alert_type: str, aspect: str, message: str, domain: Optional[str]) -> tuple[str, str, str, Optional[str]]:
+    return (alert_type, aspect, message, domain)
+
+
+def _alert_signature_hash(alert_type: str, aspect: str, message: str, domain: Optional[str]) -> str:
+    raw = f"{alert_type}|{aspect}|{message}|{domain or ''}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def sync_alerts(db: Session, domain: Optional[str] = None) -> list[Alert]:
+    generated = _generate_alert_candidates(db, domain=domain)
+    all_signatures = {
+        _alert_signature(item["type"], item["aspect"], item["message"], domain) for item in generated
+    }
+
+    dismissed_q = db.query(DismissedAlert)
+    if domain is None:
+        dismissed_q = dismissed_q.filter(DismissedAlert.domain.is_(None))
+    else:
+        dismissed_q = dismissed_q.filter(DismissedAlert.domain == domain)
+    dismissed_rows = dismissed_q.all()
+    dismissed_signatures = {row.signature for row in dismissed_rows}
+
+    for row in dismissed_rows:
+        sig_hash = _alert_signature_hash(row.type, row.aspect, row.message, row.domain)
+        if _alert_signature(row.type, row.aspect, row.message, row.domain) not in all_signatures:
+            db.delete(row)
+            dismissed_signatures.discard(sig_hash)
+
+    generated = [
+        item
+        for item in generated
+        if _alert_signature_hash(item["type"], item["aspect"], item["message"], domain) not in dismissed_signatures
+    ]
+    signatures = {
+        _alert_signature(item["type"], item["aspect"], item["message"], domain): item for item in generated
+    }
+
+    existing_q = db.query(Alert)
+    if domain is None:
+        existing_q = existing_q.filter(Alert.domain.is_(None))
+    else:
+        existing_q = existing_q.filter(Alert.domain == domain)
+    existing = existing_q.all()
+
+    existing_by_signature = {
+        (row.type, row.aspect, row.message, row.domain): row for row in existing
+    }
+
+    for signature, payload in signatures.items():
+        row = existing_by_signature.get(signature)
+        if row:
+            row.severity = payload["severity"]
+            row.value = float(payload["value"])
+            row.threshold = float(payload["threshold"])
+        else:
+            db.add(
+                Alert(
+                    type=payload["type"],
+                    aspect=payload["aspect"],
+                    severity=payload["severity"],
+                    message=payload["message"],
+                    value=float(payload["value"]),
+                    threshold=float(payload["threshold"]),
+                    domain=domain,
+                    signature=_alert_signature_hash(payload["type"], payload["aspect"], payload["message"], domain),
+                )
+            )
+
+    stale_signatures = set(existing_by_signature.keys()) - set(signatures.keys())
+    for signature in stale_signatures:
+        db.delete(existing_by_signature[signature])
+
+    db.commit()
+    q = db.query(Alert)
+    if domain is None:
+        q = q.filter(Alert.domain.is_(None))
+    else:
+        q = q.filter(Alert.domain == domain)
+    return q.order_by(Alert.created_at.desc(), Alert.id.desc()).all()
+
+
+def alerts(db: Session, domain: Optional[str] = None) -> list[dict]:
+    rows = sync_alerts(db, domain=domain)
+    return [
+        {
+            "id": row.id,
+            "type": row.type,
+            "aspect": row.aspect,
+            "severity": row.severity,
+            "message": row.message,
+            "value": float(row.value),
+            "threshold": float(row.threshold),
+        }
+        for row in rows
+    ]
+
+
+def clear_alert(db: Session, alert_id: int) -> bool:
+    row = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not row:
+        return False
+
+    signature = _alert_signature_hash(row.type, row.aspect, row.message, row.domain)
+    exists = db.query(DismissedAlert).filter(DismissedAlert.signature == signature).first()
+    if not exists:
+        db.add(
+            DismissedAlert(
+                type=row.type,
+                aspect=row.aspect,
+                message=row.message,
+                domain=row.domain,
+                signature=signature,
+            )
+        )
+
+    db.delete(row)
+    db.commit()
+    return True
 
 
 def impact_matrix(db: Session, domain: Optional[str] = None, limit: int = 20) -> list[dict]:
@@ -561,3 +683,232 @@ def weekly_summary(db: Session, domain: Optional[str] = None) -> dict:
         "emerging_count": len(emerging),
         "action_recommendations": recommendations,
     }
+
+
+def user_reviews_summary(db: Session, domain: Optional[str] = None) -> dict:
+    q = db.query(UserProductReview)
+    if domain:
+        q = q.join(ProductCatalog, ProductCatalog.product_id == UserProductReview.product_id).filter(ProductCatalog.category == domain)
+
+    total_reviews = int(q.count())
+    if total_reviews == 0:
+        return {
+            "total_user_reviews": 0,
+            "unique_reviewers": 0,
+            "average_rating": 0.0,
+            "recommendation_rate": 0.0,
+            "reviews_last_7_days": 0,
+            "top_products": [],
+        }
+
+    unique_reviewers = int(q.with_entities(func.count(func.distinct(UserProductReview.user_id))).scalar() or 0)
+    average_rating = float(q.with_entities(func.avg(UserProductReview.rating)).scalar() or 0.0)
+
+    rec_yes = int(
+        q.with_entities(func.sum(case((UserProductReview.recommendation.is_(True), 1), else_=0))).scalar() or 0
+    )
+    rec_total = int(
+        q.with_entities(func.sum(case((UserProductReview.recommendation.isnot(None), 1), else_=0))).scalar() or 0
+    )
+    recommendation_rate = (rec_yes / rec_total) * 100 if rec_total else 0.0
+    last_7_days = datetime.utcnow() - timedelta(days=7)
+    reviews_last_7_days = int(q.filter(UserProductReview.created_at >= last_7_days).count())
+
+    top_q = (
+        db.query(
+            UserProductReview.product_id.label("product_id"),
+            func.count(UserProductReview.id).label("count"),
+            func.avg(UserProductReview.rating).label("avg_rating"),
+            ProductCatalog.name.label("name"),
+        )
+        .outerjoin(ProductCatalog, ProductCatalog.product_id == UserProductReview.product_id)
+    )
+    if domain:
+        top_q = top_q.filter(ProductCatalog.category == domain)
+    top_rows = (
+        top_q.group_by(UserProductReview.product_id, ProductCatalog.name)
+        .order_by(text("count DESC"), UserProductReview.product_id.asc())
+        .limit(5)
+        .all()
+    )
+    top_products = [
+        {
+            "product_id": row.product_id,
+            "product_name": row.name or f"Product {row.product_id}",
+            "review_count": int(row.count or 0),
+            "average_rating": round(float(row.avg_rating or 0.0), 2),
+        }
+        for row in top_rows
+    ]
+
+    return {
+        "total_user_reviews": total_reviews,
+        "unique_reviewers": unique_reviewers,
+        "average_rating": round(average_rating, 2),
+        "recommendation_rate": round(recommendation_rate, 2),
+        "reviews_last_7_days": reviews_last_7_days,
+        "top_products": top_products,
+    }
+
+
+def user_reviews_list(
+    db: Session,
+    domain: Optional[str] = None,
+    product_id: Optional[str] = None,
+    username: Optional[str] = None,
+    min_rating: Optional[int] = None,
+    max_rating: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    q = (
+        db.query(
+            UserProductReview.id.label("review_id"),
+            UserProductReview.product_id.label("product_id"),
+            UserProductReview.rating.label("rating"),
+            UserProductReview.recommendation.label("recommendation"),
+            UserProductReview.helpful_count.label("helpful_count"),
+            UserProductReview.title.label("review_title"),
+            UserProductReview.review_text.label("review_text"),
+            UserProductReview.created_at.label("created_at"),
+            User.username.label("username"),
+            ProductCatalog.name.label("product_name"),
+            ProductCatalog.category.label("product_category"),
+        )
+        .join(User, User.id == UserProductReview.user_id)
+        .outerjoin(ProductCatalog, ProductCatalog.product_id == UserProductReview.product_id)
+    )
+    if domain:
+        q = q.filter(ProductCatalog.category == domain)
+    if product_id:
+        q = q.filter(UserProductReview.product_id == product_id)
+    if username:
+        q = q.filter(User.username.ilike(f"%{username.strip()}%"))
+    if min_rating is not None:
+        q = q.filter(UserProductReview.rating >= min_rating)
+    if max_rating is not None:
+        q = q.filter(UserProductReview.rating <= max_rating)
+
+    total = int(q.count())
+    rows = (
+        q.order_by(UserProductReview.created_at.desc(), UserProductReview.id.desc())
+        .offset(max(0, offset))
+        .limit(max(1, min(limit, 200)))
+        .all()
+    )
+
+    return {
+        "total": total,
+        "limit": max(1, min(limit, 200)),
+        "offset": max(0, offset),
+        "rows": [
+            {
+                "review_id": row.review_id,
+                "product_id": row.product_id,
+                "product_name": row.product_name,
+                "username": row.username,
+                "rating": int(row.rating),
+                "recommendation": row.recommendation,
+                "helpful_count": int(row.helpful_count or 0),
+                "review_title": row.review_title,
+                "review_text": row.review_text,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ],
+    }
+
+
+def export_payload(db: Session, domain: Optional[str] = None, limit: int = 100, offset: int = 0) -> dict:
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "dashboard_kpis": dashboard_kpis(db, None, None, domain),
+        "aspect_leaderboard": aspect_leaderboard(db, limit=25, domain=domain),
+        "aspect_trends": aspect_trends(db, interval="day", domain=domain, limit=500),
+        "emerging_aspects": emerging_aspects(db, interval="day", lookback_buckets=7, domain=domain),
+        "evidence": evidence_drilldown(db, aspect=None, sentiment=None, limit=50, domain=domain),
+        "alerts": alerts(db, domain=domain),
+        "impact_matrix": impact_matrix(db, domain=domain, limit=20),
+        "segments": segment_drilldown(db, domain=domain, limit=20),
+        "weekly_summary": weekly_summary(db, domain=domain),
+        "user_reviews_summary": user_reviews_summary(db, domain=domain),
+        "user_reviews": user_reviews_list(db, domain=domain, limit=limit, offset=offset),
+    }
+
+
+def export_pdf_bytes(db: Session, domain: Optional[str] = None, limit: int = 100, offset: int = 0) -> bytes:
+    payload = export_payload(db, domain=domain, limit=limit, offset=offset)
+    lines = [
+        "ReviewOp Admin Export Report",
+        f"Generated At: {payload['generated_at']}",
+        f"Domain Filter: {domain or 'all'}",
+        "",
+        "Dashboard KPIs",
+    ]
+    kpis = payload["dashboard_kpis"]
+    lines.extend(
+        [
+            f"  Total Reviews: {kpis['total_reviews']}",
+            f"  Total Aspects: {kpis['total_aspects']}",
+            f"  Most Negative Aspect: {kpis.get('most_negative_aspect') or '-'}",
+            f"  Negative Sentiment %: {kpis['negative_sentiment_pct']}",
+            f"  Emerging Issues: {kpis['emerging_issues_count']}",
+            "",
+            "User Reviews Summary",
+        ]
+    )
+    summary = payload["user_reviews_summary"]
+    lines.extend(
+        [
+            f"  Total User Reviews: {summary['total_user_reviews']}",
+            f"  Unique Reviewers: {summary['unique_reviewers']}",
+            f"  Average Rating: {summary['average_rating']}",
+            f"  Recommendation Rate %: {summary['recommendation_rate']}",
+            f"  Reviews Last 7 Days: {summary['reviews_last_7_days']}",
+            "",
+            "Top Alerts",
+        ]
+    )
+    for item in payload["alerts"][:12]:
+        lines.append(f"  [{item['severity']}] {item['aspect']}: {item['message']}")
+    lines.append("")
+    lines.append("Top User Reviews (latest)")
+    for row in payload["user_reviews"]["rows"][:12]:
+        lines.append(
+            f"  {row['created_at'][:10]} | {row['username']} | {row['product_id']} | rating={row['rating']}"
+        )
+
+    content_lines = []
+    y = 800
+    for line in lines:
+        escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        content_lines.append(f"BT /F1 10 Tf 50 {y} Td ({escaped[:150]}) Tj ET")
+        y -= 14
+        if y < 40:
+            break
+    stream_data = "\n".join(content_lines).encode("latin-1", errors="ignore")
+
+    objects = []
+    objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    objects.append(b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+    objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 5 0 R /Resources << /Font << /F1 4 0 R >> >> >>")
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    objects.append(f"<< /Length {len(stream_data)} >>\nstream\n".encode("latin-1") + stream_data + b"\nendstream")
+
+    out = bytearray(b"%PDF-1.4\n")
+    xref_positions = [0]
+    for idx, obj in enumerate(objects, start=1):
+        xref_positions.append(len(out))
+        out.extend(f"{idx} 0 obj\n".encode("latin-1"))
+        out.extend(obj)
+        out.extend(b"\nendobj\n")
+
+    xref_start = len(out)
+    out.extend(f"xref\n0 {len(xref_positions)}\n".encode("latin-1"))
+    out.extend(b"0000000000 65535 f \n")
+    for pos in xref_positions[1:]:
+        out.extend(f"{pos:010d} 00000 n \n".encode("latin-1"))
+    out.extend(
+        f"trailer\n<< /Size {len(xref_positions)} /Root 1 0 R >>\nstartxref\n{xref_start}\n%%EOF".encode("latin-1")
+    )
+    return bytes(out)
