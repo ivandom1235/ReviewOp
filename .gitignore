@@ -8,4 +8,14 @@ backend/core/__pycache__/
 node_modules/
 frontend/node_modules/
 *.pyc
+__pycache__/
+*/__pycache__/
 backend/models/implicit/
+ProtoBackend/outputs/
+dataset_builder/output/
+
+# Dataset artifacts (do not commit generated/raw datasets)
+datasetCreator/data/raw/
+datasetCreator/data/interim/
+datasetCreator/data/processed/
+datasetCreator/data/reports/
