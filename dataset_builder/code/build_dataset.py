@@ -14,6 +14,16 @@ from splitter import assign_splits, leakage_ids, split_rows
 from utils import normalize_text, stable_hash, write_json, write_jsonl
 from validators import aspect_frequency, few_shot_warnings, validate_jsonl, validate_review_rows
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _resolve_project_path(raw: Path) -> Path:
+    if raw.is_absolute():
+        return raw
+    if len(raw.parts) >= 2 and raw.parts[0] == "dataset_builder":
+        return PROJECT_ROOT / Path(*raw.parts[1:])
+    return PROJECT_ROOT / raw
+
 
 def list_input_files(input_dir: Path) -> List[Path]:
     supported = {".csv", ".tsv", ".json", ".jsonl", ".xlsx", ".xls"}
@@ -71,10 +81,15 @@ def compact_open_aspects(review_rows: List[Dict[str, Any]], min_count: int = 5) 
     return review_rows
 
 
+def _text_signature(text: str) -> str:
+    tokens = [t for t in normalize_text(text).lower().split() if len(t) > 2]
+    return " ".join(tokens[:24])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="ReviewOps dataset builder")
-    parser.add_argument("--input-dir", type=Path, default=Path("dataset_builder/input"))
-    parser.add_argument("--output-dir", type=Path, default=Path("dataset_builder/output"))
+    parser.add_argument("--input-dir", type=Path, default=PROJECT_ROOT / "input")
+    parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "output")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--split-ratios", type=str, default="0.8,0.1,0.1")
     parser.add_argument("--max-aspects", type=int, default=5)
@@ -88,8 +103,8 @@ def main() -> None:
         raise ValueError("--split-ratios must have 3 values that sum to 1.0")
 
     cfg = BuilderConfig(
-        input_dir=args.input_dir,
-        output_dir=args.output_dir,
+        input_dir=_resolve_project_path(args.input_dir),
+        output_dir=_resolve_project_path(args.output_dir),
         split_ratios={"train": ratios[0], "val": ratios[1], "test": ratios[2]},
         random_seed=args.seed,
         max_aspects_per_review=args.max_aspects,
@@ -104,6 +119,7 @@ def main() -> None:
         return
 
     review_by_id: Dict[str, Dict[str, Any]] = {}
+    seen_text_signatures: List[str] = []
     skipped: List[Dict[str, Any]] = []
     schema_reports: List[Dict[str, Any]] = []
     rows_read = 0
@@ -142,6 +158,11 @@ def main() -> None:
             if not review_text:
                 skipped.append({"file": str(file_path), "row": idx, "reason": "empty_review_text"})
                 continue
+            sig = _text_signature(review_text)
+            if any(sig == prev or len(set(sig.split()) & set(prev.split())) / max(1, len(set(sig.split()) | set(prev.split()))) >= 0.88 for prev in seen_text_signatures):
+                skipped.append({"file": str(file_path), "row": idx, "reason": "near_duplicate_review_text"})
+                continue
+            seen_text_signatures.append(sig)
 
             source = file_path.name
             raw_id = normalize_text(row.get(schema.id_col, "")) if schema.id_col else ""
@@ -178,6 +199,12 @@ def main() -> None:
 
             if not labels:
                 skipped.append({"file": str(file_path), "row": idx, "reason": "no_labels_after_inference"})
+                continue
+
+            if any(lab.get("type") == "implicit" and str(lab.get("aspect", "")).replace("_", " ") in normalize_text(review_text).lower() for lab in labels):
+                labels = [lab for lab in labels if not (lab.get("type") == "implicit" and str(lab.get("aspect", "")).replace("_", " ") in normalize_text(review_text).lower())]
+            if not labels:
+                skipped.append({"file": str(file_path), "row": idx, "reason": "implicit_explicit_collision"})
                 continue
 
             if len(labels) > cfg.max_aspects_per_review:

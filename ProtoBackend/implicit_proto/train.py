@@ -63,6 +63,7 @@ def train_prototypes(
     )
     artifacts = builder.build(dataset=train_set, batch_size=batch_size)
     paths = builder.save(artifacts=artifacts, output_dir=out_dir, model_name=model_name)
+    encoder_dir = encoder.save(out_dir / "encoder_model")
 
     summary = {
         "num_train_rows": len(train_set.rows),
@@ -77,6 +78,7 @@ def train_prototypes(
     (out_dir / "train_data_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     payload: Dict[str, object] = {k: str(v) for k, v in paths.items()}
+    payload["encoder_model_dir"] = str(encoder_dir)
     payload["data_source"] = data_source
     if diagnostics is not None:
         payload["dataset_diagnostics"] = diagnostics_to_dict(diagnostics)

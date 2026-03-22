@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Iterable, List
 
 import numpy as np
@@ -50,3 +51,9 @@ class PrototypeEncoder:
             normalize_embeddings=normalize_embeddings,
         )
         return np.asarray(embeddings, dtype=np.float32)
+
+    def save(self, output_dir: str | Path) -> Path:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self.model.save(str(out_dir))
+        return out_dir

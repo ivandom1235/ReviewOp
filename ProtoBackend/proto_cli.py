@@ -51,6 +51,56 @@ def _write_json(path: Path, payload: Dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _file_meta(path: Path) -> Dict[str, object]:
+    if not path.exists():
+        return {"path": str(path), "exists": False, "size_bytes": 0}
+    return {"path": str(path), "exists": True, "size_bytes": int(path.stat().st_size)}
+
+
+def _write_artifact_files(
+    family_output_dir: Path,
+    *,
+    dataset_family: str,
+    data_source: str,
+    model_name: str,
+) -> Dict[str, str]:
+    artifacts = {
+        "prototypes": family_output_dir / "prototypes.npz",
+        "label_map": family_output_dir / "label_map.json",
+        "encoder_model_dir": family_output_dir / "encoder_model",
+        "train_summary": family_output_dir / "train_summary.json",
+        "train_data_summary": family_output_dir / "train_data_summary.json",
+        "best_config": family_output_dir / "best_config.json",
+        "eval_test_best": family_output_dir / "eval_test_best.json",
+        "pipeline_report": family_output_dir / "pipeline_report.json",
+    }
+
+    manifest = {
+        "dataset_family": dataset_family,
+        "data_source": data_source,
+        "model_name": model_name,
+        "artifacts": {name: _file_meta(path) for name, path in artifacts.items()},
+    }
+    manifest_path = family_output_dir / "artifact_manifest.json"
+    _write_json(manifest_path, manifest)
+
+    backend_payload = {
+        "dataset_family": dataset_family,
+        "prototypes_path": str(artifacts["prototypes"]),
+        "label_map_path": str(artifacts["label_map"]),
+        "encoder_model_dir": str(artifacts["encoder_model_dir"]),
+        "best_config_path": str(artifacts["best_config"]),
+        "eval_test_best_path": str(artifacts["eval_test_best"]),
+        "artifact_manifest_path": str(manifest_path),
+    }
+    backend_artifact_path = family_output_dir / "backend_artifacts.json"
+    _write_json(backend_artifact_path, backend_payload)
+    return {
+        "artifact_manifest": str(manifest_path),
+        "backend_artifacts": str(backend_artifact_path),
+    }
+
+
 def _rank_key(row: Dict[str, object], selection_objective: str = "stability_macro") -> tuple[float, float, float, float]:
     train_metrics = row.get("train_label_metrics", {})
     full_metrics = row.get("full_metrics", {})
@@ -211,6 +261,13 @@ def _resolve_proto_path(output_dir: Path, dataset_family: str, provided: Path | 
     return output_dir / dataset_family / "prototypes.npz"
 
 
+def _resolve_model_name(family_output_dir: Path, fallback_model_name: str) -> str:
+    encoder_dir = family_output_dir / "encoder_model"
+    if encoder_dir.exists() and encoder_dir.is_dir():
+        return str(encoder_dir)
+    return fallback_model_name
+
+
 def _load_bundle_or_fail(
     dataset_family: str,
     data_source: str,
@@ -269,6 +326,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             label_merge_enabled=args.enable_label_merge,
             label_merge_config=args.label_merge_config,
         )
+        result.update(
+            _write_artifact_files(
+                family_output_dir,
+                dataset_family=args.dataset_family,
+                data_source=args.data_source,
+                model_name=args.model_name,
+            )
+        )
         print(json.dumps(result, indent=2))
         return 0
 
@@ -288,7 +353,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prototypes_path=proto_path,
             top_k=args.top_k,
             threshold=args.threshold,
-            model_name=args.model_name,
+            model_name=_resolve_model_name(family_output_dir, args.model_name),
             device=args.device,
             dataset_family=args.dataset_family,
             input_dir=args.input_dir,
@@ -301,6 +366,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         out_path = family_output_dir / f"eval_{args.split}.json"
         _write_json(out_path, report)
+        _write_artifact_files(
+            family_output_dir,
+            dataset_family=args.dataset_family,
+            data_source=args.data_source,
+            model_name=args.model_name,
+        )
         print(json.dumps(report["summary"], indent=2))
         print(f"Saved: {out_path}")
         return 0
@@ -321,7 +392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = _run_sweep(
             split=args.split,
             prototypes_path=proto_path,
-            model_name=args.model_name,
+            model_name=_resolve_model_name(family_output_dir, args.model_name),
             device=args.device,
             dataset_family=args.dataset_family,
             data_source=args.data_source,
@@ -339,6 +410,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         best_path = family_output_dir / "best_config.json"
         _write_json(out_json, payload)
         _write_json(best_path, payload.get("best") or {})
+        _write_artifact_files(
+            family_output_dir,
+            dataset_family=args.dataset_family,
+            data_source=args.data_source,
+            model_name=args.model_name,
+        )
         print(json.dumps(payload["best"], indent=2))
         print(f"Saved: {out_json}")
         print(f"Saved: {best_path}")
@@ -348,7 +425,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         proto_path = _resolve_proto_path(args.output_dir, args.dataset_family, args.prototypes)
         detector = ImplicitAspectDetector.from_artifacts(
             prototypes_path=proto_path,
-            model_name=args.model_name,
+            model_name=_resolve_model_name(family_output_dir, args.model_name),
             device=args.device,
         )
         out = detector.predict_aspect_dicts(
@@ -397,7 +474,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     val_sweep = _run_sweep(
         split="val",
         prototypes_path=proto_path,
-        model_name=args.model_name,
+        model_name=_resolve_model_name(family_output_dir, args.model_name),
         device=args.device,
         dataset_family=args.dataset_family,
         data_source=args.data_source,
@@ -421,7 +498,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("[3/4] Calibrating per-label thresholds on validation split...")
     detector = ImplicitAspectDetector.from_artifacts(
         prototypes_path=proto_path,
-        model_name=args.model_name,
+        model_name=_resolve_model_name(family_output_dir, args.model_name),
         device=args.device,
     )
     label_thresholds = {}
@@ -451,7 +528,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prototypes_path=proto_path,
         top_k=best_top_k,
         threshold=best_threshold,
-        model_name=args.model_name,
+        model_name=_resolve_model_name(family_output_dir, args.model_name),
         device=args.device,
         dataset_family=args.dataset_family,
         input_dir=args.input_dir,
@@ -468,7 +545,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     pipeline_report = {
         "dataset_family": args.dataset_family,
         "data_source": args.data_source,
-        "model_name": args.model_name,
+        "model_name": _resolve_model_name(family_output_dir, args.model_name),
         "input_dir": str(args.input_dir) if args.input_dir else None,
         "split_paths": bundle.split_paths,
         "dataset_diagnostics": diagnostics_to_dict(bundle.diagnostics),
@@ -481,10 +558,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     pipeline_path = family_output_dir / "pipeline_report.json"
     _write_json(pipeline_path, pipeline_report)
+    artifact_paths = _write_artifact_files(
+        family_output_dir,
+        dataset_family=args.dataset_family,
+        data_source=args.data_source,
+        model_name=args.model_name,
+    )
 
     print(json.dumps(best_config, indent=2))
     print(json.dumps(test_report["summary"], indent=2))
     print(f"Saved: {pipeline_path}")
+    print(f"Saved: {artifact_paths['artifact_manifest']}")
+    print(f"Saved: {artifact_paths['backend_artifacts']}")
     return 0
 
 

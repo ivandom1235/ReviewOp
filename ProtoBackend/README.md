@@ -79,13 +79,19 @@ Per family output directory:
 ProtoBackend/outputs/<dataset_family>/
   prototypes.npz
   label_map.json
+  encoder_model/
   train_summary.json
   train_data_summary.json
   sweep_results_val_<timestamp>.json
   best_config.json
   eval_test_best.json
   pipeline_report.json
+  artifact_manifest.json
+  backend_artifacts.json
 ```
+
+- `artifact_manifest.json`: existence + file size metadata for all core output artifacts.
+- `backend_artifacts.json`: backend-friendly pointers to key artifacts (`prototypes`, `label_map`, `encoder_model`, `best_config`, and `eval_test_best`).
 
 ## Migration from old scripts
 - `scripts/train_proto.py` -> `proto_cli.py train`
@@ -95,14 +101,27 @@ ProtoBackend/outputs/<dataset_family>/
 - `scripts/run_proto_demo.py` -> `proto_cli.py predict`
 
 ## Cleanup Artifacts
-Use the cleanup utility to remove generated outputs, result files, and Python cache files.
+Use the cleanup utility to remove generated outputs and prune related input JSONL files to core splits only.
 
-Dry-run:
+Default cleanup (removes `ProtoBackend/outputs` and prunes JSONLs under `ProtoBackend/input`):
 ```bash
-backend/venv/Scripts/python.exe ProtoBackend/clean_artifacts.py
+backend/venv/Scripts/python.exe ProtoBackend/clean_outputs.py
 ```
 
-Apply deletion:
+Cleanup without recreating empty output folders:
 ```bash
-backend/venv/Scripts/python.exe ProtoBackend/clean_artifacts.py --yes
+backend/venv/Scripts/python.exe ProtoBackend/clean_outputs.py --no-recreate
 ```
+
+Skip JSONL pruning:
+```bash
+backend/venv/Scripts/python.exe ProtoBackend/clean_outputs.py --no-prune-jsonl
+```
+
+Core JSONL files kept by default:
+- `ProtoBackend/input/episodic/train.jsonl`
+- `ProtoBackend/input/episodic/val.jsonl`
+- `ProtoBackend/input/episodic/test.jsonl`
+- `ProtoBackend/input/reviewlevel/train.jsonl`
+- `ProtoBackend/input/reviewlevel/val.jsonl`
+- `ProtoBackend/input/reviewlevel/test.jsonl`

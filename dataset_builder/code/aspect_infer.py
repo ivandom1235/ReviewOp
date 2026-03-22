@@ -87,7 +87,10 @@ def choose_evidence_sentence(
     aspect_lc = sanitize_aspect_token(aspect_text).replace("_", " ")
     for sent in split_sentences(review_text):
         if aspect_lc and aspect_lc in sent.lower():
-            return sent
+            # Prefer a tighter clause when the aspect is explicitly present.
+            parts = [p.strip() for p in re.split(r"[,;:\-]", sent) if p.strip()]
+            tight = min(parts, key=len) if parts else sent
+            return tight
     sents = split_sentences(review_text)
     return sents[0] if sents else normalize_text(review_text)
 
@@ -98,19 +101,20 @@ def infer_implicit_aspects(review_text: str, domain: str) -> List[Dict[str, Any]
     review_lc = review_text.lower()
 
     for canonical, patterns in IMPLICIT_PATTERNS.items():
-        explicit_present = canonical.replace("_", " ") in review_lc
         for sent in sentences:
             sent_lc = sent.lower()
             matched = [p for p in patterns if p in sent_lc]
+            explicit_present = canonical.replace("_", " ") in sent_lc
             if matched:
-                label_type = "implicit" if not explicit_present else "explicit"
+                if explicit_present:
+                    continue
                 labels.append(
                     {
                         "aspect": canonical,
                         "sentiment": "negative",
                         "evidence_sentence": sent,
-                        "type": label_type,
-                        "confidence": 0.7 if label_type == "implicit" else 0.55,
+                        "type": "implicit",
+                        "confidence": 0.7,
                         "metadata": {"rule": "implicit_pattern", "matches": matched, "domain_hint": domain},
                     }
                 )
@@ -133,6 +137,7 @@ def collect_labels_for_row(
     labels: List[Dict[str, Any]] = []
 
     sentiment = normalize_sentiment(sentiment_value)
+    review_lc = normalize_text(review_text).lower()
 
     for aspect in aspect_values:
         if not normalize_text(aspect):
@@ -162,8 +167,20 @@ def collect_labels_for_row(
     if not labels:
         labels.extend(infer_implicit_aspects(review_text=review_text, domain=domain))
 
-    merged: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    filtered: List[Dict[str, Any]] = []
     for lab in labels:
+        aspect_lc = sanitize_aspect_token(str(lab.get("aspect", ""))).replace("_", " ")
+        sent_lc = normalize_text(lab.get("evidence_sentence", "")).lower()
+        if lab.get("type") == "implicit":
+            if aspect_lc and aspect_lc in sent_lc:
+                continue
+            if aspect_lc and aspect_lc in review_lc and len(sent_lc.split()) <= 12:
+                # Avoid explicit-like short spans being mislabeled as implicit.
+                continue
+        filtered.append(lab)
+
+    merged: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for lab in filtered:
         key = (lab["aspect"], lab.get("sentiment", "unknown"), lab.get("evidence_sentence", ""))
         prev = merged.get(key)
         if prev is None or lab["confidence"] > prev["confidence"]:
