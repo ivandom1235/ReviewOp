@@ -1,127 +1,82 @@
-# ProtoBackend
+# ProtoBackend - Prototypical Implicit Aspect Detection
 
-Offline prototype-based implicit aspect detector with one CLI and one input contract.
+ProtoBackend is a high-performance, offline module for performing **Implicit Attribute-Based Sentiment Analysis (ABSA)** using Prototypical Networks. It transforms labeled review sentences into a vector space of aspect centroids (prototypes) to enable zero-shot or few-shot inference.
 
-## Folder layout
-- `implicit_proto/` core model and evaluation modules.
-- `input/reviewlevel/{train,val,test}.jsonl` review-level dataset files.
-- `input/episodic/{train,val,test}.jsonl` episodic dataset files.
-- `outputs/<dataset_family>/` generated artifacts and reports.
-- `proto_cli.py` single entrypoint for train/eval/sweep/run/predict.
+## 🚀 Quick Start
 
-## Requirements
-Use backend venv Python:
-
-```bash
-backend/venv/Scripts/python.exe
-```
-
-## Input contract
-Place files exactly as:
-
-```text
-ProtoBackend/input/
-  reviewlevel/
-    train.jsonl
-    val.jsonl
-    test.jsonl
-  episodic/
-    train.jsonl
-    val.jsonl
-    test.jsonl
-```
-
-Each JSONL row is backend-compatible (contains `implicit_labels[*].implicit_aspect` and `implicit_labels[*].evidence_sentence`).
-
-## Quick start
-
-### Full pipeline (default): train + val sweep + best test eval
-Reviewlevel:
-```bash
-backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py run --dataset-family reviewlevel
-```
-
-Episodic:
-```bash
+Ensure you are using the project's virtual environment:
+```powershell
+# Run the complete episodic training & verification pipeline
 backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py run --dataset-family episodic
 ```
 
-You can omit `run` because it is the default command:
-```bash
-backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py --dataset-family reviewlevel
-```
+### Main Commands:
+- `run` (Default): Executes the full pipeline (Train prototypes -> Sweep validation -> Calibrate thresholds -> Evaluate test set).
+- `train`: Train prototypes only and save to disk.
+- `eval`: Run evaluation on a specific split (`val` or `test`).
+- `sweep`: Perform a hyperparameter sweep over different confidence thresholds and top-k values.
+- `predict`: Run real-time inference on a single sentence.
 
-### Train only
-```bash
-backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py train --dataset-family reviewlevel
-```
+---
 
-### Evaluate val/test split
-```bash
-backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py eval --dataset-family reviewlevel --split val
-backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py eval --dataset-family reviewlevel --split test
-```
-
-### Sweep threshold/top-k
-```bash
-backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py sweep --dataset-family reviewlevel --split val --thresholds 0.45,0.5,0.55,0.6,0.65,0.7 --topks 1,2,3,4,5
-```
-
-### Predict one sentence
-```bash
-backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py predict --dataset-family reviewlevel --sentence "The call keeps showing busy and disconnects" --top-k 3 --threshold 0.6
-```
-
-## Outputs
-Per family output directory:
+## 📂 Project Structure
 
 ```text
-ProtoBackend/outputs/<dataset_family>/
-  prototypes.npz
-  label_map.json
-  encoder_model/
-  train_summary.json
-  train_data_summary.json
-  sweep_results_val_<timestamp>.json
-  best_config.json
-  eval_test_best.json
-  pipeline_report.json
-  artifact_manifest.json
-  backend_artifacts.json
+ProtoBackend/
+├── implicit_proto/  # Core logic (encoding, building prototypes, inference)
+├── input/           # Source datasets (place your files here)
+│   ├── episodic/    # Episodic training data (JSON/JSONL)
+│   └── reviewlevel/ # Review-level training data (JSON/JSONL)
+├── outputs/         # Generated artifacts, models, and evaluation reports
+└── proto_cli.py     # Main command-line entry point
 ```
 
-- `artifact_manifest.json`: existence + file size metadata for all core output artifacts.
-- `backend_artifacts.json`: backend-friendly pointers to key artifacts (`prototypes`, `label_map`, `encoder_model`, `best_config`, and `eval_test_best`).
+---
 
-## Migration from old scripts
-- `scripts/train_proto.py` -> `proto_cli.py train`
-- `scripts/eval_proto.py` -> `proto_cli.py eval`
-- `scripts/sweep_proto_thresholds.py` -> `proto_cli.py sweep`
-- `scripts/run_proto_pipeline.py` -> `proto_cli.py run`
-- `scripts/run_proto_demo.py` -> `proto_cli.py predict`
+## 📝 Input Data Contract
 
-## Cleanup Artifacts
-Use the cleanup utility to remove generated outputs and prune related input JSONL files to core splits only.
+ProtoBackend is highly flexible and supports both **JSONL (line-delimited)** and **Standard JSON (arrays)**.
 
-Default cleanup (removes `ProtoBackend/outputs` and prunes JSONLs under `ProtoBackend/input`):
-```bash
+### Supported Formats:
+1.  **Line-delimited JSONL**: Each line is a single JSON object.
+2.  **JSON Array**: One large file containing a list of JSON objects.
+3.  **Extensions**: Both `.json` and `.jsonl` are automatically detected.
+
+### Minimum Required Fields:
+Each record should contain at least these fields:
+- `evidence_sentence`: The text snippet to analyze.
+- `implicit_aspect`: The target aspect label for training/evaluation.
+- `example_id` or `id`: A unique identifier for the record.
+
+**Location**: Place your files in `ProtoBackend/input/<family>/` named as `train.json`, `val.json`, and `test.json`.
+
+---
+
+## 🛠 Advanced Usage
+
+### Hyperparameter Sweep
+Find the best configuration for your dataset:
+```powershell
+backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py sweep --dataset-family episodic --thresholds 0.4,0.5,0.6 --topks 1,3,5
+```
+
+### Manual Specific Evaluation
+Evaluate an existing model on the test split with specific settings:
+```powershell
+backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py eval --dataset-family episodic --threshold 0.55 --top-k 1
+```
+
+### Interactive Prediction
+Test the system manually:
+```powershell
+backend/venv/Scripts/python.exe ProtoBackend/proto_cli.py predict --sentence "The steak was tender but the service was slow."
+```
+
+---
+
+## 🧹 Maintenance
+
+To clean up generated outputs and prune temporary files:
+```powershell
 backend/venv/Scripts/python.exe ProtoBackend/clean_outputs.py
 ```
-
-Cleanup without recreating empty output folders:
-```bash
-backend/venv/Scripts/python.exe ProtoBackend/clean_outputs.py --no-recreate
-```
-
-Skip JSONL pruning:
-```bash
-backend/venv/Scripts/python.exe ProtoBackend/clean_outputs.py --no-prune-jsonl
-```
-
-Core JSONL files kept by default:
-- `ProtoBackend/input/episodic/train.jsonl`
-- `ProtoBackend/input/episodic/val.jsonl`
-- `ProtoBackend/input/episodic/test.jsonl`
-- `ProtoBackend/input/reviewlevel/train.jsonl`
-- `ProtoBackend/input/reviewlevel/val.jsonl`
-- `ProtoBackend/input/reviewlevel/test.jsonl`

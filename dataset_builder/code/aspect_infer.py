@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Tuple
 
-from mappings import CANONICAL_ASPECTS, GENERIC_ASPECTS, IMPLICIT_PATTERNS, SENTIMENT_MAP
+from mappings import CANONICAL_ASPECTS, GENERIC_ASPECTS, IMPLICIT_SYMPTOMS, SENTIMENT_MAP
 from utils import normalize_text, split_sentences
 import re
 
@@ -95,31 +95,77 @@ def choose_evidence_sentence(
     return sents[0] if sents else normalize_text(review_text)
 
 
+import numpy as np
+try:
+    from rapidfuzz import fuzz
+    from sentence_transformers import SentenceTransformer
+    encoder = SentenceTransformer("all-mpnet-base-v2")
+except ImportError:
+    fuzz = None
+    encoder = None
+
+def get_symptom_embeddings():
+    cache = {}
+    if not encoder: return cache
+    from mappings import IMPLICIT_SYMPTOMS
+    for aspect, symptoms in IMPLICIT_SYMPTOMS.items():
+        cache[aspect] = (symptoms, encoder.encode(symptoms))
+    return cache
+
+SYMPTOM_EMBEDDINGS = get_symptom_embeddings()
+
 def infer_implicit_aspects(review_text: str, domain: str) -> List[Dict[str, Any]]:
     labels: List[Dict[str, Any]] = []
     sentences = split_sentences(review_text)
-    review_lc = review_text.lower()
+    
+    from mappings import IMPLICIT_SYMPTOMS
 
-    for canonical, patterns in IMPLICIT_PATTERNS.items():
-        for sent in sentences:
-            sent_lc = sent.lower()
-            matched = [p for p in patterns if p in sent_lc]
-            explicit_present = canonical.replace("_", " ") in sent_lc
-            if matched:
-                if explicit_present:
-                    continue
-                labels.append(
-                    {
-                        "aspect": canonical,
-                        "sentiment": "negative",
-                        "evidence_sentence": sent,
-                        "type": "implicit",
-                        "confidence": 0.7,
-                        "metadata": {"rule": "implicit_pattern", "matches": matched, "domain_hint": domain},
-                    }
+    for sent in sentences:
+        sent_lc = sent.lower()
+        if len(sent_lc.split()) < 3:
+            continue
+            
+        best_aspect = None
+        best_conf = 0.0
+        best_match = ""
+        
+        sent_emb = encoder.encode([sent_lc]) if encoder else None
+            
+        for aspect, patterns in IMPLICIT_SYMPTOMS.items():
+            # 1. Fuzzy match
+            if fuzz:
+                for p in patterns:
+                    score = fuzz.partial_ratio(p, sent_lc) / 100.0
+                    if score > 0.80 and score > best_conf:
+                        best_conf = score
+                        best_aspect = aspect
+                        best_match = p
+                        
+            # 2. Semantic match
+            if encoder and aspect in SYMPTOM_EMBEDDINGS:
+                _, symp_embs = SYMPTOM_EMBEDDINGS[aspect]
+                sims = np.dot(sent_emb, symp_embs.T) / (
+                    np.linalg.norm(sent_emb) * np.linalg.norm(symp_embs, axis=1)
                 )
-                break
+                max_sim = float(np.max(sims))
+                if max_sim > 0.62 and max_sim > best_conf: # Lowered threshold for higher recall
+                    best_conf = max_sim
+                    best_aspect = aspect
+                    best_match = patterns[np.argmax(sims)]
+                    
+        if best_conf >= 0.60 and best_aspect:
+            # Stage 5d Quality check: Removed strict token count to allow punchy symptoms
+            labels.append({
+                "aspect": best_aspect,
+                "sentiment": "negative", # implicit symptom maps usually denote complaints
+                "evidence_sentence": sent,
+                "type": "implicit",
+                "confidence": best_conf,
+                "metadata": {"rule": "weak_supervision", "matched_symptom": best_match}
+            })
+            
     return labels
+
 
 
 def collect_labels_for_row(
@@ -163,9 +209,9 @@ def collect_labels_for_row(
             }
         )
 
-    # fallback implicit inference when no explicit aspect available
-    if not labels:
-        labels.extend(infer_implicit_aspects(review_text=review_text, domain=domain))
+    # Always look for implicit aspects via weak supervision to build the dual branch
+    implicit_candidates = infer_implicit_aspects(review_text=review_text, domain=domain)
+    labels.extend(implicit_candidates)
 
     filtered: List[Dict[str, Any]] = []
     for lab in labels:

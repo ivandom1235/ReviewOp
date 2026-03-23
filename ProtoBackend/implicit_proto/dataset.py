@@ -90,10 +90,22 @@ class SentenceDataset:
 
     @classmethod
     def from_backend_jsonl(cls, path: str | Path, split: str) -> "SentenceDataset":
+        """Load data from JSON or JSONL file."""
         file_path = Path(path)
         if not file_path.exists():
-            raise FileNotFoundError(f"JSONL file not found: {file_path}")
+            raise FileNotFoundError(f"Data file not found: {file_path}")
 
+        # Try loading as a single JSON array first (to support .json files)
+        try:
+            content = file_path.read_text(encoding="utf-8").strip()
+            if content.startswith("[") and (content.endswith("]") or content.strip().endswith("]")):
+                data = json.loads(content)
+                if isinstance(data, list):
+                    return cls._from_list(data, split)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+
+        # Fallback to line-by-line JSONL parsing
         rows: List[SentenceRow] = []
         with file_path.open("r", encoding="utf-8") as f:
             for line_no, line in enumerate(f, start=1):
@@ -102,42 +114,59 @@ class SentenceDataset:
                     continue
                 try:
                     obj = json.loads(text)
+                    rows.extend(cls._parse_obj(obj, split, line_no))
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"Invalid JSON at line {line_no} in {file_path}") from exc
 
-                record_id = str(obj.get("id", f"{split}_{line_no:06d}"))
-                labels = obj.get("implicit_labels")
-
-                if isinstance(labels, list):
-                    for label_idx, label in enumerate(labels, start=1):
-                        aspect = str((label or {}).get("implicit_aspect", "")).strip()
-                        sentence = str((label or {}).get("evidence_sentence", "")).strip()
-                        if not sentence or not aspect:
-                            continue
-                        rows.append(
-                            SentenceRow(
-                                sentence_id=f"{record_id}_{label_idx}",
-                                sentence=sentence,
-                                aspect=aspect,
-                                split=split,
-                            )
-                        )
-                    continue
-
-                flat_aspect = str(obj.get("implicit_aspect", "")).strip()
-                flat_sentence = str(obj.get("evidence_sentence", "")).strip()
-                if flat_aspect and flat_sentence:
-                    row_id = str(obj.get("episode_id", obj.get("id", f"{split}_{line_no:06d}")))
-                    rows.append(
-                        SentenceRow(
-                            sentence_id=row_id,
-                            sentence=flat_sentence,
-                            aspect=flat_aspect,
-                            split=split,
-                        )
-                    )
-
         return cls(rows)
+
+    @classmethod
+    def _from_list(cls, data: List[Dict], split: str) -> "SentenceDataset":
+        rows: List[SentenceRow] = []
+        for i, obj in enumerate(data, start=1):
+            rows.extend(cls._parse_obj(obj, split, i))
+        return cls(rows)
+
+    @classmethod
+    def _parse_obj(cls, obj: Dict, split: str, line_no: int) -> List[SentenceRow]:
+        if not isinstance(obj, dict):
+            return []
+        
+        rows: List[SentenceRow] = []
+        # Support various ID keys
+        record_id = str(obj.get("id", obj.get("example_id", obj.get("review_id", f"{split}_{line_no:06d}"))))
+        
+        labels = obj.get("implicit_labels")
+        if isinstance(labels, list):
+            for label_idx, label in enumerate(labels, start=1):
+                aspect = str((label or {}).get("implicit_aspect", "")).strip()
+                sentence = str((label or {}).get("evidence_sentence", "")).strip()
+                if not sentence or not aspect:
+                    continue
+                rows.append(
+                    SentenceRow(
+                        sentence_id=f"{record_id}_{label_idx}",
+                        sentence=sentence,
+                        aspect=aspect,
+                        split=split,
+                    )
+                )
+            return rows
+
+        # Flat format
+        flat_aspect = str(obj.get("implicit_aspect", "")).strip()
+        flat_sentence = str(obj.get("evidence_sentence", "")).strip()
+        if flat_aspect and flat_sentence:
+            row_id = str(obj.get("episode_id", obj.get("id", obj.get("example_id", f"{split}_{line_no:06d}"))))
+            rows.append(
+                SentenceRow(
+                    sentence_id=row_id,
+                    sentence=flat_sentence,
+                    aspect=flat_aspect,
+                    split=split,
+                )
+            )
+        return rows
 
     def to_csv(self, output_path: str | Path) -> Path:
         out = Path(output_path)
@@ -251,8 +280,11 @@ def resolve_split_path(
     family_dir = base_input_dir / family
     candidate_names = [
         f"{split}.jsonl",
+        f"{split}.json",
         f"implicit_{family}_{split}.jsonl",
+        f"implicit_{family}_{split}.json",
         f"implicit_reviewlevel_{split}.jsonl" if family == "reviewlevel" else f"implicit_episode_{split}.jsonl",
+        f"implicit_reviewlevel_{split}.json" if family == "reviewlevel" else f"implicit_episode_{split}.json",
     ]
     for name in candidate_names:
         candidate = family_dir / name

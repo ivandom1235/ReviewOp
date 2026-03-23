@@ -10,7 +10,8 @@ from config import BuilderConfig
 from domain_infer import infer_domain
 from episodic_builder import build_episodic_rows
 from schema_detect import detect_schema, load_file_rows
-from splitter import assign_splits, leakage_ids, split_rows
+from splitter import assign_splits, leakage_ids, split_rows, apply_domain_mixing
+from tqdm import tqdm
 from utils import normalize_text, stable_hash, write_json, write_jsonl
 from validators import aspect_frequency, few_shot_warnings, validate_jsonl, validate_review_rows
 
@@ -26,7 +27,7 @@ def _resolve_project_path(raw: Path) -> Path:
 
 
 def list_input_files(input_dir: Path) -> List[Path]:
-    supported = {".csv", ".tsv", ".json", ".jsonl", ".xlsx", ".xls"}
+    supported = {".csv", ".tsv", ".json", ".jsonl", ".xlsx", ".xls", ".xml", ".gz"}
     files = [p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in supported]
     return sorted(files)
 
@@ -67,6 +68,12 @@ def compact_open_aspects(review_rows: List[Dict[str, Any]], min_count: int = 5) 
         for lab in row.get("labels", []):
             aspect = str(lab.get("aspect", "")).strip()
             mode = str(lab.get("metadata", {}).get("mapping_mode", "")).strip()
+            
+            # Prevent ontology errors: force unknown/vague buckets to 'unknown_aspect' or drop
+            if aspect.startswith("other_") or aspect in {"quality", "experience", "generic"}:
+                if mode != "open_aspect": # If it was a fallback, it's low quality
+                     continue
+            
             if mode == "open_aspect" and freq.get(aspect, 0) < min_count:
                 lab = dict(lab)
                 lab["aspect"] = f"other_{domain}"
@@ -153,7 +160,8 @@ def main() -> None:
             }
         )
 
-        for idx, row in enumerate(rows):
+        print(f"\nProcessing rows in {file_path.name}...")
+        for idx, row in enumerate(tqdm(rows, desc="Labeling", leave=False)):
             review_text = normalize_text(row.get(schema.text_col, "")) if schema.text_col else ""
             if not review_text:
                 skipped.append({"file": str(file_path), "row": idx, "reason": "empty_review_text"})
@@ -245,9 +253,115 @@ def main() -> None:
                     entry["split"] = split
 
     review_rows = list(review_by_id.values())
-    review_rows = compact_open_aspects(review_rows, min_count=5)
+    
+    # --- PHASE 2: Force Hybrid Branch Generation ---
+    from implicit_augment import build_augmented_records
+    # We use a limited LLM client if needed, or heuristic if not.
+    # Note: BuilderConfig can be expanded for LLM API keys.
+    augmented_branch = []
+    print("\nGenerating Hybrid Branch (Implicit Augmentation)...")
+    for row in tqdm(review_rows, desc="Augmenting"):
+        # Generate implicit versions of current reviews
+        # ensure 'clean_text' exists for the augment module
+        row["clean_text"] = row["review_text"]
+        augs = build_augmented_records(row, llm=None, implicit_query_only=True)
+        for a in augs:
+            # Re-map augmented record to the standard ReviewLevel schema
+            # Aspects in augmented records are already canonicalized
+            a["labels"] = []
+            for asp_can, sent in zip(a["preserved_aspects"], a["preserved_sentiments"]):
+                a["labels"].append({
+                    "aspect": asp_can,
+                    "sentiment": sent,
+                    "evidence_sentence": a["clean_text"], # The whole rewrite is the evidence
+                    "type": "implicit",
+                    "confidence": 0.9,
+                    "metadata": {"rule": "augmentation", "orig_id": a["source_record_id"]}
+                })
+            augmented_branch.append(a)
+    
+    review_rows.extend(augmented_branch)
+    # --- END PHASE 2 ---
+
+    # --- PHASE 3: ProtoNet Class Merger (Stability) ---
+    # Collapse rare aspects (< 5 examples) into their parent universal superclasses
+    from mappings import CANONICAL_ASPECTS
+    
+    # Pre-build reverse lookup: alias -> superclass
+    alias_to_super = {}
+    for domain_cat in CANONICAL_ASPECTS.values():
+        for supercl, aliases in domain_cat.items():
+            for a in aliases:
+                alias_to_super[a] = supercl
+                
+    counts = Counter(l.get("aspect") for r in review_rows for l in r.get("labels", []))
+    for row in review_rows:
+        for lab in row.get("labels", []):
+            aspect = lab.get("aspect")
+            if counts[aspect] < 5:
+                if aspect in alias_to_super:
+                    lab["aspect"] = alias_to_super[aspect]
+                    lab["metadata"]["merged_from"] = aspect
+                elif "_" in aspect and not aspect.startswith("other_"):
+                    # heuristic like 'battery_life' -> 'performance'
+                    parts = aspect.split("_")
+                    if parts[0] in {"battery", "screen", "keyboard", "waiter", "service"}:
+                         # these are high-probability performance or service sub-labels
+                         lab["aspect"] = "performance" if parts[0] != "waiter" else "support_quality"
+    # --- END PHASE 3 ---
+
+    # --- PHASE 4: Demo Dominance Control (Final Pruning) ---
+    # 1. Cap 'Other' aspects to 15% of total row count
+    other_threshold = int(len(review_rows) * 0.15)
+    final_rows = []
+    other_counts = defaultdict(int)
+    for row in review_rows:
+        aspects = [l.get("aspect", "") for l in row.get("labels", [])]
+        is_only_other = all(a.startswith("other_") for a in aspects)
+        if is_only_other:
+            primary_other = aspects[0]
+            if other_counts[primary_other] < other_threshold:
+                 other_counts[primary_other] += 1
+                 final_rows.append(row)
+            # drop excessive other-only rows
+        else:
+            # Keep all rows that have at least one meaningful (non-other) aspect
+            final_rows.append(row)
+    
+    # 2. Final ultra-rare purge (< 5 samples)
+    curr_counts = Counter(l.get("aspect") for r in final_rows for l in r.get("labels", []))
+    for row in final_rows:
+        row["labels"] = [l for l in row.get("labels", []) if curr_counts[l.get("aspect")] >= 5]
+    
+    # 3. Final drop of rows with no labels after purge
+    review_rows = [r for r in final_rows if r.get("labels")]
+    # --- END PHASE 4 ---
+
     review_rows = assign_splits(review_rows, cfg.split_ratios, seed=cfg.random_seed)
+    review_rows = apply_domain_mixing(review_rows, max_open_share=cfg.open_corpora_max_share, gold_eval_only=cfg.gold_benchmark_eval_only)
+
+
+    def format_target_text(labels: List[Dict]) -> str:
+        explicit = []
+        implicit = []
+        for lab in labels:
+            aspect = str(lab.get("aspect", "")).strip()
+            sentiment = str(lab.get("sentiment", "neutral")).strip()
+            span = str(lab.get("evidence_sentence", "")).strip() or "[no_span]"
+            token = f"{aspect} | {sentiment} | {span}"
+            if lab.get("type", "explicit") == "explicit":
+                explicit.append((aspect, token))
+            else:
+                implicit.append((aspect, token))
+        explicit.sort(key=lambda x: x[0])
+        implicit.sort(key=lambda x: x[0])
+        return " ;; ".join([t[1] for t in explicit] + [t[1] for t in implicit])
+
+    for row in review_rows:
+        row["target_text"] = format_target_text(row.get("labels", []))
+
     split_review = split_rows(review_rows)
+
 
     all_episode_rows = build_episodic_rows(review_rows)
     split_episode = {k: [r for r in all_episode_rows if r.get("split") == k] for k in ["train", "val", "test"]}

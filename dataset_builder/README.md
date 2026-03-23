@@ -1,143 +1,83 @@
-﻿~# Dataset Builder (ABSA + Few-Shot Episodic)
+# 🧠 ReviewOp Dataset Builder: Hybrid ABSA Pipeline
 
-This tool ingests raw review files from multiple sources and builds two aligned datasets:
+A domain-agnostic, multi-stage pipeline designed to transform raw consumer reviews into high-quality training data for **Aspect-Based Sentiment Analysis (ABSA)**. This system treats **Explicit Aspects** as open entities and **Implicit Aspects** as a canonical latent inventory.
 
-- `reviewlevel`: one record per review for ABSA/seq2seq/encoder models.
-- `episodic`: one record per episode for ProtoNet/meta-learning tasks.
+---
 
-It supports explicit and implicit aspects, evidence fields, optional API-assisted quality improvements, and strict clean-first output regeneration.
+## 🚀 Key Features
 
-## Input / Output Layout
+- **Hybrid Extraction:** Combines rule-based spaCy dependency parsing with LLM validation for explicit terms.
+- **Weak Supervision:** Bootstraps implicit aspects (symptoms) using fuzzy matching (`RapidFuzz`) and semantic similarity (`all-mpnet-base-v2`).
+- **Universal Taxonomy:** Grounded in 12 "Universal Superclasses" (Product Quality, Performance, Reliability, etc.) for cross-domain stability.
+- **Data Augmentation:** Automated paraphrase diversification and cross-domain register transfer via LLM rewriting.
+- **Dual Output Formats:**
+  - **Seq2Seq (Format A):** Review-level strings optimized for generative models.
+  - **ProtoNet (Format B):** Episodic N-Way K-Shot data for few-shot meta-learning.
+- **Active Learning Loop:** Automated disagreement detection between proxy models with a static HTML UI (`review_interface.html`) for human-in-the-loop review.
 
-- Input: `dataset_builder/input/raw/` (`.csv`, `.json`, `.jsonl`)
-- Output:
-  - `dataset_builder/output/reviewlevel/normal/{train,val,test}.jsonl`
-  - `dataset_builder/output/reviewlevel/augmented/{train,val,test}.jsonl`
-  - `dataset_builder/output/episodic/normal/{train,val,test}.jsonl`
-  - `dataset_builder/output/episodic/augmented/{train,val,test}.jsonl`
+---
 
-No `metadata/` or `debug_samples/` folders are generated.
+## 🛠️ Pipeline Architecture (10 Stages)
 
-## How schema auto-detection works
+1.  **Ingestion & Normalization:** Schema detection for CSV/Parquet/JSON and PII removal.
+2.  **Data Source Strategy:** Domain mixing with Type A (Target), Type B (Open), and Type C (Gold) weighting.
+3.  **Implicit Inventory:** Canonical symptom-to-aspect mapping using a dynamic BERTopic update utility.
+4.  **Explicit Aspect Extraction:** Noun-chunk and opinion-word adjacency extraction with LLM filtering.
+5.  **Implicit Aspect Labeling:** Semantic weak supervision using a pre-defined symptom library.
+6.  **LLM Augmentation:** Hard negative generation and cross-domain transfer routines.
+7.  **Evidence Span Auxiliary Model:** DeBERTa-base sentence classifier for precise span attribution.
+8.  **Output Formatting:** Rigid sequence formatting and ProtoNet episode caching.
+9.  **Splitting Strategy:** Temporal-bounded splitting with strict synthetic-data quarantine (Force-Train).
+10. **Active Learning:** Uncertainty sampling based on prediction disagreements.
 
-1. Heuristic matching against likely column names (`text`, `title`, `rating`, `id`, `domain`, `split`, etc).
-2. If mapping is ambiguous and API key is configured, optional LLM tie-breaker is used.
-3. Pipeline continues with heuristics if API is unavailable or request fails.
+---
 
-## Augmentation strategy
+## 📁 Project Structure
 
-Augmented set is built from normalized reviewlevel records:
-
-- explicit -> implicit rewrites
-- mixed explicit+implicit phrasing
-- aspect/sentiment preservation checks
-- duplicate/low-quality filtering
-
-Every augmented record includes `is_augmented`, `augmentation_type`, `source_record_id`, `preserved_aspects`, and `preserved_sentiments`.
-
-## API keys
-
-Create `dataset_builder/.env` (or root `.env`) from `.env.example`:
-
-- `OPENAI_API_KEY`
-- `OPENAI_BASE_URL`
-- `OPENAI_MODEL`
-- `GROQ_API_KEY`
-- `GROQ_BASE_URL`
-- `GROQ_MODEL`
-- `ANTHROPIC_API_KEY`
-- `ANTHROPIC_BASE_URL`
-- `ANTHROPIC_MODEL`
-- `DEFAULT_LLM_PROVIDER`
-
-Default behavior is API-preferred (`--use-api true`) with automatic heuristic fallback.
-
-## Run
-
-From repo root:
-
-```powershell
-python dataset_builder/code/main.py --input dataset_builder/input/raw --output output --mode all
+```text
+dataset_builder/
+├── code/
+│   ├── build_dataset.py      # Main pipeline orchestrator
+│   ├── aspect_extract.py    # Explicit extractor (spaCy + LLM)
+│   ├── aspect_infer.py      # Implicit weak supervision (RapidFuzz + Semantic)
+│   ├── mappings.py          # Universal Superclasses & Symptom Library
+│   ├── episodic_builder.py  # ProtoNet episode generator
+│   ├── active_learning.py   # Disagreement tracking & HTML Dashboard
+│   └── span_model.py        # DeBERTa Evidence Span architecture
+├── input/                   # Place raw .csv, .json, or .parquet files here
+├── output/                  # Final generated datasets
+└── requirements.txt         # Project dependencies
 ```
 
-Other common runs:
+---
 
-```powershell
-python dataset_builder/code/main.py --mode reviewlevel
-python dataset_builder/code/main.py --mode episodic
-python dataset_builder/code/main.py --augment true
-python dataset_builder/code/main.py --cross-domain true
+## 🥑 Getting Started
+
+### 1. Installation
+```bash
+pip install -r dataset_builder/requirements.txt
+python -m spacy download en_core_web_sm
 ```
 
-Useful flags:
-
-- `--clean-first true|false` (default `true`)
-- `--use-api true|false` (default `true`)
-- `--preserve-official-splits true|false`
-- `--max-aspects 5`
-- `--min-review-length 8`
-- `--near-dup-threshold 0.9`
-- `--n-way 5 --k-shot 5 --q-query 10`
-- `--strict-quality-filter true|false`
-- `--target-multi-aspect-min 2`
-- `--target-implicit-ratio 0.2`
-- `--max-canonical-share 0.45`
-- `--hard-negative-k 2`
-- `--implicit-query-only true|false`
-- `--min-evidence-span-chars 5`
-- `--aspect-definitions-enabled true|false`
-- `--domain-family-implicit-targets electronics:0.2,telecom:0.2,ecommerce:0.2,mobility:0.2,healthcare:0.2,services:0.2`
-- `--cross-domain-min-domains 2`
-- `--fallback-episode-policy relax_implicit_query,reduced_shots,reduced_way`
-- `--max-evidence-fallback-rate 0.15`
-- `--episode-task-mix aspect_classification:0.4,implicit_aspect_inference:0.3,aspect_sentiment_classification:0.3`
-- `--hard-negative-strategy static|data_driven|hybrid`
-
-## Runtime quality gates
-
-The builder prints acceptance gate signals at the end of each run:
-
-- canonical OOV rate
-- leakage rate
-- sentence fallback evidence rate
-- implicit family coverage and target misses
-
-## Aspect Memory
-
-Aspect Memory stores aspect-term decisions in JSONL so future dataset builds can reuse prior mappings without introducing a database dependency.
-
-Files written by the memory layer:
-
-- `output/reports/aspect_memory/aspect_memory_events.jsonl`
-- `output/reports/aspect_memory/aspect_memory_promotions.jsonl`
-- `output/reports/aspect_memory/aspect_memory_calibration.json`
-
-Common modes:
-
-- `--memory-mode off`: do not read or write memory
-- `--memory-mode collect`: store candidates and evidence only
-- `--memory-mode resolve`: resolve aspect terms from memory when confidence is high enough
-- `--mode eval`: read existing `reviewlevel/normal/{train,val,test}.jsonl`, keep memory read-only, and write `output/reports/eval_report.json`
-- `--freeze-memory-during-eval true`: block all memory writes while evaluating
-
-Decision policies:
-
-- `--decision-policy deterministic`
-- `--decision-policy hybrid`
-- `--decision-policy stochastic`
-
-Example commands:
-
-```powershell
-python dataset_builder/code/main.py --mode all --decision-policy deterministic --memory-mode off --seed 42
-python dataset_builder/code/main.py --mode all --decision-policy hybrid --memory-mode resolve --min-confidence-for-hard-map 0.75 --decision-temperature 0.4 --seed 42
-python dataset_builder/code/main.py --mode all --decision-policy stochastic --decision-temperature 0.8 --seed 7
-python dataset_builder/code/main.py --workflow two-track --mode all --seed 42
+### 2. Configure Environment
+Create a `.env` file in the root directory:
+```text
+OPENAI_API_KEY=your_key_here
+ANTHROPIC_API_KEY=your_key_here
 ```
 
-## Common failure cases
+### 3. Run the Pipeline
+Always run from the project root (`ReviewOp`):
+```bash
+python dataset_builder/code/build_dataset.py --input-dir dataset_builder/input --output-dir dataset_builder/output
+```
 
-- No rows produced: schema text column not detected and LLM fallback unavailable.
-- Weak aspect coverage: dataset language/domain mismatch with heuristics.
-- Few/no episodes: insufficient per-label samples for chosen `n_way/k_shot/q_query`.
-- Empty augmented output: strict quality checks filtered generated rewrites.
+---
+
+## 📊 Output Schema (Format A: Seq2Seq)
+The pipeline produces records with a `target_text` field formatted as:
+`aspect | sentiment | evidence ;; aspect | sentiment | evidence`
+
+**Example:**
+*"The battery dies by noon and the screen is beautiful."*
+👉 `battery_life | negative | battery dies by noon ;; display | positive | screen is beautiful`

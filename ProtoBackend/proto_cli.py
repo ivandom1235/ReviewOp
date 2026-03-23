@@ -189,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_shared_args(p: argparse.ArgumentParser) -> None:
         p.add_argument("--dataset-family", choices=["reviewlevel", "episodic"], default="reviewlevel")
-        p.add_argument("--data-source", choices=["backend_raw", "input_dir"], default="backend_raw")
+        p.add_argument("--data-source", choices=["backend_raw", "input_dir"], default="input_dir")
         p.add_argument("--input-dir", type=Path, default=None)
         p.add_argument("--output-dir", type=Path, default=Path("ProtoBackend/outputs"))
         p.add_argument("--model-name", type=str, default="sentence-transformers/all-mpnet-base-v2")

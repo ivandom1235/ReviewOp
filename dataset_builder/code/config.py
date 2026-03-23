@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,8 +44,15 @@ class BuilderConfig:
     max_aspects_per_review: int = 5
     near_dup_threshold: float = 0.9
     preserve_row_count: bool = True
+    
+    # Stage 2: Data Source Strategy
+    target_domain_weight: float = 2.0
+    open_corpora_max_share: float = 0.40
+    gold_benchmark_eval_only: bool = True
+    
     n_way: int = 3
     k_shot: int = 2
+
     q_query: int = 2
     strict_quality_filter: bool = True
     target_multi_aspect_min: int = 2

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import csv
 import hashlib
@@ -120,40 +120,76 @@ def _detect_schema_v2(columns: List[str], samples: List[Dict], llm: Optional[LLM
 
 
 def load_file_rows(path: Path) -> tuple[List[Dict[str, Any]], str, List[str]]:
+    import gzip
+    import xml.etree.ElementTree as ET
+    
     suffix = path.suffix.lower()
-    if suffix in {".csv", ".tsv"}:
-        delimiter = "\t" if suffix == ".tsv" else ","
-        with path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+    is_gz = suffix == ".gz"
+    
+    # helper for gzipped opening
+    def _open(p):
+        if is_gz:
+            return gzip.open(p, "rt", encoding="utf-8", errors="replace")
+        return p.open("r", encoding="utf-8", errors="replace")
+
+    # effective suffix (e.g. .jsonl.gz -> .jsonl)
+    eff_suffix = suffix
+    if is_gz:
+        eff_suffix = Path(path.stem).suffix.lower()
+        if not eff_suffix: eff_suffix = ".jsonl" # default for .gz
+
+    if eff_suffix == ".xml":
+        # Note: Gzip xml is rare but supported if passed
+        tree = ET.parse(path)
+        root = tree.getroot()
+        rows = []
+        for sent in root.findall(".//sentence"):
+            txt = sent.findtext("text", "").strip()
+            if not txt: continue
+            # Extract categories
+            cats = [c.get("category", "") for c in sent.findall(".//aspectCategory")]
+            pols = [c.get("polarity", "") for c in sent.findall(".//aspectCategory")]
+            rows.append({
+                "text": txt,
+                "aspect": ",".join(filter(None, cats)),
+                "polarity": pols[0] if pols else "neutral"
+            })
+        cols = ["text", "aspect", "polarity"]
+        return rows, "xml", cols
+
+    if eff_suffix in {".csv", ".tsv"}:
+        delimiter = "\t" if eff_suffix == ".tsv" else ","
+        with _open(path) as f:
             rows = [dict(r) for r in csv.DictReader(f, delimiter=delimiter)]
         cols = list(rows[0].keys()) if rows else []
-        return rows, suffix.lstrip("."), cols
-    if suffix == ".jsonl":
+        return rows, eff_suffix.lstrip("."), cols
+        
+    if eff_suffix == ".jsonl":
         rows: List[Dict[str, Any]] = []
-        with path.open("r", encoding="utf-8", errors="replace") as f:
+        with _open(path) as f:
             for line in f:
                 line = line.strip()
-                if not line:
-                    continue
+                if not line: continue
                 payload = json.loads(line)
                 if isinstance(payload, dict):
                     rows.append(payload)
         cols = sorted({k for r in rows for k in r.keys()})
         return rows, "jsonl", cols
-    if suffix == ".json":
-        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        
+    if eff_suffix == ".json":
+        with _open(path) as f:
+            payload = json.load(f)
         if isinstance(payload, list):
             rows = [r for r in payload if isinstance(r, dict)]
         elif isinstance(payload, dict):
-            if isinstance(payload.get("data"), list):
-                rows = [r for r in payload["data"] if isinstance(r, dict)]
-            elif isinstance(payload.get("records"), list):
-                rows = [r for r in payload["records"] if isinstance(r, dict)]
-            else:
-                rows = [payload]
+            if isinstance(payload.get("data"), list): rows = payload["data"]
+            elif isinstance(payload.get("records"), list): rows = payload["records"]
+            else: rows = [payload]
         else:
             rows = []
         cols = sorted({k for r in rows for k in r.keys()})
         return rows, "json", cols
+        
     raise ValueError(f"Unsupported file type: {path}")
 
 
