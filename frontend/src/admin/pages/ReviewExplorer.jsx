@@ -28,7 +28,7 @@ export default function ReviewExplorer({
     aspect: p.aspect_cluster || p.aspect_raw,
     sentiment: p.sentiment,
     confidence: Number(p.confidence || 0),
-    origin: p.origin || "heuristic",
+    origin: p.origin || (p.is_implicit ? "implicit" : p.source || "explicit"),
     evidence: p.evidence_spans?.[0]?.snippet || "-",
   }));
 

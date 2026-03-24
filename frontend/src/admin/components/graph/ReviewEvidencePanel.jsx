@@ -13,19 +13,20 @@ const sentimentClasses = {
   },
 };
 
-function buildSegments(text, nodes) {
+function buildEvidenceItems(text, nodes) {
   const ranges = (nodes || [])
     .filter((node) => Number.isInteger(node.evidence_start) && Number.isInteger(node.evidence_end))
     .map((node) => ({
       start: node.evidence_start,
       end: node.evidence_end,
+      aspect: String(node?.aspect_raw || node?.label || "").trim(),
       label: node.label,
       sentiment: node.sentiment,
     }))
     .sort((a, b) => a.start - b.start);
 
   if (!text || !ranges.length) {
-    return [{ text, highlighted: false }];
+    return text ? [{ text, highlighted: false }] : [];
   }
 
   const segments = [];
@@ -40,6 +41,7 @@ function buildSegments(text, nodes) {
     segments.push({
       text: text.slice(start, end),
       highlighted: true,
+      aspect: range.aspect,
       label: range.label,
       sentiment: range.sentiment,
     });
@@ -54,7 +56,7 @@ function buildSegments(text, nodes) {
 }
 
 export default function ReviewEvidencePanel({ text = "", nodes = [], isDark = false }) {
-  const segments = buildSegments(text, nodes);
+  const segments = buildEvidenceItems(text, nodes);
   const tone = isDark ? "dark" : "light";
 
   return (

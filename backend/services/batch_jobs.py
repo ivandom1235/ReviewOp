@@ -76,23 +76,21 @@ def process_csv_sync(
                 sent, conf = engine.classify_sentiment_with_confidence(snippet, aspect_raw)
 
                 pred = Prediction(
-                    review_id=r.id,
                     aspect_raw=aspect_raw,
                     aspect_cluster=aspect_raw,
                     sentiment=sent,
                     confidence=float(conf),
                     rationale=None,
                 )
-                db.add(pred)
-                db.flush()
-
-                ev = EvidenceSpan(
-                    prediction_id=pred.id,
-                    start_char=s,
-                    end_char=e,
-                    snippet=snippet,
+                pred.review = r
+                pred.evidence_spans.append(
+                    EvidenceSpan(
+                        start_char=s,
+                        end_char=e,
+                        snippet=snippet,
+                    )
                 )
-                db.add(ev)
+                db.add(pred)
 
             item.review_id = r.id
             item.status = "done"
@@ -105,6 +103,9 @@ def process_csv_sync(
             db.commit()
 
         except Exception as ex:
+            db.rollback()
+            item = db.query(JobItem).filter(JobItem.job_id == job.id, JobItem.row_index == i).first()
+            job = db.query(Job).filter(Job.id == job.id).first() or job
             item.status = "failed"
             item.error = str(ex)[:2000]
             job.failed += 1

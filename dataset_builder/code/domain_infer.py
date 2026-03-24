@@ -9,6 +9,13 @@ from mappings import DOMAIN_HINTS
 from utils import normalize_text
 
 
+DOMAIN_ALIASES = {
+    "restaurant": "food",
+    "hotel": "hospitality",
+    "telecom": "software",
+}
+
+
 def infer_domain(file_path: str, columns: List[str], texts: Iterable[str], aspects: Iterable[str] | None = None) -> str:
     scores = Counter()
     file_hint = Path(file_path).stem.lower()
@@ -30,7 +37,19 @@ def infer_domain(file_path: str, columns: List[str], texts: Iterable[str], aspec
             if w in text_tokens:
                 scores[domain] += 1
 
+    # A file-level metadata hint is useful, but should not override stronger text or filename cues.
+    if any(k in file_hint for k in ["laptop", "phone", "tablet", "computer", "electronics"]):
+        scores["electronics"] += 2
+    if any(k in file_hint for k in ["restaurant", "food", "dining", "meal"]):
+        scores["restaurant"] += 2
+    if any(k in file_hint for k in ["hotel", "room", "stay", "travel"]):
+        scores["hotel"] += 2
+    if any(k in file_hint for k in ["telecom", "network", "signal", "call"]):
+        scores["telecom"] += 2
+
     if not scores:
         return "generic"
     top_domain, top_score = scores.most_common(1)[0]
-    return top_domain if top_score > 0 else "generic"
+    if top_score <= 0:
+        return "generic"
+    return DOMAIN_ALIASES.get(top_domain, top_domain)

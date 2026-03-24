@@ -1,3 +1,0 @@
-from services.implicit.label_maps import save_label_encoder
-save_label_encoder()
-print("label encoder saved")

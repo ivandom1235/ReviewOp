@@ -2,22 +2,27 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, List
 
-import requests
+from openai import OpenAI
 
 from core.config import settings
 
 
 PredictionLike = Dict[str, Any]
 
+logger = logging.getLogger(__name__)
+
 
 class LLMVerifier:
     def __init__(self) -> None:
-        self.base_url = settings.llm_base_url.rstrip("/")
-        self.api_key = settings.llm_api_key
+        self.client = OpenAI(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url.rstrip("/"),
+            timeout=settings.llm_timeout_seconds,
+        )
         self.model = settings.llm_model_name
-        self.timeout = settings.llm_timeout_seconds
 
     def verify(
         self,
@@ -75,30 +80,22 @@ class LLMVerifier:
             },
         ]
 
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.0,
-            "response_format": {"type": "json_object"},
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
-
-        response = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        data = response.json()
-
-        content = data["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-        predictions = parsed.get("predictions", [])
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content or "{}"
+            parsed = json.loads(content)
+            predictions = parsed.get("predictions", [])
+        except Exception as exc:
+            logger.warning(
+                "LLM verifier unavailable; returning merged predictions unchanged: %s",
+                exc,
+            )
+            return merged_predictions
 
         final_rows: List[PredictionLike] = []
         for row in predictions:

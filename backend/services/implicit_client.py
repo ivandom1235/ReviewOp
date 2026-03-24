@@ -16,8 +16,8 @@ ImplicitPrediction = Dict[str, Any]
 
 class ImplicitClient:
     def __init__(self) -> None:
-        self.mode = settings.protobackend_mode
-        self.base_url = settings.protobackend_url.rstrip("/")
+        self.mode = settings.protonet_mode
+        self.base_url = settings.protonet_url.rstrip("/")
         self._predict_fn = None
 
         if self.mode == "import":
@@ -29,12 +29,12 @@ class ImplicitClient:
             sys.path.insert(0, str(project_root))
 
         try:
-            module = importlib.import_module("ProtoBackend.infer_api")
+            module = importlib.import_module("protonet.infer_api")
             self._predict_fn = getattr(module, "predict_implicit_aspects")
         except Exception as exc:
             raise RuntimeError(
-                "Failed to import ProtoBackend.infer_api.predict_implicit_aspects. "
-                "Create ProtoBackend/infer_api.py exactly as shown in the integration step."
+                "Failed to import protonet.infer_api.predict_implicit_aspects. "
+                "Make sure protonet/metadata/model_bundle.pt exists and protonet inference dependencies are installed."
             ) from exc
 
     def predict(
@@ -63,7 +63,7 @@ class ImplicitClient:
         cleaned: List[ImplicitPrediction] = []
         for row in results or []:
             conf = float(row.get("confidence", 0.0))
-            if conf < settings.implicit_min_confidence:
+            if conf < settings.protonet_implicit_min_confidence:
                 continue
             cleaned.append(
                 {

@@ -1,23 +1,37 @@
 .env
-.env.*
 .venv
-*.txt
+.vscode/
+.idea/
 requirements.in
 backend/__pycache__/
 backend/core/__pycache__/
 node_modules/
 frontend/node_modules/
+frontend/dist/
 *.pyc
 __pycache__/
 */__pycache__/
-backend/models/implicit/
-ProtoBackend/outputs/
-dataset_builder/output/
-
-# Dataset artifacts (do not commit generated/raw datasets)
-datasetCreator/data/raw/
-datasetCreator/data/interim/
-datasetCreator/data/processed/
-datasetCreator/data/reports/
 *.docx
 *.pdf
+
+# Data artifacts
+dataset_builder/input/
+dataset_builder/output/
+ProtoBackend/input/
+ProtoBackend/outputs/
+protonet/input/*
+!protonet/input/reviewlevel/
+!protonet/input/reviewlevel/.gitkeep
+!protonet/input/episodic/
+!protonet/input/episodic/.gitkeep
+protonet/output/*
+!protonet/output/.gitkeep
+protonet/metadata/*
+!protonet/metadata/.gitkeep
+protonet/_tmp*/
+# Ignore all JSONL data artifacts globally
+*.jsonl
+
+# Model/checkpoint artifacts
+backend/models/implicit/*.json
+backend/models/implicit/checkpoints/*.pt

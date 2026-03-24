@@ -1,78 +1,240 @@
-# ReviewOps Dataset Builder
+# ReviewOp Dataset Builder
 
-Builds training-ready ABSA datasets (review-level + episodic) with explicit/implicit support.
+The dataset builder turns raw review files into two downstream-friendly JSONL formats:
 
-## Folder Layout
-- `dataset_builder/input/`
-- `dataset_builder/code/`
-- `dataset_builder/output/reviewlevel/{train,val,test}.jsonl`
-- `dataset_builder/output/episodic/{train,val,test}.jsonl`
-- `dataset_builder/output/reports/{build_report.json, skipped_rows.jsonl}`
+- `reviewlevel/`: one row per review, with normalized labels plus a `target_text` string
+- `episodic/`: one row per labeled example, ready for few-shot episode generation and ProtoNet training
 
-## How To Run
-From repo root:
+It is the bridge between messy raw source files and the normalized artifacts used by the rest of the repo.
 
-```powershell
-python dataset_builder/code/build_dataset.py --input-dir dataset_builder/input --output-dir dataset_builder/output
+## What It Does
+
+The current pipeline in `code/build_dataset.py` handles:
+
+- schema detection for supported raw review files
+- domain inference when a source file does not provide one
+- hybrid explicit and implicit aspect labeling
+- evidence span extraction for each label
+- open-aspect compaction and canonical label normalization
+- class balancing for episodic outputs
+- diagnostics and readiness reports under `output/reports/`
+
+The builder also produces a balanced episodic training split at `output/episodic/train_balanced.jsonl`.
+
+## Supported Input Files
+
+The builder scans the input directory for these file types:
+
+- `.csv`
+- `.tsv`
+- `.json`
+- `.jsonl`
+- `.xlsx`
+- `.xls`
+- `.xml`
+- `.gz`
+
+By default, the CLI reads from `dataset_builder/input/`.
+
+## Project Layout
+
+```text
+dataset_builder/
+|-- code/
+|   |-- build_dataset.py
+|   |-- aspect_infer.py
+|   |-- aspect_extract.py
+|   |-- evidence_extract.py
+|   |-- episodic_builder.py
+|   |-- quality_diagnostics.py
+|   `-- senticnet_utils.py
+|-- input/
+|-- output/
+|-- resources/
+`-- requirements.txt
 ```
 
-Compatibility entrypoint (accepts `--input`, `--output`, `--use-openai`):
+## Installation
+
+From the repo root:
 
 ```powershell
-python dataset_builder/code/main.py --input ./dataset_builder/input --output ./dataset_builder/output --use-openai false
+pip install -r dataset_builder\requirements.txt
 ```
 
-You can also point to any other input folder:
+Or from inside `dataset_builder/`:
 
 ```powershell
-python dataset_builder/code/build_dataset.py --input-dir . --output-dir dataset_builder/output
+pip install -r requirements.txt
 ```
 
-## Dry Run (No Files Written)
-```powershell
-python dataset_builder/code/build_dataset.py --input-dir dataset_builder/input --dry-run
-```
-
-## Clean Outputs
-Remove all generated output artifacts:
+If your environment does not already have the spaCy English model used by the extraction stack, install it separately:
 
 ```powershell
-python dataset_builder/code/clean_outputs.py --output-dir dataset_builder/output
+python -m spacy download en_core_web_sm
 ```
 
-This command removes the output folder and recreates a clean empty structure.
+## Running the Builder
 
-If you want removal without recreating subfolders:
+### From the repo root
 
 ```powershell
-python dataset_builder/code/clean_outputs.py --output-dir dataset_builder/output --no-recreate
+python dataset_builder\code\build_dataset.py --input-dir dataset_builder\input --output-dir dataset_builder\output
 ```
 
-## Important Behavior
-- If `output/` or any subfolder is missing, `build_dataset.py` recreates:
-  - `output/reviewlevel`
-  - `output/episodic`
-  - `output/reports`
-- Split handling:
-  - uses existing split if present (`train/val/test`)
-  - otherwise creates grouped split by review id (default `0.8/0.1/0.1`)
-- Episodic rows include both `aspect` and `implicit_aspect` for compatibility.
-- Evidence extraction prefers `evidence` column, then `from/to` span text when available, then sentence-level fallback.
-- Sentiment normalization maps missing/unknown-like values to `neutral` (no `unknown` labels in output).
+### From inside `dataset_builder/`
 
-## Common Flags
-- `--split-ratios 0.8,0.1,0.1`
-- `--max-aspects 5`
-- `--confidence-threshold 0.35`
-- `--prefer-open-aspect`
-- `--seed 42`
+```powershell
+cd dataset_builder
+python code\build_dataset.py --input-dir input --output-dir output
+```
 
-## Quick Verification
-After a run, check these files exist:
-- `dataset_builder/output/reviewlevel/train.jsonl`
-- `dataset_builder/output/reviewlevel/val.jsonl`
-- `dataset_builder/output/reviewlevel/test.jsonl`
-- `dataset_builder/output/episodic/train.jsonl`
-- `dataset_builder/output/episodic/val.jsonl`
-- `dataset_builder/output/episodic/test.jsonl`
-- `dataset_builder/output/reports/build_report.json`
+### Minimal default run
+
+If your files are already under `dataset_builder/input/`, this is enough:
+
+```powershell
+cd dataset_builder
+python code\build_dataset.py
+```
+
+### Common flags
+
+```text
+--input-dir
+--output-dir
+--dry-run
+--split-ratios
+--max-aspects
+--confidence-threshold
+--prefer-open-aspect
+--domain-agnostic-mode {auto,off,always}
+--senticnet / --no-senticnet
+--senticnet-resource-path
+--min-implicit-vote-sources
+--target-implicit-ratio
+--episodic-max-aspect-share
+--disable-second-aspect-extraction
+--seed
+```
+
+### Example runs
+
+Dry-run without writing files:
+
+```powershell
+python dataset_builder\code\build_dataset.py --dry-run
+```
+
+Tune confidence and split ratios:
+
+```powershell
+python dataset_builder\code\build_dataset.py --confidence-threshold 0.45 --split-ratios 0.7,0.15,0.15
+```
+
+Force more open-aspect retention for domain-agnostic experiments:
+
+```powershell
+python dataset_builder\code\build_dataset.py --prefer-open-aspect --domain-agnostic-mode always
+```
+
+Run only against a specific source file folder:
+
+```powershell
+python dataset_builder\code\build_dataset.py --input-dir dataset_builder\input --output-dir dataset_builder\output
+```
+
+## Outputs
+
+### Review-level output
+
+Files:
+
+- `output/reviewlevel/train.jsonl`
+- `output/reviewlevel/val.jsonl`
+- `output/reviewlevel/test.jsonl`
+
+Each row contains fields like:
+
+- `id`
+- `review_text`
+- `domain`
+- `source`
+- `split`
+- `labels`
+- `target_text`
+
+`target_text` is formatted as:
+
+```text
+aspect | sentiment | evidence ;; aspect | sentiment | evidence
+```
+
+### Episodic output
+
+Files:
+
+- `output/episodic/train.jsonl`
+- `output/episodic/val.jsonl`
+- `output/episodic/test.jsonl`
+- `output/episodic/train_balanced.jsonl`
+
+Each row contains fields like:
+
+- `example_id`
+- `parent_review_id`
+- `review_text`
+- `evidence_sentence`
+- `domain`
+- `aspect`
+- `implicit_aspect`
+- `sentiment`
+- `label_type`
+- `split`
+
+### Reports
+
+The builder writes diagnostics to `output/reports/`:
+
+- `build_report.json`
+- `data_quality_report.json`
+- `episode_readiness_report.json`
+- `normalization_report.json`
+- `label_issue_candidates.jsonl`
+- `skipped_rows.jsonl`
+
+These are the fastest way to validate whether a newly ingested dataset is healthy enough for training.
+
+## Optional Resources and Env Vars
+
+SenticNet support is configured through:
+
+- `resources/senticnet_seed.json`
+- `--senticnet-resource-path`
+
+The config layer also defines optional provider settings for LLM-backed helpers:
+
+- `DEFAULT_LLM_PROVIDER`
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+- `OPENAI_MODEL`
+- `GROQ_API_KEY`
+- `GROQ_BASE_URL`
+- `GROQ_MODEL`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_BASE_URL`
+- `ANTHROPIC_MODEL`
+
+Those keys are optional for the default local build flow.
+
+
+
+## Hand-off to ProtoNet
+
+The usual next step is to copy the episodic output into `protonet/input/episodic/` and train the standalone ProtoNet module:
+
+```powershell
+Copy-Item "dataset_builder\output\episodic\*" -Destination "protonet\input\episodic\" -Recurse -Force
+```
+
+If you are already inside `dataset_builder/`, return to the repo root first or use relative paths carefully before copying outputs into `protonet/`.

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from models.tables import EvidenceSpan, Prediction
 from services.hybrid_merge import merge_predictions
 from services.review_pipeline import run_single_review_pipeline
 
@@ -34,6 +36,41 @@ def _prediction_row_to_dict(pred) -> PredictionLike:
     }
 
 
+def _persist_final_predictions(db: Session, review_obj, final_predictions: List[PredictionLike]) -> None:
+    existing_predictions = db.query(Prediction).filter(Prediction.review_id == review_obj.id).all()
+    existing_prediction_ids = [pred.id for pred in existing_predictions if pred.id is not None]
+    if existing_prediction_ids:
+        db.execute(delete(EvidenceSpan).where(EvidenceSpan.prediction_id.in_(existing_prediction_ids)))
+    for pred in existing_predictions:
+        db.delete(pred)
+    if existing_predictions:
+        db.flush()
+    db.expire(review_obj, ["predictions"])
+
+    for row in final_predictions:
+        prediction = Prediction(
+            aspect_raw=str(row.get("aspect_raw") or "").strip(),
+            aspect_cluster=str(row.get("aspect_cluster") or row.get("aspect_raw") or "").strip(),
+            sentiment=str(row.get("sentiment") or "neutral").strip().lower(),
+            confidence=float(row.get("confidence", 0.0)),
+            rationale=str(row.get("rationale") or "").strip() or None,
+        )
+        prediction.review = review_obj
+
+        for ev in row.get("evidence_spans", []) or []:
+            prediction.evidence_spans.append(
+                EvidenceSpan(
+                    start_char=int(ev.get("start_char", 0)),
+                    end_char=int(ev.get("end_char", 0)),
+                    snippet=str(ev.get("snippet", "")),
+                )
+            )
+
+        db.add(prediction)
+
+    db.flush()
+
+
 def run_single_review_hybrid_pipeline(
     db: Session,
     *,
@@ -57,7 +94,7 @@ def run_single_review_hybrid_pipeline(
         _prediction_row_to_dict(pred) for pred in getattr(review_obj, "predictions", []) or []
     ]
 
-    # Step B: implicit candidates from ProtoBackend
+    # Step B: implicit candidates from protonet
     implicit_predictions = implicit_client.predict(
         review_text=text,
         domain=domain,
@@ -78,5 +115,7 @@ def run_single_review_hybrid_pipeline(
         implicit_predictions=implicit_predictions,
         merged_predictions=merged_predictions,
     )
+
+    _persist_final_predictions(db, review_obj, verified_predictions)
 
     return review_obj, explicit_predictions, implicit_predictions, verified_predictions

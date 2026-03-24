@@ -1,0 +1,9 @@
+spacy>=3.7.0
+datasketch>=1.6.4
+python-dotenv>=1.0.0
+pyyaml>=6.0
+bertopic>=0.16.0
+sentence-transformers>=2.6.0
+tqdm>=4.66.0
+torch>=2.0.0
+transformers>=4.30.0

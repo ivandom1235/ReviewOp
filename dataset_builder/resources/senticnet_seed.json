@@ -1,0 +1,122 @@
+[
+  {
+    "concept": "too expensive",
+    "aspect": "value",
+    "polarity": -0.82,
+    "aliases": ["overpriced", "waste of money", "not worth the cost", "too expensive"]
+  },
+  {
+    "concept": "great value",
+    "aspect": "value",
+    "polarity": 0.78,
+    "aliases": ["worth every penny", "great deal", "excellent for the price"]
+  },
+  {
+    "concept": "late delivery",
+    "aspect": "delivery_logistics",
+    "polarity": -0.76,
+    "aliases": ["late delivery", "showed up much later", "kept waiting", "arrived late"]
+  },
+  {
+    "concept": "smooth delivery",
+    "aspect": "delivery_logistics",
+    "polarity": 0.7,
+    "aliases": ["arrived on time", "showed up on time", "everything arrived smoothly"]
+  },
+  {
+    "concept": "slow service",
+    "aspect": "service_speed",
+    "polarity": -0.78,
+    "aliases": ["waited forever", "took forever", "waited 40 minutes", "slow service"]
+  },
+  {
+    "concept": "dismissive staff",
+    "aspect": "staff_attitude",
+    "polarity": -0.74,
+    "aliases": ["dismissive", "rude staff", "felt ignored", "unhelpful staff"]
+  },
+  {
+    "concept": "attentive staff",
+    "aspect": "staff_attitude",
+    "polarity": 0.73,
+    "aliases": ["attentive", "helpful staff", "friendly staff", "polite staff"]
+  },
+  {
+    "concept": "poor durability",
+    "aspect": "reliability",
+    "polarity": -0.8,
+    "aliases": ["fell apart", "broke after", "stopped working", "acting up again"]
+  },
+  {
+    "concept": "good battery life",
+    "aspect": "battery_life",
+    "polarity": 0.72,
+    "aliases": ["lasts all day", "battery lasted all day"]
+  },
+  {
+    "concept": "battery drains quickly",
+    "aspect": "battery_life",
+    "polarity": -0.8,
+    "aliases": ["dies by noon", "need to charge twice", "battery drains quickly"]
+  },
+  {
+    "concept": "great taste",
+    "aspect": "taste",
+    "polarity": 0.79,
+    "aliases": ["delicious", "flavorful", "mouthwatering", "outstanding taste"]
+  },
+  {
+    "concept": "poor taste",
+    "aspect": "taste",
+    "polarity": -0.77,
+    "aliases": ["bland", "tasteless", "salty", "overcooked"]
+  },
+  {
+    "concept": "fresh ingredients",
+    "aspect": "freshness",
+    "polarity": 0.74,
+    "aliases": ["fresh", "crisp", "fresh ingredients"]
+  },
+  {
+    "concept": "small portion",
+    "aspect": "portion_size",
+    "polarity": -0.65,
+    "aliases": ["tiny portion", "small portion", "not filling"]
+  },
+  {
+    "concept": "large portion",
+    "aspect": "portion_size",
+    "polarity": 0.63,
+    "aliases": ["large portion", "generous portion", "filling"]
+  },
+  {
+    "concept": "easy to use",
+    "aspect": "usability",
+    "polarity": 0.7,
+    "aliases": ["easy to use", "intuitive", "easy to figure out"]
+  },
+  {
+    "concept": "poor usability",
+    "aspect": "usability",
+    "polarity": -0.72,
+    "aliases": ["confusing", "hard to use", "harder than it should be"]
+  },
+  {
+    "concept": "great fit",
+    "aspect": "fit",
+    "polarity": 0.68,
+    "aliases": ["fits perfectly", "fit like a glove", "true to size", "comfortable fit"]
+  },
+  {
+    "concept": "poor fit",
+    "aspect": "fit",
+    "polarity": -0.71,
+    "aliases": ["too tight", "too loose", "awkward fit", "uncomfortable fit"]
+  },
+  {
+    "concept": "poor return process",
+    "aspect": "return_process",
+    "polarity": -0.65,
+    "aliases": ["return was a hassle", "return process was painful", "refund took forever", "refund process", "exchange was difficult"]
+  }
+]
