@@ -31,7 +31,7 @@ class ImplicitAspectDetector:
     def from_artifacts(
         cls,
         prototypes_path: str | Path,
-        model_name: str = "sentence-transformers/all-mpnet-base-v2",
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
         device: str | None = None,
     ) -> "ImplicitAspectDetector":
         encoder = PrototypeEncoder(model_name=model_name, device=device)

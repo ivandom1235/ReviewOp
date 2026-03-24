@@ -37,7 +37,7 @@ def predict_aspects(
     top_k: int = 3,
     threshold: float = 0.6,
     prototypes_path: str | Path | None = None,
-    model_name: str = "sentence-transformers/all-mpnet-base-v2",
+    model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     device: str | None = None,
     return_top1_if_empty: bool = False,
 ) -> List[Dict[str, float | str]]:

@@ -17,7 +17,7 @@ def train_prototypes(
     input_dir: str | Path | None = None,
     data_source: str = "backend_raw",
     batch_size: int = 32,
-    model_name: str = "sentence-transformers/all-mpnet-base-v2",
+    model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     device: Optional[str] = None,
     dedupe_sentences: bool = True,
     shrinkage_alpha: float = 4.0,

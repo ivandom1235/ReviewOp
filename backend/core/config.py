@@ -1,5 +1,7 @@
 # proto/backend/core/config.py
+
 from pydantic_settings import BaseSettings
+
 class Settings(BaseSettings):
     # MySQL
     mysql_host: str = "127.0.0.1"
@@ -15,10 +17,31 @@ class Settings(BaseSettings):
 
     # App
     app_env: str = "dev"
+    # Hybrid pipeline toggles
+    enable_implicit: bool = True
+    enable_llm_verifier: bool = True
+
+    # ProtoBackend integration
+    protobackend_mode: str = "import"   # import | http
+    protobackend_url: str = "http://127.0.0.1:8011"
+    implicit_min_confidence: float = 0.45
+
+    # LLM verifier
+    llm_provider: str = "groq"  # ollama_openai | openai_compatible
+    llm_base_url: str = "http://127.0.0.1:11434/v1"
+    llm_api_key: str = ""
+    llm_model_name: str = "llama3.1:8b"
+    llm_timeout_seconds: int = 60
+
+    # Output control
+    max_implicit_candidates: int = 5
+    max_verified_predictions: int = 8
+        
 
     class Config:
         env_file = ".env"
         extra = "ignore"
+        case_sensitive = False
 
     @property
     def mysql_url(self) -> str:
@@ -33,3 +56,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

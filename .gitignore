@@ -19,3 +19,5 @@ datasetCreator/data/raw/
 datasetCreator/data/interim/
 datasetCreator/data/processed/
 datasetCreator/data/reports/
+*.docx
+*.pdf

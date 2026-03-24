@@ -142,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--data-source", choices=["backend_raw", "input_dir"], default="backend_raw")
         p.add_argument("--input-dir", type=Path, default=None)
         p.add_argument("--output-dir", type=Path, default=Path("ProtoBackend/outputs"))
-        p.add_argument("--model-name", type=str, default="sentence-transformers/all-mpnet-base-v2")
+        p.add_argument("--model-name", type=str, default="sentence-transformers/all-MiniLM-L6-v2")
         p.add_argument("--device", type=str, default=None)
         p.add_argument("--no-progress", action="store_true")
         p.add_argument("--allow-degenerate-val", action="store_true")

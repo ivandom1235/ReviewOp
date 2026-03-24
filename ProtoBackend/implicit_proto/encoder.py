@@ -20,7 +20,7 @@ class PrototypeEncoder:
 
     def __init__(
         self,
-        model_name: str = "sentence-transformers/all-mpnet-base-v2",
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
         device: str | None = None,
         local_files_only: bool = True,
     ) -> None:

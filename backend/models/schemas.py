@@ -1,4 +1,5 @@
-# proto/backend/models/schemas.py
+from __future__ import annotations
+
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 
@@ -15,12 +16,14 @@ class PredictionOut(BaseModel):
     sentiment: str  # positive|neutral|negative
     confidence: float
 
-    # NEW:
     aspect_weight: Optional[float] = None
     aspect_score: Optional[float] = None
 
     evidence_spans: List[EvidenceSpanOut] = Field(default_factory=list)
     rationale: Optional[str] = None
+    source: Optional[str] = None
+    is_implicit: Optional[bool] = None
+    verification_status: Optional[str] = None
 
 
 class InferReviewIn(BaseModel):
