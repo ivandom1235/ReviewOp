@@ -16,7 +16,10 @@ except Exception:  # pragma: no cover
     AutoModel = None
     AutoTokenizer = None
 
-from config import ProtonetConfig
+try:
+    from .config import ProtonetConfig
+except ImportError:
+    from config import ProtonetConfig
 
 
 SPECIAL_TOKENS = ["[E_START]", "[E_END]"]
