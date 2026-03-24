@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 
 from core.db import engine, Base, get_db, SessionLocal
 from core.config import settings
-from models.tables import Review, Prediction, EvidenceSpan
 from models.schemas import InferReviewIn, InferReviewOut, PredictionOut, EvidenceSpanOut
 from services.seq2seq_infer import Seq2SeqEngine
-from services.review_pipeline import refresh_corpus_graph, run_single_review_pipeline
+from services.review_pipeline import refresh_corpus_graph
+from services.hybrid_pipeline import run_single_review_hybrid_pipeline
+from services.implicit_client import ImplicitClient
+from services.llm_verifier import LLMVerifier
 
 from routes.analytics import router as analytics_router
 from routes.graph import router as graph_router
@@ -19,23 +21,26 @@ from routes.infer import router as infer_router
 from routes.user_portal import router as user_portal_router, seed_default_accounts
 
 
-app = FastAPI(title="Proto ReviewOps MVP (Phase 1-2)", version="0.3.0")
+app = FastAPI(title="Proto ReviewOps MVP (Hybrid)", version="0.4.0")
 
 
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
     _apply_schema_patches()
+
     db = SessionLocal()
     try:
         seed_default_accounts(db)
     finally:
         db.close()
+
     app.state.seq2seq_engine = Seq2SeqEngine.load()
+    app.state.implicit_client = ImplicitClient()
+    app.state.llm_verifier = LLMVerifier()
 
 
 def _apply_schema_patches() -> None:
-    """Apply minimal in-place schema patches for legacy local databases."""
     inspector = inspect(engine)
     with engine.begin() as conn:
         if inspector.has_table("products"):
@@ -75,7 +80,10 @@ def health(db: Session = Depends(get_db)):
             "ok": True,
             "env": settings.app_env,
             "db": "connected",
-            "model": settings.seq2seq_model_name,
+            "explicit_model": settings.seq2seq_model_name,
+            "implicit_enabled": settings.enable_implicit,
+            "llm_verifier_enabled": settings.enable_llm_verifier,
+            "llm_model": settings.llm_model_name if settings.enable_llm_verifier else None,
         }
     except Exception as ex:
         return {"ok": False, "error": str(ex)}
@@ -87,10 +95,15 @@ def infer_review(payload: InferReviewIn, db: Session = Depends(get_db)):
     if not text_in:
         raise HTTPException(status_code=400, detail="text is required")
 
-    engine_ = app.state.seq2seq_engine
-    r = run_single_review_pipeline(
+    explicit_engine = app.state.seq2seq_engine
+    implicit_client = app.state.implicit_client
+    llm_verifier = app.state.llm_verifier
+
+    review_obj, explicit_preds, implicit_preds, final_preds = run_single_review_hybrid_pipeline(
         db,
-        engine=engine_,
+        explicit_engine=explicit_engine,
+        implicit_client=implicit_client,
+        llm_verifier=llm_verifier,
         text=text_in,
         domain=payload.domain,
         product_id=payload.product_id,
@@ -98,40 +111,49 @@ def infer_review(payload: InferReviewIn, db: Session = Depends(get_db)):
     db.commit()
 
     try:
-        refresh_corpus_graph(db, domain=r.domain)
+        refresh_corpus_graph(db, domain=review_obj.domain)
     except Exception:
         pass
 
-    db.refresh(r)
+    db.refresh(review_obj)
+
     preds_out: list[PredictionOut] = []
-    for pred in r.predictions:
+    for pred in final_preds:
         spans = [
-            EvidenceSpanOut(start_char=ev.start_char, end_char=ev.end_char, snippet=ev.snippet)
-            for ev in pred.evidence_spans
+            EvidenceSpanOut(
+                start_char=int(ev.get("start_char", 0)),
+                end_char=int(ev.get("end_char", 0)),
+                snippet=str(ev.get("snippet", "")),
+            )
+            for ev in pred.get("evidence_spans", []) or []
         ]
+        source = pred.get("source") or "verified"
         preds_out.append(
             PredictionOut(
-                aspect_raw=pred.aspect_raw,
-                aspect_cluster=pred.aspect_cluster,
-                sentiment=pred.sentiment,
-                confidence=float(pred.confidence),
+                aspect_raw=pred["aspect_raw"],
+                aspect_cluster=pred.get("aspect_cluster") or pred["aspect_raw"],
+                sentiment=pred.get("sentiment") or "neutral",
+                confidence=float(pred.get("confidence", 0.0)),
                 evidence_spans=spans,
-                rationale=pred.rationale,
+                rationale=pred.get("rationale") or "",
+                source=source,
+                is_implicit=(source == "implicit"),
+                verification_status="kept" if source in {"explicit", "implicit", "verified"} else None,
             )
         )
 
     return InferReviewOut(
-    review_id=r.id,
-    domain=r.domain,
-    product_id=r.product_id,
-    predictions=preds_out,
-    overall_sentiment=r.overall_sentiment,
-    overall_score=r.overall_score,
-    overall_confidence=r.overall_confidence,
-)
+        review_id=review_obj.id,
+        domain=review_obj.domain,
+        product_id=review_obj.product_id,
+        predictions=preds_out,
+        overall_sentiment=review_obj.overall_sentiment,
+        overall_score=review_obj.overall_score,
+        overall_confidence=review_obj.overall_confidence,
+    )
 
 
-app.include_router(infer_router)  # contains /infer/csv
+app.include_router(infer_router)   # keep /infer/csv etc.
 app.include_router(jobs_router)
 app.include_router(analytics_router)
 app.include_router(graph_router)

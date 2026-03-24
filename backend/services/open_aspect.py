@@ -1,272 +1,278 @@
-# proto/backend/services/open_aspect.py
 from __future__ import annotations
 
 import re
+from collections import Counter
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import List, Dict, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import spacy
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+from spacy.language import Language
+from spacy.tokens import Doc, Span, Token
 
+ARTICLE_PREFIX_RE = re.compile(r"^(the|a|an|this|that|these|those)\s+", flags=re.I)
+TRAILING_PUNCT_RE = re.compile(r"[^\w\s\-]+$")
+ALPHA_RE = re.compile(r"[a-zA-Z]")
+
+SPECIAL_SHORT_TOKENS = {"5g", "4g", "gps", "ram", "app"}
+NUMBER_WORDS = {"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
+NOUN_POS = {"NOUN", "PROPN"}
+NOUN_HEAD_DEPS = {"nsubj", "dobj", "pobj", "attr", "obj"}
+LEFT_MODIFIER_DEPS = {"compound", "amod", "poss", "nummod"}
 
 STOP = {
-    "the","a","an","and","or","but","is","are","was","were","to","of","in","on","for","with","it","this","that",
-    "during","very","really","just","too","also","so","as","at","from","by","be","been","being","i","we","you",
-    "they","he","she","them","us","my","our","your","their",
-    # wh/relative words that leak
-    "which","what","who","whom","whose","where","when","why","how","there","here"
+    "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "to", "of", "in", "on", "for", "with", "it",
+    "this", "that", "during", "very", "really", "just", "too", "also", "so", "as", "at", "from", "by", "be", "been",
+    "being", "i", "we", "you", "they", "he", "she", "them", "us", "my", "our", "your", "their",
+    "which", "what", "who", "whom", "whose", "where", "when", "why", "how", "there", "here",
 }
 
-# generic single-token nouns that rarely help as aspects
+# Generic single-token nouns that rarely help as aspects.
 GENERIC_SINGLE = {
-    "thing","things","stuff","product","item","device","service","experience","time","people","person",
-    # container nouns (often too generic alone)
-    "phone","laptop","watch","smartwatch","hotel","restaurant","place"
+    "thing", "things", "stuff", "product", "item", "device", "service", "experience", "time", "people", "person",
+    "phone", "laptop", "watch", "smartwatch", "hotel", "restaurant", "place",
 }
 
-# allow price/value terms (kept)
-PRICE_WORDS = {"price","cost","value","pricing","refund","charge","charges","fee","fees"}
+# Allow price/value terms (kept).
+PRICE_WORDS = {"price", "cost", "value", "pricing", "refund", "charge", "charges", "fee", "fees"}
 
-TIME_UNITS = {"day","days","week","weeks","month","months","year","years","hour","hours","minute","minutes"}
-APPROX = {"about","around","almost","roughly","nearly","approximately"}
+TIME_UNITS = {"day", "days", "week", "weeks", "month", "months", "year", "years", "hour", "hours", "minute", "minutes"}
+APPROX = {"about", "around", "almost", "roughly", "nearly", "approximately"}
 
-# context/conditions that are almost never "aspects"
+# Context/conditions that are almost never "aspects".
 CONTEXT_SINGLE = {
-    "daylight","sunlight","indoors","outdoors","outside","inside","weather","room","area","place","location",
-    "morning","evening","night","today","yesterday","tomorrow"
+    "daylight", "sunlight", "indoors", "outdoors", "outside", "inside", "weather", "room", "area", "place", "location",
+    "morning", "evening", "night", "today", "yesterday", "tomorrow",
 }
 
-# context phrases (multi-word) that usually describe conditions, not aspects
-CONTEXT_PHRASES = {
-    "low light","bright light","direct sunlight","high humidity","peak hours"
-}
+# Context phrases (multi-word) that usually describe conditions, not aspects.
+CONTEXT_PHRASES = {"low light", "bright light", "direct sunlight", "high humidity", "peak hours"}
 
-# attribute heads: phrases like "sharp photos" are attributes of camera, not an aspect
+# Attribute heads: phrases like "sharp photos" are attributes of camera, not an aspect.
 ATTRIBUTE_HEADS = {
-    "photo","photos","picture","pictures","image","images","video","videos",
-    "sound","sounds","audio","brightness","color","colors","resolution"
+    "photo", "photos", "picture", "pictures", "image", "images", "video", "videos",
+    "sound", "sounds", "audio", "brightness", "color", "colors", "resolution",
 }
 
-_WORD_RE = re.compile(r"[a-zA-Z0-9']+")
+UNIVERSAL_PHRASES = (
+    "customer support", "support", "service", "delivery", "shipping",
+    "refund", "return", "replacement", "warranty", "wifi", "staff", "room",
+    "cleanliness", "food", "taste", "portion", "ambience", "location",
+)
+
+PENALIZED_PHRASE_WEIGHTS = {
+    "daylight": 0.35,
+    "sunlight": 0.35,
+    "low light": 0.35,
+    "bright light": 0.35,
+    "full day": 0.25,
+}
 
 
-def _clean_text(s: str) -> str:
-    s = (s or "").strip()
-    s = re.sub(r"\s+", " ", s)
-    return s
+@dataclass(frozen=True)
+class OpenAspectMetrics:
+    precision: float
+    recall: float
+    f1: float
+    true_positives: int
+    predicted_count: int
+    gold_count: int
+    predicted_aspects: List[str]
+    gold_aspects: List[str]
 
 
-def _normalize_phrase(p: str) -> str:
-    p = _clean_text(p).lower()
-    p = re.sub(r"[^\w\s\-]+$", "", p)
-    p = p.strip(" -_")
-    p = " ".join(p.split())
-    return p
+def _clean_text(text: str) -> str:
+    text = (text or "").strip()
+    return re.sub(r"\s+", " ", text)
+
+
+def _normalize_phrase(phrase: str) -> str:
+    phrase = _clean_text(phrase).lower()
+    phrase = TRAILING_PUNCT_RE.sub("", phrase)
+    phrase = phrase.strip(" -_")
+    return " ".join(phrase.split())
+
+
+def _contains_mention(text_lower: str, phrase: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(phrase)}\b", text_lower))
 
 
 def _looks_like_time_quantity(phrase: str) -> bool:
-    p = _normalize_phrase(phrase)
-    toks = p.split()
-    if not toks:
+    normalized = _normalize_phrase(phrase)
+    tokens = normalized.split()
+    if not tokens:
         return True
 
-    # time units + mostly qty words -> reject
-    if any(t in TIME_UNITS for t in toks):
+    if any(token in TIME_UNITS for token in tokens):
         qty_like = 0
-        for t in toks:
-            if t.isdigit():
+        for token in tokens:
+            if token.isdigit() or token in APPROX or token in TIME_UNITS or token in NUMBER_WORDS:
                 qty_like += 1
-            elif t in APPROX:
-                qty_like += 1
-            elif t in TIME_UNITS:
-                qty_like += 1
-            elif t in {"one","two","three","four","five","six","seven","eight","nine","ten"}:
-                qty_like += 1
-        if qty_like >= max(2, len(toks) - 1):
+        if qty_like >= max(2, len(tokens) - 1):
             return True
 
-    # patterns like "a full day", "full day"
-    if p in {"full day", "a full day"}:
-        return True
-
-    return False
+    return normalized in {"full day", "a full day"}
 
 
-def _valid_phrase(p: str) -> bool:
-    p = _normalize_phrase(p)
-    if not p:
+def _valid_phrase(phrase: str) -> bool:
+    normalized = _normalize_phrase(phrase)
+    if not normalized:
         return False
 
-    toks = p.split()
-    if not toks:
-        return False
-    if len(toks) > 6:
+    tokens = normalized.split()
+    if not tokens or len(tokens) > 6:
         return False
 
-    if all(t in STOP for t in toks):
+    if all(token in STOP for token in tokens):
         return False
 
-    if _looks_like_time_quantity(p):
+    if _looks_like_time_quantity(normalized):
         return False
 
-    # reject pure context phrases
-    if p in CONTEXT_PHRASES:
+    if normalized in CONTEXT_PHRASES:
         return False
 
-    # single-token rules
-    if len(toks) == 1:
-        t = toks[0]
-        if t in STOP:
+    if len(tokens) == 1:
+        token = tokens[0]
+        if token in STOP or token in CONTEXT_SINGLE:
             return False
-        if t in CONTEXT_SINGLE:
+        if token in GENERIC_SINGLE and token not in PRICE_WORDS:
             return False
-        if t in GENERIC_SINGLE and t not in PRICE_WORDS:
-            return False
-        if len(t) < 4 and t not in {"5g","4g","gps","ram","app"}:
+        if len(token) < 4 and token not in SPECIAL_SHORT_TOKENS:
             return False
 
-    # reject attribute phrases like "sharp photos" (photos/images/etc. as head)
-    if len(toks) == 2 and toks[-1] in ATTRIBUTE_HEADS:
+    if len(tokens) == 2 and tokens[-1] in ATTRIBUTE_HEADS:
         return False
 
     return True
 
 
 @lru_cache(maxsize=1)
-def _nlp():
+def _nlp() -> Language:
     return spacy.load("en_core_web_sm")
 
 
 @lru_cache(maxsize=1)
-def _embedder():
+def _embedder() -> SentenceTransformer:
     return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 
-def _span_text(span) -> str:
-    text = span.text
-    text = re.sub(r"^(the|a|an|this|that|these|those)\s+", "", text.strip(), flags=re.I).strip()
+def _span_text(span: Span) -> str:
+    text = ARTICLE_PREFIX_RE.sub("", span.text.strip()).strip()
     return _normalize_phrase(text)
 
 
-def _expand_noun_phrase_from_head(head: spacy.tokens.Token) -> str:
-    parts = []
-    left_mods = [t for t in head.lefts if t.dep_ in {"compound","amod","poss","nummod"}]
-    left_mods = sorted(left_mods, key=lambda t: t.i)
-    parts.extend([t.text for t in left_mods])
+def _expand_noun_phrase_from_head(head: Token) -> str:
+    left_modifiers = sorted((token for token in head.lefts if token.dep_ in LEFT_MODIFIER_DEPS), key=lambda token: token.i)
+    parts = [token.text for token in left_modifiers]
     parts.append(head.text)
     return _normalize_phrase(" ".join(parts))
 
 
-def _collect_candidates(doc: spacy.tokens.Doc) -> Tuple[List[str], Dict[str, float]]:
-    cands: List[str] = []
+def _apply_canonical_preferences(text_lower: str, add: Callable[[str, float], None]) -> None:
+    if "camera" in text_lower:
+        add("camera", 0.95)
+
+    battery_pattern = r"\bbattery\s+(life|lasts|lasting|drains|charging)\b"
+    if "battery" in text_lower and ("battery life" in text_lower or re.search(battery_pattern, text_lower)):
+        add("battery life", 0.90)
+
+
+def _collect_candidates(doc: Doc) -> Tuple[List[str], Dict[str, float]]:
+    candidates: List[str] = []
     scores: Dict[str, float] = {}
 
-    def add(phrase: str, score: float):
-        phrase = _normalize_phrase(phrase)
-        if not _valid_phrase(phrase):
+    def add(phrase: str, score: float) -> None:
+        normalized = _normalize_phrase(phrase)
+        if not _valid_phrase(normalized):
             return
-        cands.append(phrase)
-        scores[phrase] = max(scores.get(phrase, 0.0), float(score))
+        candidates.append(normalized)
+        scores[normalized] = max(scores.get(normalized, 0.0), float(score))
 
-    tl = doc.text.lower()
+    text_lower = doc.text.lower()
 
-    # 1) noun chunks
     for chunk in doc.noun_chunks:
         add(_span_text(chunk), 0.55)
 
-    # 2) dependency-based: targets of opinions get higher score
-    for tok in doc:
-        if tok.pos_ in {"NOUN", "PROPN"}:
-            base = _expand_noun_phrase_from_head(tok)
+    for token in doc:
+        if token.pos_ in NOUN_POS:
+            base = _expand_noun_phrase_from_head(token)
             add(base, 0.50)
 
-            # noun with adjectival modifier: likely aspect target
-            for child in tok.children:
-                if child.dep_ == "amod" and child.pos_ == "ADJ":
-                    add(base, 0.90)
+            if any(child.dep_ == "amod" and child.pos_ == "ADJ" for child in token.children):
+                add(base, 0.90)
 
-            # noun as subj/obj/attr: likely important
-            if tok.dep_ in {"nsubj","dobj","pobj","attr","obj"}:
+            if token.dep_ in NOUN_HEAD_DEPS:
                 add(base, 0.65)
 
-        # “X quality” patterns
-        if tok.lower_ == "quality" and tok.pos_ == "NOUN":
-            add(_expand_noun_phrase_from_head(tok), 0.95)
+        # "X quality" patterns are usually good aspect candidates.
+        if token.lower_ == "quality" and token.pos_ == "NOUN":
+            add(_expand_noun_phrase_from_head(token), 0.95)
 
-    # 3) universal aspects: support/return/refund/delivery/wifi/etc. (only if mentioned)
-    universal_phrases = [
-        "customer support", "support", "service", "delivery", "shipping",
-        "refund", "return", "replacement", "warranty", "wifi", "staff", "room",
-        "cleanliness", "food", "taste", "portion", "ambience", "location"
-    ]
-    for up in universal_phrases:
-        if re.search(rf"\b{re.escape(up)}\b", tl):
-            add(up, 0.80)
+    for phrase in UNIVERSAL_PHRASES:
+        if _contains_mention(text_lower, phrase):
+            add(phrase, 0.80)
 
-    # 4) keep price/value terms
-    for w in PRICE_WORDS:
-        if re.search(rf"\b{re.escape(w)}\b", tl):
-            add(w, 0.75)
+    for phrase in PRICE_WORDS:
+        if _contains_mention(text_lower, phrase):
+            add(phrase, 0.75)
 
-    # 5) canonicalization preferences (prevents wasting slots)
-    # Prefer camera over conditions/attributes
-    if "camera" in tl:
-        add("camera", 0.95)
-        # drop common camera-condition candidates later via penalty (handled in ranking below)
-    # Prefer battery life if battery appears with lasts/life/charging
-    if "battery" in tl and (("battery life" in tl) or re.search(r"\bbattery\s+(life|lasts|lasting|drains|charging)\b", tl)):
-        add("battery life", 0.90)
+    _apply_canonical_preferences(text_lower, add)
 
-    # final cleanup (only alpha-containing)
-    cands = [p for p in cands if re.search(r"[a-zA-Z]", p)]
-    return cands, scores
+    candidates = [phrase for phrase in candidates if ALPHA_RE.search(phrase)]
+    return candidates, scores
+
+
+def _candidate_penalty(phrase: str) -> float:
+    if phrase in CONTEXT_PHRASES or phrase in CONTEXT_SINGLE:
+        return 0.25
+    return PENALIZED_PHRASE_WEIGHTS.get(phrase, 1.0)
+
+
+def _safe_divide(numerator: int, denominator: int) -> float:
+    if denominator == 0:
+        return 0.0
+    return numerator / denominator
+
+
+def _f1_score(precision: float, recall: float) -> float:
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
 
 
 def _dedup_by_embedding(phrases: List[str], scores: Dict[str, float], sim_thresh: float, max_keep: int) -> List[str]:
     if not phrases:
         return []
 
-    from collections import Counter
-    cnt = Counter(phrases)
-    uniq = list(cnt.keys())
+    counts = Counter(phrases)
+    unique_phrases = list(counts.keys())
 
-    def penalty(p: str) -> float:
-        # penalize context/condition phrases so they don't consume top-k
-        if p in CONTEXT_PHRASES:
-            return 0.25
-        if p in CONTEXT_SINGLE:
-            return 0.25
-        if p in {"daylight","sunlight","low light","bright light"}:
-            return 0.35
-        if p in {"full day"}:
-            return 0.25
-        return 1.0
+    def rank_key(phrase: str) -> Tuple[float, int, int, int, str]:
+        tokens = phrase.split()
+        base_score = scores.get(phrase, 0.0) * _candidate_penalty(phrase)
+        return (-base_score, -counts[phrase], -min(len(tokens), 3), -len(phrase), phrase)
 
-    def rank_key(x: str):
-        toks = x.split()
-        base = scores.get(x, 0.0) * penalty(x)
-        return (-base, -cnt[x], -min(len(toks), 3), -len(x), x)
-
-    ranked = sorted(uniq, key=rank_key)
-
-    emb = _embedder().encode(ranked, normalize_embeddings=True, show_progress_bar=False)
+    ranked = sorted(unique_phrases, key=rank_key)
+    embeddings = _embedder().encode(ranked, normalize_embeddings=True, show_progress_bar=False)
 
     kept: List[str] = []
-    kept_idx: List[int] = []
+    kept_indices: List[int] = []
 
-    for i, p in enumerate(ranked):
+    for index, phrase in enumerate(ranked):
         if not kept:
-            kept.append(p)
-            kept_idx.append(i)
+            kept.append(phrase)
+            kept_indices.append(index)
             if len(kept) >= max_keep:
                 break
             continue
 
-        sims = cosine_similarity([emb[i]], emb[kept_idx])[0]
-        if float(sims.max()) < sim_thresh:
-            kept.append(p)
-            kept_idx.append(i)
+        similarities = cosine_similarity([embeddings[index]], embeddings[kept_indices])[0]
+        if float(similarities.max()) < sim_thresh:
+            kept.append(phrase)
+            kept_indices.append(index)
             if len(kept) >= max_keep:
                 break
 
@@ -279,28 +285,60 @@ def extract_open_aspects(review_text: str, max_aspects: int = 8) -> List[str]:
         return []
 
     doc = _nlp()(text)
-    cands, scores = _collect_candidates(doc)
+    candidates, scores = _collect_candidates(doc)
 
-    # dedup exact
-    cands = list(dict.fromkeys([_normalize_phrase(p) for p in cands if p and _valid_phrase(p)]))
-
-    # embed dedup
+    deduped_candidates = list(
+        dict.fromkeys(_normalize_phrase(phrase) for phrase in candidates if phrase and _valid_phrase(phrase))
+    )
     deduped = _dedup_by_embedding(
-        cands,
+        deduped_candidates,
         scores=scores,
         sim_thresh=0.80,
         max_keep=max_aspects + 6,
     )
 
-    # substring cleanup (keep longer)
     final: List[str] = []
-    for p in sorted(deduped, key=lambda s: (-len(s), s)):
-        if any(p != q and p in q for q in final):
+    for phrase in sorted(deduped, key=lambda value: (-len(value), value)):
+        if any(phrase != existing and phrase in existing for existing in final):
             continue
-        final.append(p)
+        final.append(phrase)
 
-    # order by appearance
-    tl = text.lower()
-    final.sort(key=lambda s: tl.find(s) if tl.find(s) != -1 else 10**9)
+    text_lower = text.lower()
 
+    def appearance_index(phrase: str) -> int:
+        index = text_lower.find(phrase)
+        return index if index != -1 else 10**9
+
+    final.sort(key=appearance_index)
     return final[:max_aspects]
+
+
+def evaluate_open_aspects(
+    review_text: str,
+    gold_aspects: List[str],
+    max_aspects: int = 8,
+) -> OpenAspectMetrics:
+    predicted_aspects = extract_open_aspects(review_text, max_aspects=max_aspects)
+
+    predicted_set = set(predicted_aspects)
+    gold_set = {
+        normalized
+        for aspect in gold_aspects
+        if (normalized := _normalize_phrase(aspect))
+    }
+
+    true_positives = len(predicted_set & gold_set)
+    precision = _safe_divide(true_positives, len(predicted_set))
+    recall = _safe_divide(true_positives, len(gold_set))
+    f1 = _f1_score(precision, recall)
+
+    return OpenAspectMetrics(
+        precision=precision,
+        recall=recall,
+        f1=f1,
+        true_positives=true_positives,
+        predicted_count=len(predicted_set),
+        gold_count=len(gold_set),
+        predicted_aspects=predicted_aspects,
+        gold_aspects=sorted(gold_set),
+    )
