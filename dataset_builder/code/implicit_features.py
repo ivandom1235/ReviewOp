@@ -4,7 +4,7 @@ from collections import Counter
 import math
 import re
 from functools import lru_cache
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from mappings import (
     CONTRASTIVE_CONJUNCTIONS,
@@ -20,6 +20,7 @@ from utils import normalize_whitespace, split_sentences, token_count, tokenize
 NEGATION_WORDS = {"not", "never", "no", "without", "hardly", "barely", "scarcely"}
 INTENSIFIERS = {"very", "so", "too", "extremely", "really", "quite", "highly", "super", "incredibly", "especially"}
 DIMINISHERS = {"barely", "hardly", "slightly", "somewhat", "little", "mildly"}
+CLAUSE_BREAKERS = {"but", "however", "although", "though", "while", "yet", "still"}
 POSITIVE_SENTIMENT_WORDS = set(POSITIVE_WORDS) | {
     "excellent", "great", "amazing", "wonderful", "love", "loved", "fantastic", "perfect", "solid", "smooth", "helpful",
     "stunning", "impressive", "quality", "reliable", "superb", "brilliant", "delighted", "satisfied", "pleased", "outstanding",
@@ -89,20 +90,12 @@ def _aspect_rejection_reason(aspect: str, *, seed_vocab: set[str] | None = None)
     if all(token in TEXT_STOPWORDS for token in tokens):
         return "all_stopwords"
     if len(tokens) == 1:
-        # Strict for one-word aspects: must NOT be polar words and should ideally 
-        # relate to the domain (if seed_vocab is provided)
         if aspect in POSITIVE_WORDS or aspect in NEGATIVE_WORDS:
             return "polar_word"
-        # If we have a seed vocab, one-word candidates not in it are suspicious 
-        # unless they are very frequent (handled by discovery ranking later)
         return None
     if len(tokens) > 3:
         return "too_long"
     return None
-
-
-def _aspect_score_token_set(text: str) -> set[str]:
-    return set(tokenize(text))
 
 
 def _lemmatize_token(token: str) -> str:
@@ -226,8 +219,6 @@ def _candidate_priority(phrase: str, *, doc_count: int, total_docs: int, seed_vo
     return exact_bonus + length_bonus + support_bonus + seed_bonus + sentiment_context_boost
 
 
-
-
 def learn_aspect_seed_vocab(
     train_rows: List[Dict[str, Any]],
     *,
@@ -237,7 +228,6 @@ def learn_aspect_seed_vocab(
 ) -> Dict[str, Any]:
     learned: List[str] = discover_aspects(train_rows, text_column=text_column, vocab_size=vocab_size, seed_vocab=seed_vocab)
     support = Counter()
-    purity = Counter()
     total_docs = 0
     for row in train_rows:
         text = normalize_whitespace(row.get(text_column, ""))
@@ -248,7 +238,6 @@ def learn_aspect_seed_vocab(
         for aspect in learned:
             if aspect in tokens:
                 support[aspect] += 1
-                purity[aspect] += 1
     filtered = [aspect for aspect in learned if support[aspect] >= 2]
     if not filtered:
         filtered = learned[: max(1, min(vocab_size, len(learned)))]
@@ -289,36 +278,11 @@ def discover_aspects(
             idf = math.log((1 + total_docs) / (1 + doc_count[phrase])) + 1.0
             term_score[phrase] += tf * idf
 
-    # Calculate semantic proximity boost
-    sentiment_context: Counter[str] = Counter()
-    for row in train_rows:
-        text = normalize_whitespace(row.get(text_column, ""))
-        if not text: continue
-        tokens = tokenize(text)
-        phrases = _extract_candidate_phrases(text, seed_vocab=seed_vocab)
-        for phrase in phrases:
-            phrase_tokens = set(phrase.lower().split())
-            for i, token in enumerate(tokens):
-                if token.lower() in phrase_tokens:
-                    window = tokens[max(0, i-3):min(len(tokens), i+4)]
-                    if any(w.lower() in POSITIVE_SENTIMENT_WORDS or w.lower() in NEGATIVE_SENTIMENT_WORDS for w in window):
-                        sentiment_context[phrase] += 1
-                        break
-
     boosted = Counter()
     for phrase, score in term_score.items():
-        context_ratio = sentiment_context[phrase] / max(1, doc_count[phrase])
-        sentiment_boost = min(2.5, context_ratio * 4.0)
-        
-        priority = _candidate_priority(
-            phrase, 
-            doc_count=doc_count.get(phrase, 0), 
-            total_docs=total_docs, 
-            seed_vocab=seed_vocab,
-            sentiment_context_boost=sentiment_boost
-        )
+        priority = _candidate_priority(phrase, doc_count=doc_count.get(phrase, 0), total_docs=total_docs, seed_vocab=seed_vocab)
         boosted[phrase] = score + priority
-    
+
     for aspect in seed_vocab:
         boosted[aspect] += 4
     ranked = [
@@ -346,55 +310,54 @@ def discover_aspects(
 
 
 def _split_contrastive(sentence: str) -> List[str]:
-    """Split a sentence into clauses based on contrastive conjunctions or strong punctuation."""
-    lowered = sentence.lower()
-    
-    # Priority conjunctions for splitting
-    delimiters = [rf"\s+{re.escape(conj)}\s+" for conj in CONTRASTIVE_CONJUNCTIONS]
-    # Add punctuation and other clausal markers
-    delimiters.append(r"\s*;\s*")
-    delimiters.append(r",\s+but\s+")
-    delimiters.append(r",\s+although\s+")
-    delimiters.append(r",\s+while\s+")
-    
-    combined_pattern = "|".join(delimiters)
-    parts = [part.strip(" ,;:-") for part in re.split(combined_pattern, sentence, flags=re.IGNORECASE)]
-    
-    # Filter out empty or too-short fragments (often noise)
-    valid_parts = [part for part in parts if token_count(part) >= 3]
-    return valid_parts if valid_parts else [sentence]
+    parts = [sentence]
+    for conj in CONTRASTIVE_CONJUNCTIONS:
+        next_parts: List[str] = []
+        for part in parts:
+            if f" {conj} " in part.lower():
+                next_parts.extend([p.strip(" ,;:-") for p in re.split(rf"\s+{re.escape(conj)}\s+", part, flags=re.IGNORECASE)])
+            else:
+                next_parts.append(part)
+        parts = next_parts
+    cleaned = [part.strip(" ,;:-") for part in parts if token_count(part) >= 3]
+    return cleaned or [sentence]
 
 
-def _aspect_lexical_score(text: str, aspect: str, *, seed_vocab: set[str], symptom_map: dict[str, str]) -> float:
+def _symptom_map_hits(clause_tokens: List[str], symptom_map: dict[str, str], aspect: str) -> float:
+    hits = 0.0
+    for symptom, target in symptom_map.items():
+        if target == aspect and symptom in clause_tokens:
+            hits += 1.0
+    return hits
+
+
+def _explicit_aspect_match(clause_tokens: List[str], seed_vocab: set[str]) -> str | None:
+    for aspect in seed_vocab:
+        if aspect in clause_tokens:
+            return aspect
+    return None
+
+
+def _aspect_lexical_score(
+    text: str,
+    aspect: str,
+    *,
+    seed_vocab: set[str],
+    symptom_map: dict[str, str],
+) -> float:
     if not _is_valid_aspect(aspect, seed_vocab=seed_vocab):
         return 0.0
     tokens = tokenize(text.lower())
-    aspect_tokens = set(aspect.lower().split())
+    aspect_tokens = aspect.split()
+    if aspect in tokens:
+        return -5.0
     score = 0.0
-    
-    # Hard Separation: If the aspect word itself is present, it's EXPLICIT, not implicit.
-    # We penalize this heavily to ensure the implicit model learns from indirect signals.
-    is_present = aspect.lower() in tokens
-    if is_present:
-        return -10.0 # Strict penalty for explicit mentions
-        
-    # Symptom Mapping: Reward indirect signals
-    for symptom, target_aspect in symptom_map.items():
-        if target_aspect == aspect and symptom in tokens:
-            score += 5.0
-            
-    # Overlap with aspect components (e.g. "battery life" -> "life")
-    # also penalized if it's the core aspect word
-    token_set = set(tokens)
-    overlap = len(token_set.intersection(aspect_tokens))
-    if overlap > 0:
-        return -5.0 # Partial overlap also suggests explicit mention
-        
-    # Seed bonus if we have symptom evidence
-    if score > 0 and seed_vocab and aspect in seed_vocab:
-        score += 2.0
-        
-    return max(0.0, score)
+    score += _symptom_map_hits(tokens, symptom_map, aspect) * 2.5
+    if len(aspect_tokens) == 1 and aspect in seed_vocab:
+        score += 0.75
+    if len(aspect_tokens) > 1:
+        score += 0.35 * len(set(tokens).intersection(aspect_tokens))
+    return score
 
 
 def _aspect_window_support(clause_tokens: List[str], aspect: str) -> float:
@@ -411,7 +374,7 @@ def _aspect_window_support(clause_tokens: List[str], aspect: str) -> float:
     return 0.8 + 0.4 * hits
 
 
-def _sentiment_evidence(clause_tokens: List[str]) -> tuple[float, int, float]:
+def _sentiment_evidence(clause_tokens: List[str]) -> tuple[float, int, int]:
     pos, neg, negation_hits, sentiment_hits = _sentiment_counts(clause_tokens)
     evidence = abs(pos - neg)
     return evidence, negation_hits, sentiment_hits
@@ -427,45 +390,12 @@ def _softmax(scores: List[float]) -> List[float]:
 
 
 def _sentence_confidence(text: str, top_prob: float, margin: float, evidence_count: int, sentiment_evidence: float) -> float:
-    length_boost = min(0.08, token_count(text) * 0.003)
-    evidence_boost = min(0.15, evidence_count * 0.04)
-    margin_boost = min(0.15, margin * 0.6)
-    sentiment_boost = min(0.10, sentiment_evidence * 0.05)
-    
-    # Base confidence is now slightly more conservative
-    confidence = 0.35 + 0.30 * top_prob + length_boost + evidence_boost + margin_boost + sentiment_boost
+    length_boost = min(0.05, token_count(text) * 0.002)
+    evidence_boost = min(0.12, evidence_count * 0.03)
+    margin_boost = min(0.10, margin * 0.45)
+    sentiment_boost = min(0.08, sentiment_evidence * 0.04)
+    confidence = 0.30 + 0.34 * top_prob + length_boost + evidence_boost + margin_boost + sentiment_boost
     return round(min(0.99, confidence), 4)
-
-
-def _contains_any_aspect_seed(tokens: List[str], seed_vocab: set[str]) -> bool:
-    """True if ANY of the canonical aspect seeds appear in the token list."""
-    return any(seed.lower() in tokens for seed in seed_vocab)
-
-
-def is_explicit_clause(clause: str, seed_vocab: set[str]) -> bool:
-    """
-    Returns True if the clause contains a direct mention of any aspect in the seed_vocab.
-    This is used for the clausal routing pipeline.
-    """
-    tokens = [t.split("'")[0] for t in tokenize(clause.lower())]
-    return _contains_any_aspect_seed(tokens, seed_vocab)
-
-
-def extract_explicit_aspect(clause: str, seed_vocab: set[str]) -> tuple[str | None, str]:
-    """
-    Extracts explicit aspect and sentiment from a clause.
-    Used for the 'Explicit Branch' of the clausal pipeline.
-    """
-    tokens = [t.split("'")[0] for t in tokenize(clause.lower())]
-    sentiment = infer_sentiment(clause)
-    
-    # Priority matching: find the first seed that appears in the tokens
-    for seed in seed_vocab:
-        if seed.lower() in tokens:
-            return seed, sentiment
-            
-    return None, sentiment
-
 
 
 def _score_clause(
@@ -481,24 +411,28 @@ def _score_clause(
         return None, infer_sentiment(clause), 0.0, False
 
     clause_tokens = tokenize(clause)
-    
-    # Note: Global Explicit Filter moved to build_implicit_row for routing.
-    # We no longer reject here, as routing ensures this function only sees implicit candidates.
+    explicit_aspect = _explicit_aspect_match(clause_tokens, seed_vocab)
+    if explicit_aspect is not None:
+        return None, infer_sentiment(clause), 0.0, False
 
     sentiment_evidence, negation_hits, sentiment_hits = _sentiment_evidence(clause_tokens)
-    
-    # Research-Grade Improvement: allow clauses with SYMPTOM hits to pass even without traditional sentiment hits.
-    # This captures implicit signals like "pointer not moving" which are inherently negative but lack 'bad' keywords.
-    has_symptom = any(s.lower() in clause_tokens for s in symptom_map)
-    
-    if (sentiment_hits == 0 or sentiment_evidence <= 0.0) and not has_symptom:
+    has_symptom = False
+    for symptom in symptom_map:
+        if symptom in clause_tokens:
+            has_symptom = True
+            break
+
+    if sentiment_hits == 0 and not has_symptom:
         return None, infer_sentiment(clause), 0.0, False
 
     scores = []
     for aspect in candidate_aspects:
         lexical = _aspect_lexical_score(clause, aspect, seed_vocab=seed_vocab, symptom_map=symptom_map)
         window_support = _aspect_window_support(clause_tokens, aspect)
-        scores.append(lexical + window_support)
+        bonus = 0.0
+        if aspect in seed_vocab:
+            bonus += 0.2
+        scores.append(lexical + window_support + bonus)
     probs = _softmax(scores)
     ranked = sorted(zip(candidate_aspects, scores, probs), key=lambda item: item[1], reverse=True)
     if not ranked:
@@ -507,43 +441,33 @@ def _score_clause(
     top_aspect, top_score, top_prob = ranked[0]
     second_prob = ranked[1][2] if len(ranked) > 1 else 0.0
     sentiment = infer_sentiment(clause)
-    evidence_count = max(0, len([x for x in scores if x > 0]))
-    
+    evidence_count = len([x for x in scores if x > 0])
     confidence = _sentence_confidence(clause, top_prob, top_prob - second_prob, evidence_count, sentiment_evidence)
-    
-    if sentiment_evidence < 0.8:
+    if sentiment_evidence < 0.4 and not has_symptom:
         confidence = round(max(0.0, confidence - 0.20), 4)
-    if top_score < 1.5:
+    if top_score < 1.0:
         confidence = round(max(0.0, confidence - 0.15), 4)
     if negation_hits:
         confidence = round(min(0.99, confidence + 0.05), 4)
-    if len(clause.split()) <= 4 and top_score < 2.0:
-        confidence = round(max(0.0, confidence - 0.15), 4)
+    if len(clause_tokens) <= 4 and not has_symptom:
+        confidence = round(max(0.0, confidence - 0.12), 4)
 
-    # Plausible requires actual evidence (score > 0)
-    # Research-Grade: has_symptom allows plausibility even if sentiment_evidence is low
-    plausible = (top_score >= 1.0 or top_prob >= 0.65) and (sentiment_evidence >= 0.5 or has_symptom) and top_score > 0
+    plausible = (top_score >= 1.0 or top_prob >= 0.55) and (sentiment_evidence >= 0.35 or has_symptom)
+    if has_symptom:
+        plausible = plausible or top_score >= 0.8
 
-    # Journal Worthiness: Escalate to LLM if rule-based approach is unsure or failed, 
-    # but we still have clear sentiment evidence.
-    should_call_llm = llm_client is not None and sentiment_evidence >= 0.5 and (not plausible or confidence < confidence_threshold)
-    
+    should_call_llm = llm_client is not None and plausible and confidence < confidence_threshold
     if should_call_llm:
         result = llm_client.infer(sentence=clause, candidate_aspects=candidate_aspects)
         if result is not None and result.aspect:
-            return [(result.aspect, max(confidence, float(result.confidence)))], result.sentiment, max(confidence, float(result.confidence)), bool(result.is_novel_aspect)
+            llm_conf = max(confidence, float(result.confidence))
+            return result.aspect, result.sentiment, llm_conf, bool(result.is_novel_aspect)
 
-    candidates = [(top_aspect, confidence)]
-    if len(ranked) > 1 and ranked[1][1] > 0:
-        # Add second candidate for fuzzy research
-        candidates.append((ranked[1][0], round(confidence * (probs[1]/max(1e-9, probs[0])), 4)))
-        
     if confidence >= confidence_threshold and plausible:
-        return candidates[:1], sentiment, confidence, False
-
+        return top_aspect, sentiment, confidence, False
     if plausible:
-        return candidates, sentiment, confidence, False
-    return [], sentiment, confidence, False
+        return top_aspect, sentiment, confidence, False
+    return None, sentiment, confidence, False
 
 
 def collect_implicit_diagnostics(
@@ -554,16 +478,18 @@ def collect_implicit_diagnostics(
     seed_vocab: set[str],
     confidence_threshold: float,
     learned_seed_vocab: List[str] | None = None,
-    symptom_map: dict[str, str] = None,
+    symptom_map: dict[str, str] | None = None,
 ) -> Dict[str, Any]:
     symptom_map = symptom_map or {}
     rejection_reasons: Counter[str] = Counter()
     rejected_examples: List[Dict[str, str]] = []
     aspect_counts: Counter[str] = Counter()
+    confusion_counts: Counter[str] = Counter()
     fallback_count = 0
     scored_clauses = 0
     negation_hits = 0
     sentiment_hit_count = 0
+    explicit_leakage_count = 0
     accepted_examples: List[Dict[str, str]] = []
 
     for row in train_rows[:1000]:
@@ -574,9 +500,10 @@ def collect_implicit_diagnostics(
             for clause in _split_contrastive(sentence):
                 scored_clauses += 1
                 clause_candidate_aspects = candidate_aspects or []
-                if not clause_candidate_aspects:
-                    continue
-                candidates, _, confidence, _ = _score_clause(
+                clause_tokens = tokenize(clause)
+                if _explicit_aspect_match(clause_tokens, seed_vocab):
+                    explicit_leakage_count += 1
+                aspect, _, confidence, _ = _score_clause(
                     clause,
                     clause_candidate_aspects,
                     seed_vocab=seed_vocab,
@@ -584,18 +511,19 @@ def collect_implicit_diagnostics(
                     confidence_threshold=confidence_threshold,
                     symptom_map=symptom_map,
                 )
-                clause_tokens = tokenize(clause)
                 _, clause_negations, clause_sentiment_hits = _sentiment_evidence(clause_tokens)
                 negation_hits += clause_negations
                 sentiment_hit_count += clause_sentiment_hits
-                if candidates:
-                    aspect = candidates[0][0]
-                    confidence = candidates[0][1]
+                if aspect:
                     aspect_counts[aspect] += 1
                     if len(accepted_examples) < 20:
                         accepted_examples.append({"clause": clause, "aspect": aspect, "confidence": f"{confidence:.3f}"})
                 else:
                     fallback_count += 1
+                    if len(clause_tokens) <= 4:
+                        confusion_counts["short_clause_rejected"] += 1
+                    if clause_sentiment_hits == 0 and _explicit_aspect_match(clause_tokens, seed_vocab) is None:
+                        confusion_counts["low_signal_rejected"] += 1
                     if len(rejected_examples) < 20:
                         rejected_examples.append({"clause": clause, "reason": "no_plausible_aspect"})
 
@@ -615,6 +543,10 @@ def collect_implicit_diagnostics(
             "candidate_aspect_count": len(candidate_aspects),
         },
         "candidate_rejection_reasons": rejection_reasons.most_common(),
+        "confusion_patterns": confusion_counts.most_common(),
+        "explicit_leakage_count": explicit_leakage_count,
+        "accepted_clause_count": sum(aspect_counts.values()),
+        "rejected_clause_count": fallback_count,
         "false_positive_samples": accepted_examples,
         "false_negative_samples": rejected_examples,
         "accepted_examples": accepted_examples,
@@ -650,19 +582,17 @@ def build_implicit_row(
 
     for sentence in (sentences or [text]):
         for clause in _split_contrastive(sentence):
-            # 1. Routing: IF explicit -> explicit branch
-            if is_explicit_clause(clause, seed_vocab):
-                aspect, sentiment = extract_explicit_aspect(clause, seed_vocab)
-                if aspect:
-                    if aspect not in aspects:
-                        aspects.append(aspect)
-                        aspect_sentiments[aspect] = sentiment
-                        aspect_confidence[aspect] = 0.99  # Explicit is high confidence by definition
-                    confidences.append(0.99)
+            clause_tokens = tokenize(clause)
+            explicit_aspect = _explicit_aspect_match(clause_tokens, seed_vocab)
+            if explicit_aspect:
+                if explicit_aspect not in aspects:
+                    aspects.append(explicit_aspect)
+                    aspect_sentiments[explicit_aspect] = infer_sentiment(clause)
+                    aspect_confidence[explicit_aspect] = 0.99
+                confidences.append(0.99)
                 continue
 
-            # 2. Routing: ELSE -> implicit branch
-            candidates, sentiment, confidence, is_novel = _score_clause(
+            aspect, sentiment, confidence, is_novel = _score_clause(
                 clause,
                 candidate_aspects,
                 seed_vocab=seed_vocab,
@@ -670,27 +600,21 @@ def build_implicit_row(
                 confidence_threshold=confidence_threshold,
                 symptom_map=symptom_map,
             )
-            if not candidates:
+            if not aspect:
                 tier = 3
                 continue
-            
-            # Confidence-based tiering (primary result)
-            primary_aspect, primary_conf = candidates[0]
-            
-            if primary_conf < confidence_threshold:
+
+            if confidence < confidence_threshold:
                 tier = 3
-            elif primary_conf < 0.85 and tier < 3:
+            elif confidence < 0.85 and tier < 3:
                 tier = 2
 
-            for aspect, conf in candidates:
-                if aspect not in aspects:
-                    aspects.append(aspect)
-                    aspect_sentiments[aspect] = sentiment
-                    aspect_confidence[aspect] = conf
-                
-            confidences.append(primary_conf)
-            if is_novel and primary_aspect not in candidate_aspects:
-                novel_aspects.append(primary_aspect)
+            if aspect not in aspects:
+                aspects.append(aspect)
+            aspect_sentiments[aspect] = sentiment
+            aspect_confidence[aspect] = confidence
+            confidences.append(confidence)
+            if is_novel and aspect not in candidate_aspects:
                 novel_aspects.append(aspect)
 
     if not aspects:
