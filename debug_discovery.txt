@@ -1,0 +1,38 @@
+
+--- New Run: 10 rows ---
+texts[0]: 'The shampoo smells great but the bottle leaks'
+phrases_per_doc[0] (primary): []
+phrases_per_doc[0] (secondary): ['shampoo smells', 'bottle leaks']
+Candidate bike (norm=bike): is_valid=True, support=0.0
+Candidate dress (norm=dress): is_valid=True, support=0.0
+
+--- New Run: 10 rows ---
+texts[0]: 'The shampoo smells great but the bottle leaks'
+phrases_per_doc[0] (primary): []
+phrases_per_doc[0] (secondary): ['shampoo smells', 'bottle leaks']
+Candidate bike (norm=bike): is_valid=True, support=0.0
+Candidate dress (norm=dress): is_valid=True, support=0.0
+
+--- New Run: 10 rows ---
+texts[0]: 'The shampoo smells great but the bottle leaks'
+phrases_per_doc[0] (primary): []
+phrases_per_doc[0] (secondary): ['shampoo smells', 'bottle leaks']
+
+--- New Run: 10 rows ---
+texts[0]: 'The shampoo smells great but the bottle leaks'
+phrases_per_doc[0] (primary): []
+phrases_per_doc[0] (secondary): ['shampoo smells', 'bottle leaks']
+
+--- New Run: 10 rows ---
+texts[0]: 'The shampoo smells great but the bottle leaks'
+phrases_per_doc[0] (primary): ['shampoo', 'smells', 'bottle', 'leaks']
+Candidate bike (norm=bike): is_valid=True, support=1.0
+Candidate dress (norm=dress): is_valid=True, support=1.0
+Candidate engine (norm=engine): is_valid=True, support=1.0
+
+--- New Run: 10 rows ---
+texts[0]: 'The shampoo smells great but the bottle leaks'
+phrases_per_doc[0] (primary): ['shampoo', 'smells', 'bottle', 'leaks']
+Candidate bike (norm=bike): is_valid=True, support=1.0
+Candidate dress (norm=dress): is_valid=True, support=1.0
+Candidate engine (norm=engine): is_valid=True, support=1.0

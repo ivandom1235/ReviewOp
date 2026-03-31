@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import re
 from typing import Dict, List
 
 import pandas as pd
 
-from mappings import TARGET_COLUMN_HINTS
 from utils import token_count
+
+
+DATE_HINT_RE = re.compile(r"^\s*(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}-\d{2}-\d{2}T.+)\s*$")
 
 
 @dataclass
@@ -19,15 +22,11 @@ class SchemaProfile:
     primary_text_column: str | None
     target_column: str | None
     column_types: Dict[str, str]
+    schema_fingerprint: str
 
 
 def _series(frame: pd.DataFrame, column: str) -> pd.Series:
     return frame[column].dropna()
-
-
-DATE_HINT_RE = re.compile(
-    r"^\s*(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}-\d{2}-\d{2}T.+)\s*$"
-)
 
 
 def detect_schema(frame: pd.DataFrame, *, text_column_override: str | None = None) -> SchemaProfile:
@@ -36,41 +35,40 @@ def detect_schema(frame: pd.DataFrame, *, text_column_override: str | None = Non
     datetime_columns: List[str] = []
     text_columns: List[str] = []
     column_types: Dict[str, str] = {}
-    text_scores: Dict[str, float] = {}
     target_column: str | None = None
+    text_scores: Dict[str, float] = {}
 
     for column in frame.columns:
         if column == "source_file":
             continue
         series = _series(frame, column)
         if series.empty:
-            column_types[column] = "categorical"
             categorical_columns.append(column)
+            column_types[column] = "categorical"
             continue
-
         values = [str(value).strip() for value in series if str(value).strip()]
         numeric_ratio = pd.to_numeric(series, errors="coerce").notna().mean()
-        datetime_candidates = [value for value in values if DATE_HINT_RE.match(value)]
-        datetime_ratio = len(datetime_candidates) / max(1, len(values))
+        datetime_ratio = sum(bool(DATE_HINT_RE.match(value)) for value in values) / max(1, len(values))
         avg_tokens = sum(token_count(value) for value in values) / max(1, len(values))
         unique_ratio = len(set(values)) / max(1, len(values))
         cardinality = len(set(values))
 
-        if pd.api.types.is_numeric_dtype(frame[column]) or numeric_ratio >= 0.90:
+        if pd.api.types.is_numeric_dtype(frame[column]) or numeric_ratio >= 0.9:
             numeric_columns.append(column)
             column_types[column] = "numeric"
-        elif pd.api.types.is_datetime64_any_dtype(frame[column]) or datetime_ratio >= 0.90:
+        elif pd.api.types.is_datetime64_any_dtype(frame[column]) or datetime_ratio >= 0.9:
             datetime_columns.append(column)
             column_types[column] = "datetime"
-        elif avg_tokens > 8 and unique_ratio > 0.50:
+        elif avg_tokens >= 3 and unique_ratio > 0.35:
             text_columns.append(column)
-            column_types[column] = "text"
             text_scores[column] = avg_tokens
+            column_types[column] = "text"
         else:
             categorical_columns.append(column)
             column_types[column] = "categorical"
 
-        if target_column is None and cardinality < 20 and any(hint in str(column).lower() for hint in TARGET_COLUMN_HINTS):
+        lowered = column.lower()
+        if target_column is None and cardinality < 20 and any(key in lowered for key in ("label", "class", "category", "sentiment", "aspect")):
             target_column = column
 
     primary_text_column = None
@@ -79,6 +77,8 @@ def detect_schema(frame: pd.DataFrame, *, text_column_override: str | None = Non
     elif text_scores:
         primary_text_column = max(text_scores, key=text_scores.get)
 
+    fingerprint_source = "|".join(f"{col}:{column_types.get(col, 'unknown')}" for col in sorted(frame.columns))
+    schema_fingerprint = hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()[:16]
     return SchemaProfile(
         numeric_columns=numeric_columns,
         categorical_columns=categorical_columns,
@@ -87,4 +87,5 @@ def detect_schema(frame: pd.DataFrame, *, text_column_override: str | None = Non
         primary_text_column=primary_text_column,
         target_column=target_column,
         column_types=column_types,
+        schema_fingerprint=schema_fingerprint,
     )

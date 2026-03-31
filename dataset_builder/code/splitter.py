@@ -10,9 +10,22 @@ def _safe_stratify(values: Sequence[str] | None) -> List[str] | None:
     if not values:
         return None
     series = pd.Series(list(values)).fillna("unknown").astype(str)
-    if series.value_counts().empty or int(series.value_counts().min()) < 2:
+    counts = series.value_counts()
+    if counts.empty or int(counts.min()) < 2:
         return None
     return series.tolist()
+
+
+def choose_stratify_values(rows: Iterable[dict], *, preferred_key: str | None = None, fallback_key: str | None = None) -> tuple[str | None, List[str] | None]:
+    materialized = list(rows)
+    for key in (preferred_key, fallback_key):
+        if not key:
+            continue
+        values = [str(row.get(key, "unknown")) for row in materialized]
+        safe = _safe_stratify(values)
+        if safe is not None:
+            return key, safe
+    return None, None
 
 
 def preliminary_split(
@@ -45,9 +58,7 @@ def split_holdout(
         return [], []
     if len(holdout_rows) == 1:
         row = holdout_rows[0]
-        if val_ratio_within_holdout >= 0.5:
-            return [row], []
-        return [], [row]
+        return ([row], []) if val_ratio_within_holdout >= 0.5 else ([], [row])
     indices = list(range(len(holdout_rows)))
     val_idx, test_idx = train_test_split(
         indices,
@@ -60,15 +71,3 @@ def split_holdout(
     val_rows = [row for idx, row in enumerate(holdout_rows) if idx in val_set]
     test_rows = [row for idx, row in enumerate(holdout_rows) if idx not in val_set]
     return val_rows, test_rows
-
-
-def choose_stratify_values(rows: Iterable[dict], *, preferred_key: str | None = None, fallback_key: str | None = None) -> tuple[str | None, List[str] | None]:
-    materialized = list(rows)
-    for key in [preferred_key, fallback_key]:
-        if not key:
-            continue
-        values = [str(row.get(key, "unknown")) for row in materialized]
-        safe = _safe_stratify(values)
-        if safe is not None:
-            return key, safe
-    return None, None

@@ -138,10 +138,32 @@ def _warmup_representations(model: ProtoNetModel, cfg: ProtonetConfig, optimizer
 
 
 def _trainable_parameter_groups(model: ProtoNetModel, cfg: ProtonetConfig) -> List[Dict[str, Any]]:
-    groups: List[Dict[str, Any]] = [{"params": list(model.projection.parameters()) + [model.log_temperature], "lr": cfg.learning_rate}]
+    # Regularization: exclude bias and LayerNorm from weight decay
+    no_decay = ["bias", "LayerNorm.weight"]
+    
+    def get_groups(module_name: str, params: Any, lr: float):
+        decay_params = []
+        no_decay_params = []
+        for n, p in params:
+            if not p.requires_grad:
+                continue
+            if any(nd in n for nd in no_decay):
+                no_decay_params.append(p)
+            else:
+                decay_params.append(p)
+        return [
+            {"params": decay_params, "weight_decay": cfg.weight_decay, "lr": lr},
+            {"params": no_decay_params, "weight_decay": 0.0, "lr": lr},
+        ]
+
+    groups = get_groups("projection", model.projection.named_parameters(), cfg.learning_rate)
+    # Add log_temperature to no_decay group of projection
+    groups[1]["params"].append(model.log_temperature)
+    
     if model.encoder.backend == "transformer" and model.encoder.trainable and model.encoder.model is not None:
-        groups.append({"params": [p for p in model.encoder.model.parameters() if p.requires_grad], "lr": cfg.encoder_learning_rate})
-    return groups
+        groups.extend(get_groups("encoder", model.encoder.model.named_parameters(), cfg.encoder_learning_rate))
+    
+    return [g for g in groups if g["params"]]
 
 
 def _episode_loss(model: ProtoNetModel, episode: Dict[str, Any], cfg: ProtonetConfig) -> tuple[torch.Tensor, float]:
@@ -184,7 +206,7 @@ def load_checkpoint(model: ProtoNetModel, checkpoint_path: Path) -> Dict[str, An
 
 def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str, Any]]]) -> TrainingResult:
     model = ProtoNetModel(cfg)
-    optimizer = AdamW(_trainable_parameter_groups(model, cfg), weight_decay=cfg.weight_decay)
+    optimizer = AdamW(_trainable_parameter_groups(model, cfg))
     scaler = GradScaler("cuda", enabled=cfg.use_amp and cfg.device == "cuda")
 
     history: List[Dict[str, Any]] = []

@@ -31,7 +31,7 @@ class ProtonetConfig:
     bow_dim: int = 512
     max_length: int = 160
     projection_dim: int = 256
-    dropout: float = 0.1
+    dropout: float = 0.15
     train_encoder: bool = True
 
     n_way: int = 3
@@ -41,15 +41,15 @@ class ProtonetConfig:
     max_eval_episodes: int = 48
 
     warmup_epochs: int = 1
-    epochs: int = 8
-    patience: int = 3
-    learning_rate: float = 1e-3
-    encoder_learning_rate: float = 2e-5
-    weight_decay: float = 1e-4
+    epochs: int = 12
+    patience: int = 4
+    learning_rate: float = 5e-4
+    encoder_learning_rate: float = 1e-5
+    weight_decay: float = 2e-4
     gradient_accumulation_steps: int = 2
     batch_size_hint: int = 1
     use_amp: bool = True
-    contrastive_weight: float = 0.15
+    contrastive_weight: float = 0.3
     prototype_smoothing: float = 0.05
     low_confidence_threshold: float = 0.55
     top_k_debug: int = 3
