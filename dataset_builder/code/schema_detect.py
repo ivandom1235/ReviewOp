@@ -19,9 +19,11 @@ class SchemaProfile:
     categorical_columns: List[str]
     datetime_columns: List[str]
     text_columns: List[str]
+    implicit_ready_columns: List[str]
     primary_text_column: str | None
     target_column: str | None
     column_types: Dict[str, str]
+    text_scores: Dict[str, float]
     schema_fingerprint: str
 
 
@@ -77,6 +79,7 @@ def detect_schema(frame: pd.DataFrame, *, text_column_override: str | None = Non
     elif text_scores:
         primary_text_column = max(text_scores, key=text_scores.get)
 
+    implicit_ready_columns = list(text_columns)
     fingerprint_source = "|".join(f"{col}:{column_types.get(col, 'unknown')}" for col in sorted(frame.columns))
     schema_fingerprint = hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()[:16]
     return SchemaProfile(
@@ -84,8 +87,10 @@ def detect_schema(frame: pd.DataFrame, *, text_column_override: str | None = Non
         categorical_columns=categorical_columns,
         datetime_columns=datetime_columns,
         text_columns=text_columns,
+        implicit_ready_columns=implicit_ready_columns,
         primary_text_column=primary_text_column,
         target_column=target_column,
         column_types=column_types,
+        text_scores=text_scores,
         schema_fingerprint=schema_fingerprint,
     )

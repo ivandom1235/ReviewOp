@@ -1,11 +1,35 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+const DEFAULT_TIMEOUT_MS = 15000;
+
+function withTimeout(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    fetchOptions: {
+      ...options,
+      headers: {
+        Accept: "application/json",
+        ...(options.headers || {}),
+      },
+      signal: controller.signal,
+    },
+    timeoutId,
+  };
+}
 
 async function request(path, options = {}) {
+  const { fetchOptions, timeoutId } = withTimeout(options);
   let response;
   try {
-    response = await fetch(`${API_BASE}${path}`, options);
-  } catch {
+    response = await fetch(`${API_BASE}${path}`, fetchOptions);
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("Request timed out. Please retry.");
+    }
     throw new Error("Backend is unreachable. Start backend API and check VITE_PROXY_TARGET/VITE_API_BASE_URL.");
+  } finally {
+    window.clearTimeout(timeoutId);
   }
 
   const text = await response.text();
@@ -210,7 +234,18 @@ export async function getUserReviewsList({
 }
 
 async function downloadFile(path, filename) {
-  const response = await fetch(`${API_BASE}${path}`);
+  const { fetchOptions, timeoutId } = withTimeout();
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, fetchOptions);
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("Download timed out. Please retry.");
+    }
+    throw new Error("Download failed because backend is unreachable.");
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || `Download failed: ${response.status}`);

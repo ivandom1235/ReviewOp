@@ -1,6 +1,8 @@
 # proto/backend/app.py
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session
@@ -22,6 +24,7 @@ from routes.user_portal import router as user_portal_router, seed_default_accoun
 
 
 app = FastAPI(title="Proto ReviewOps MVP (Hybrid)", version="0.4.0")
+logger = logging.getLogger(__name__)
 
 
 @app.on_event("startup")
@@ -113,7 +116,7 @@ def infer_review(payload: InferReviewIn, db: Session = Depends(get_db)):
     try:
         refresh_corpus_graph(db, domain=review_obj.domain)
     except Exception:
-        pass
+        logger.exception("Failed refreshing corpus graph after infer/review")
 
     db.refresh(review_obj)
 

@@ -34,3 +34,5 @@ protonet/_tmp*/
 # Model/checkpoint artifacts
 backend/models/implicit/*.json
 backend/models/implicit/checkpoints/*.pt
+datasets/
+agents_docs/

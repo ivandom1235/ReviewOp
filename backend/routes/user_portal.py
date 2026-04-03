@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 from datetime import datetime, timedelta
 
@@ -35,6 +36,7 @@ from services.review_pipeline import refresh_corpus_graph, run_single_review_pip
 
 
 router = APIRouter(prefix="/user", tags=["user_portal"])
+logger = logging.getLogger(__name__)
 
 SESSION_HOURS = 24 * 7
 
@@ -43,8 +45,12 @@ def _hash_password(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000).hex()
 
 
-def seed_default_accounts(db: Session) -> None:
-    defaults = [
+def _hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def seed_default_accounts(db: Session, defaults: list[dict[str, str]] | None = None) -> None:
+    defaults = defaults or [
         {"username": "admin", "password": "12345", "role": "admin"},
         {"username": "user", "password": "12345", "role": "user"},
     ]
@@ -58,7 +64,7 @@ def seed_default_accounts(db: Session) -> None:
             User(
                 username=item["username"],
                 password_salt=salt,
-                password_hash=_hash_password(item["password"], salt),
+                password_hash=_hash_password((item.get("password") or "").strip(), salt),
                 role=item["role"],
             )
         )
@@ -70,7 +76,8 @@ def seed_default_accounts(db: Session) -> None:
 def _issue_session(db: Session, user: User) -> str:
     token = secrets.token_urlsafe(48)
     expiry = datetime.utcnow() + timedelta(hours=SESSION_HOURS)
-    db.add(UserSession(user_id=user.id, token=token, expires_at=expiry))
+    db.query(UserSession).filter(UserSession.expires_at <= datetime.utcnow()).delete(synchronize_session=False)
+    db.add(UserSession(user_id=user.id, token=_hash_session_token(token), expires_at=expiry))
     db.commit()
     return token
 
@@ -93,9 +100,10 @@ def get_current_user(
     authorization: str | None = Header(default=None),
 ) -> User:
     token = _get_token(authorization)
+    token_hash = _hash_session_token(token)
     session = (
         db.query(UserSession)
-        .filter(and_(UserSession.token == token, UserSession.expires_at > datetime.utcnow()))
+        .filter(and_(UserSession.token == token_hash, UserSession.expires_at > datetime.utcnow()))
         .first()
     )
     if not session:
@@ -234,14 +242,19 @@ def search_products(
 
     # Also seed any ML-inferred Review product_ids that aren't in the catalog yet
     # so batch-uploaded products appear in search results.
-    existing_pids = {pid for (pid,) in db.query(ProductCatalog.product_id).all()}
     ml_review_pids = (
         db.query(Review.product_id)
-        .filter(Review.product_id.isnot(None), Review.product_id != "")
+        .outerjoin(ProductCatalog, ProductCatalog.product_id == Review.product_id)
+        .filter(
+            Review.product_id.isnot(None),
+            Review.product_id != "",
+            ProductCatalog.id.is_(None),
+        )
         .distinct()
+        .limit(500)
         .all()
     )
-    new_pids = [row[0].strip() for row in ml_review_pids if row[0] and row[0].strip() not in existing_pids]
+    new_pids = [row[0].strip() for row in ml_review_pids if row[0] and row[0].strip()]
     if new_pids:
         for pid in new_pids:
             db.add(ProductCatalog(product_id=pid, name=f"Product {pid}", category="General", summary=""))
@@ -466,7 +479,7 @@ def submit_review(
     try:
         refresh_corpus_graph(db, domain=product.category)
     except Exception:
-        pass
+        logger.exception("Failed refreshing corpus graph after review submit")
     db.refresh(user_review)
     return SubmitReviewOut(review_id=user_review.id, product_id=clean_product_id, linked_review_id=review.id)
 
@@ -551,7 +564,7 @@ def edit_review(
     try:
         refresh_corpus_graph(db, domain=linked_review.domain)
     except Exception:
-        pass
+        logger.exception("Failed refreshing corpus graph after review edit")
     return SubmitReviewOut(review_id=row.id, product_id=row.product_id, linked_review_id=row.linked_review_id)
 
 

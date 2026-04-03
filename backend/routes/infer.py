@@ -15,6 +15,9 @@ from services.batch_jobs import process_csv_sync
 
 
 router = APIRouter(prefix="/infer", tags=["infer"])
+MAX_CSV_UPLOAD_BYTES = 5 * 1024 * 1024
+MAX_CSV_ROWS = 20_000
+ALLOWED_UPLOAD_TYPES = {"text/csv", "application/csv", "application/vnd.ms-excel", ""}
 
 
 def _read_csv_best_effort(content: bytes, encoding: str) -> pd.DataFrame:
@@ -51,9 +54,13 @@ async def infer_csv(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
+    if file.content_type not in ALLOWED_UPLOAD_TYPES:
+        raise HTTPException(status_code=415, detail="Only CSV uploads are supported")
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
+    if len(content) > MAX_CSV_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"CSV too large (max {MAX_CSV_UPLOAD_BYTES // (1024 * 1024)}MB)")
 
     df = None
     decode_errors: list[str] = []
@@ -71,6 +78,8 @@ async def infer_csv(
             status_code=400,
             detail=f"CSV parse failed: unable to decode file as utf-8-sig/cp1252/latin1 ({' | '.join(decode_errors)})",
         )
+    if len(df.index) > MAX_CSV_ROWS:
+        raise HTTPException(status_code=413, detail=f"CSV has too many rows (max {MAX_CSV_ROWS})")
 
     job = Job(status="queued", total=0, processed=0, failed=0)
     db.add(job)

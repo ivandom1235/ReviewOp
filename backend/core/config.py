@@ -1,11 +1,12 @@
 import os
 from pathlib import Path
+from typing import ClassVar
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    ROOT = Path(__file__).resolve().parents[2]
+    ROOT: ClassVar[Path] = Path(__file__).resolve().parents[2]
     model_config = SettingsConfigDict(
         env_file=ROOT / ".env",
         env_file_encoding="utf-8",

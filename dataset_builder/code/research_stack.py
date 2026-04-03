@@ -108,6 +108,33 @@ def default_model_registry() -> dict[str, ModelFamilySpec]:
             supported_tasks=("implicit_aspect", "span_grounding"),
             notes="Current clean-room latent-facet pipeline used as a diagnostic baseline.",
         ),
+        "zeroshot_latent": ModelFamilySpec(
+            key="zeroshot_latent",
+            name="Zero-Shot Latent Facet Pipeline",
+            kind="baseline",
+            supported_tasks=("implicit_aspect", "span_grounding"),
+            supports_multilingual=True,
+            notes="Research-ready zero-shot lane with multilingual routing and heuristic discovery.",
+        ),
+        "supervised_ate": ModelFamilySpec(
+            key="supervised_ate",
+            name="Supervised Aspect Term Extraction",
+            kind="token_classification",
+            supported_tasks=("implicit_aspect", "span_extraction", "quad"),
+            requires_training=True,
+            supports_multilingual=True,
+            notes="Supervised or pseudo-labelled ATE lane for benchmark comparisons.",
+        ),
+        "hybrid_reasoner": ModelFamilySpec(
+            key="hybrid_reasoner",
+            name="Hybrid Implicit Reasoner",
+            kind="instruction_tuned",
+            supported_tasks=("implicit_aspect", "quad", "span_grounding"),
+            requires_training=True,
+            prompt_mode="reasoning_chain",
+            supports_multilingual=True,
+            notes="Hybrid zero-shot plus supervised fallback lane.",
+        ),
         "encoder_absa": ModelFamilySpec(
             key="encoder_absa",
             name="Encoder ABSA",
@@ -214,11 +241,11 @@ def build_experiment_plan(
     plan: list[ExperimentRunSpec] = []
     for benchmark in selected_benchmarks:
         for model_family in selected_models:
-            if benchmark.family == "implicit_heavy" and model_family.key not in {"heuristic_latent", "end_to_end_absa", "implicit_reasoner", "llm_prompted"}:
+            if benchmark.family == "implicit_heavy" and model_family.key not in {"heuristic_latent", "zeroshot_latent", "supervised_ate", "hybrid_reasoner", "end_to_end_absa", "implicit_reasoner", "llm_prompted"}:
                 continue
-            if benchmark.family == "multilingual" and model_family.key not in {"heuristic_latent", "encoder_absa", "llm_prompted", "augmentation"}:
+            if benchmark.family == "multilingual" and model_family.key not in {"heuristic_latent", "zeroshot_latent", "supervised_ate", "hybrid_reasoner", "encoder_absa", "llm_prompted", "augmentation"}:
                 continue
-            if benchmark.family == "english_core" and model_family.key not in {"heuristic_latent", "encoder_absa", "end_to_end_absa", "implicit_reasoner", "llm_prompted", "augmentation"}:
+            if benchmark.family == "english_core" and model_family.key not in {"heuristic_latent", "zeroshot_latent", "supervised_ate", "hybrid_reasoner", "encoder_absa", "end_to_end_absa", "implicit_reasoner", "llm_prompted", "augmentation"}:
                 continue
             run_id = stable_id(benchmark.key, model_family.key)
             plan.append(

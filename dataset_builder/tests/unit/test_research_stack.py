@@ -17,6 +17,9 @@ class ResearchStackTests(unittest.TestCase):
         self.assertIn("shoes_acosi", benchmarks)
         self.assertIn("m_absa", benchmarks)
         self.assertIn("heuristic_latent", models)
+        self.assertIn("zeroshot_latent", models)
+        self.assertIn("supervised_ate", models)
+        self.assertIn("hybrid_reasoner", models)
         self.assertIn("encoder_absa", models)
         self.assertIn("llm_prompted", models)
 

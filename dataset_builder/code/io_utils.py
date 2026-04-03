@@ -55,6 +55,23 @@ def load_file(path: Path) -> pd.DataFrame:
     return frame
 
 
+_REVIEW_COLUMN_ALIASES = [
+    "ReviewText", "review_text", "text", "Text", "text_",
+    "comment", "Comment", "body", "Body",
+    "content", "Content", "review_body", "ReviewBody",
+]
+
+
+def _normalize_review_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    if "review" in frame.columns:
+        return frame
+    for alias in _REVIEW_COLUMN_ALIASES:
+        if alias in frame.columns:
+            frame = frame.rename(columns={alias: "review"})
+            return frame
+    return frame
+
+
 def load_inputs(input_dir: Path) -> pd.DataFrame:
     frames = []
     if not input_dir.exists():
@@ -63,7 +80,35 @@ def load_inputs(input_dir: Path) -> pd.DataFrame:
         if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES:
             frame = load_file(path)
             if not frame.empty:
+                frame = _normalize_review_columns(frame)
                 frames.append(frame)
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def load_gold_annotations(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    suffix = path.suffix.lower()
+    if suffix not in {".jsonl", ".json"}:
+        raise ValueError(f"Unsupported gold annotation file type: {path}")
+    if suffix == ".jsonl":
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    else:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        rows = payload if isinstance(payload, list) else [payload]
+    cleaned: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        labels = row.get("gold_labels")
+        cleaned.append({
+            "record_id": row.get("record_id"),
+            "domain": row.get("domain"),
+            "text": row.get("text"),
+            "gold_labels": labels if isinstance(labels, list) else [],
+            "annotator_id": row.get("annotator_id"),
+            "review_status": row.get("review_status", "pending"),
+        })
+    return cleaned

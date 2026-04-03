@@ -4,13 +4,20 @@
 
 :root {
   color-scheme: light;
+  --bg-primary: #f3f5f9;
+  --bg-gradient: radial-gradient(circle at top right, #dbeafe 0%, #f3f5f9 45%, #eef2ff 100%);
+  --text-primary: #0f172a;
+  --surface: rgba(255, 255, 255, 0.9);
+  --surface-border: rgba(15, 23, 42, 0.08);
+  --accent: #2563eb;
 }
 
 body {
   margin: 0;
   font-family: "Space Grotesk", "Segoe UI", sans-serif;
-  background: #e5e7eb;
-  color: #0f172a;
+  background: var(--bg-primary);
+  background-image: var(--bg-gradient);
+  color: var(--text-primary);
   min-height: 100vh;
 }
 
@@ -47,4 +54,123 @@ button {
 
 .page-fade-in {
   animation: pageFadeIn 240ms ease-out;
+}
+
+@keyframes routeLoadPulse {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.route-loading-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+.route-loading-shell--dark {
+  background:
+    radial-gradient(70rem 28rem at 15% 10%, rgba(8, 145, 178, 0.16), transparent 52%),
+    radial-gradient(64rem 26rem at 85% 85%, rgba(16, 185, 129, 0.1), transparent 55%),
+    #060b18;
+  color: #e2e8f0;
+}
+
+.route-loading-shell--light {
+  background:
+    radial-gradient(70rem 28rem at 15% 10%, rgba(8, 145, 178, 0.08), transparent 52%),
+    radial-gradient(64rem 26rem at 85% 85%, rgba(16, 185, 129, 0.08), transparent 55%),
+    #f1f5f9;
+  color: #0f172a;
+}
+
+.route-loading-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(148, 163, 184, 0.12) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.12) 1px, transparent 1px);
+  background-size: 52px 52px;
+  mask-image: radial-gradient(circle at center, black 25%, transparent 90%);
+  pointer-events: none;
+}
+
+.route-loading-glow {
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  border-radius: 999px;
+  filter: blur(90px);
+  background: rgba(16, 185, 129, 0.18);
+  animation: pageFadeIn 360ms ease-out;
+  pointer-events: none;
+}
+
+.route-loading-card {
+  position: relative;
+  width: min(540px, 92vw);
+  border-radius: 20px;
+  padding: 18px;
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 18px 42px rgba(2, 6, 23, 0.24);
+  z-index: 1;
+  overflow: hidden;
+}
+
+.route-loading-shell--dark .route-loading-card {
+  background: rgba(8, 16, 31, 0.86);
+}
+
+.route-loading-shell--light .route-loading-card {
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.route-loading-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.24em;
+  color: #f59e0b;
+}
+
+.route-loading-card p {
+  margin: 10px 0 12px;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+}
+
+.route-loading-shell--dark .route-loading-card p {
+  color: rgba(226, 232, 240, 0.86);
+}
+
+.route-loading-shell--light .route-loading-card p {
+  color: rgba(15, 23, 42, 0.72);
+}
+
+.route-loading-bar {
+  position: relative;
+  width: 100%;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.18);
+  overflow: hidden;
+}
+
+.route-loading-bar::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 38%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #06b6d4, #22c55e);
+  animation: routeLoadPulse 1.2s linear infinite;
 }

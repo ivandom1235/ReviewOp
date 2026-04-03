@@ -13,46 +13,110 @@ const sentimentClasses = {
   },
 };
 
+function normalizeSentiment(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "neutral";
+  if (raw === "positive" || raw === "pos" || raw === "+") return "positive";
+  if (raw === "negative" || raw === "neg" || raw === "-") return "negative";
+  if (raw === "neutral" || raw === "neu" || raw === "mixed") return "neutral";
+  return "neutral";
+}
+
+function pushSegment(segments, segment) {
+  if (!segment?.text) return;
+  const prev = segments[segments.length - 1];
+  if (
+    prev &&
+    prev.highlighted === segment.highlighted &&
+    (!segment.highlighted || (prev.sentiment === segment.sentiment && prev.label === segment.label))
+  ) {
+    prev.text += segment.text;
+    return;
+  }
+  segments.push(segment);
+}
+
+function isWordChar(ch) {
+  return /[A-Za-z0-9]/.test(ch || "");
+}
+
+function snapRangeToWordBoundaries(sourceText, range) {
+  let start = range.start;
+  let end = range.end;
+  const max = sourceText.length;
+
+  while (start > 0 && start < max && isWordChar(sourceText[start - 1]) && isWordChar(sourceText[start])) {
+    start -= 1;
+  }
+  while (end > 0 && end < max && isWordChar(sourceText[end - 1]) && isWordChar(sourceText[end])) {
+    end += 1;
+  }
+
+  return { ...range, start, end };
+}
+
 function buildEvidenceItems(text, nodes) {
+  const sourceText = typeof text === "string" ? text : "";
+  const textLength = sourceText.length;
   const ranges = (nodes || [])
     .filter((node) => Number.isInteger(node.evidence_start) && Number.isInteger(node.evidence_end))
     .map((node) => ({
-      start: node.evidence_start,
-      end: node.evidence_end,
+      start: Math.max(0, Math.min(Number(node.evidence_start), textLength)),
+      end: Math.max(0, Math.min(Number(node.evidence_end), textLength)),
       aspect: String(node?.aspect_raw || node?.label || "").trim(),
       label: node.label,
-      sentiment: node.sentiment,
+      sentiment: normalizeSentiment(node.sentiment),
     }))
+    .filter((range) => range.end > range.start)
+    .map((range) => snapRangeToWordBoundaries(sourceText, range))
     .sort((a, b) => a.start - b.start);
 
-  if (!text || !ranges.length) {
-    return text ? [{ text, highlighted: false }] : [];
+  if (!sourceText || !ranges.length) {
+    return sourceText ? [{ text: sourceText, highlighted: false }] : [];
   }
 
   const segments = [];
   let cursor = 0;
 
   ranges.forEach((range) => {
-    const start = Math.max(range.start, cursor);
-    const end = Math.max(start, range.end);
-    if (cursor < start) {
-      segments.push({ text: text.slice(cursor, start), highlighted: false });
+    let start = Math.max(range.start, cursor);
+    while (start < range.end && start > 0 && isWordChar(sourceText[start - 1]) && isWordChar(sourceText[start])) {
+      start += 1;
     }
-    segments.push({
-      text: text.slice(start, end),
-      highlighted: true,
-      aspect: range.aspect,
-      label: range.label,
-      sentiment: range.sentiment,
-    });
+    const end = Math.max(start, Math.min(range.end, textLength));
+    if (cursor < start) {
+      pushSegment(segments, { text: sourceText.slice(cursor, start), highlighted: false });
+    }
+    const highlightedText = sourceText.slice(start, end);
+    const leadingWhitespace = (highlightedText.match(/^\s+/) || [""])[0];
+    const trailingWhitespace = (highlightedText.match(/\s+$/) || [""])[0];
+    const coreStart = leadingWhitespace.length;
+    const coreEnd = highlightedText.length - trailingWhitespace.length;
+    const coreText = highlightedText.slice(coreStart, coreEnd);
+
+    if (leadingWhitespace) {
+      pushSegment(segments, { text: leadingWhitespace, highlighted: false });
+    }
+    if (coreText) {
+      pushSegment(segments, {
+        text: coreText,
+        highlighted: true,
+        aspect: range.aspect,
+        label: range.label,
+        sentiment: range.sentiment,
+      });
+    }
+    if (trailingWhitespace) {
+      pushSegment(segments, { text: trailingWhitespace, highlighted: false });
+    }
     cursor = end;
   });
 
-  if (cursor < text.length) {
-    segments.push({ text: text.slice(cursor), highlighted: false });
+  if (cursor < textLength) {
+    pushSegment(segments, { text: sourceText.slice(cursor), highlighted: false });
   }
 
-  return segments.filter((segment) => segment.text);
+  return segments;
 }
 
 export default function ReviewEvidencePanel({ text = "", nodes = [], isDark = false }) {
@@ -67,7 +131,7 @@ export default function ReviewEvidencePanel({ text = "", nodes = [], isDark = fa
           segment.highlighted ? (
             <mark
               key={`${segment.label}-${index}`}
-              className={`mx-[1px] rounded px-1.5 py-0.5 ${(sentimentClasses[segment.sentiment] || sentimentClasses.neutral)[tone]}`}
+              className={`rounded px-1.5 py-0.5 align-baseline ${(sentimentClasses[segment.sentiment] || sentimentClasses.neutral)[tone]}`}
               title={segment.label}
             >
               {segment.text}

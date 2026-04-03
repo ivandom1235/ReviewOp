@@ -23,6 +23,7 @@ class SchemaDetectTests(unittest.TestCase):
         profile = detect_schema(frame)
         self.assertEqual(profile.primary_text_column, "review_text")
         self.assertTrue(profile.schema_fingerprint)
+        self.assertIn("review_text", profile.implicit_ready_columns)
         self.assertTrue("rating" in profile.numeric_columns or "rating" in profile.categorical_columns)
 
 

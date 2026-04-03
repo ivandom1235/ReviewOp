@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   inferSingleReview,
@@ -22,14 +22,16 @@ import {
   getUserReviewsList,
   getUserReviewsSummary,
 } from "../../api/client";
-import Dashboard from "./Dashboard";
-import AspectAnalytics from "./AspectAnalytics";
-import GraphExplorer from "./GraphExplorer";
-import ReviewExplorer from "./ReviewExplorer";
-import AlertsPage from "./AlertsPage";
-import AlertDetailPage from "./AlertDetailPage";
-import UserReviewsInsights from "./UserReviewsInsights";
 import { useAuth } from "../../auth/AuthContext";
+import { RouteLoading } from "../../components/RouteLoading";
+
+const Dashboard = lazy(() => import("./Dashboard"));
+const AspectAnalytics = lazy(() => import("./AspectAnalytics"));
+const GraphExplorer = lazy(() => import("./GraphExplorer"));
+const ReviewExplorer = lazy(() => import("./ReviewExplorer"));
+const AlertsPage = lazy(() => import("./AlertsPage"));
+const AlertDetailPage = lazy(() => import("./AlertDetailPage"));
+const UserReviewsInsights = lazy(() => import("./UserReviewsInsights"));
 
 const initialGraphFilters = {
   domain: "",
@@ -286,65 +288,66 @@ export default function AdminPortal() {
         {error ? <div className={`rounded-xl p-3 ${isDark ? "bg-red-950 text-red-300" : "bg-red-100 text-red-700"}`}>{error}</div> : null}
 
         <div key={activePage} className="page-fade-in">
-          {activePage === "Dashboard" ? <Dashboard kpis={kpis} alerts={alerts} leaderboardRows={leaderboardRows} impactRows={impactMatrix} segmentRows={segmentRows} weeklySummary={weeklySummary} isDark={isDark} onSeeMoreAlerts={() => setActivePage("Alerts")} /> : null}
-          {activePage === "AspectAnalytics" ? <AspectAnalytics trends={aspectTrends} emerging={emergingAspects} evidence={evidenceRows} aspectDetail={aspectDetail} weeklySummary={weeklySummary} isDark={isDark} /> : null}
-          {activePage === "GraphExplorer" ? (
-            <GraphExplorer
-              graph={batchGraph}
-              graphFilters={graphFilters}
-              setGraphFilters={setGraphFilters}
-              onApplyFilters={applyBatchGraphFilters}
-              graphLoading={graphLoading}
-              isDark={isDark}
-            />
-          ) : null}
-          {activePage === "ReviewExplorer" ? (
-            <ReviewExplorer
-              reviewText={reviewText}
-              setReviewText={setReviewText}
-              onSubmit={handleSingleSubmit}
-              loading={loading}
-              output={singleOutput}
-              reviewGraph={reviewGraph}
-              batchFile={batchFile}
-              setBatchFile={setBatchFile}
-              onBatchSubmit={handleBatchSubmit}
-              jobStatus={jobStatus}
-              kpis={kpis}
-              leaderboardRows={leaderboardRows}
-              impactRows={impactMatrix}
-              segmentRows={segmentRows}
-              weeklySummary={weeklySummary}
-              alerts={alerts}
-              evidenceRows={evidenceRows}
-              onOpenGraph={() => setActivePage("GraphExplorer")}
-              onOpenAnalytics={() => setActivePage("AspectAnalytics")}
-              isDark={isDark}
-            />
-          ) : null}
-          {activePage === "Alerts" ? (
-            <AlertsPage 
-              alerts={alerts} 
-              isDark={isDark} 
-              onAlertClick={handleAlertClick}
-              onAlertClear={handleAlertClear}
-            />
-          ) : null}
-          {activePage === "UserReviews" ? (
-            <UserReviewsInsights
-              summary={userReviewSummary}
-              list={userReviewList}
-              isDark={isDark}
-            />
-          ) : null}
-          {activePage === "AlertDetail" ? (
-            <AlertDetailPage 
-              alert={selectedAlert} 
-              isDark={isDark} 
-              onBack={() => setActivePage("Alerts")} 
-            />
-          ) : null}
-
+          <Suspense fallback={<RouteLoading label="Loading admin page..." />}>
+            {activePage === "Dashboard" ? <Dashboard kpis={kpis} alerts={alerts} leaderboardRows={leaderboardRows} impactRows={impactMatrix} segmentRows={segmentRows} weeklySummary={weeklySummary} isDark={isDark} onSeeMoreAlerts={() => setActivePage("Alerts")} /> : null}
+            {activePage === "AspectAnalytics" ? <AspectAnalytics trends={aspectTrends} emerging={emergingAspects} evidence={evidenceRows} aspectDetail={aspectDetail} weeklySummary={weeklySummary} isDark={isDark} /> : null}
+            {activePage === "GraphExplorer" ? (
+              <GraphExplorer
+                graph={batchGraph}
+                graphFilters={graphFilters}
+                setGraphFilters={setGraphFilters}
+                onApplyFilters={applyBatchGraphFilters}
+                graphLoading={graphLoading}
+                isDark={isDark}
+              />
+            ) : null}
+            {activePage === "ReviewExplorer" ? (
+              <ReviewExplorer
+                reviewText={reviewText}
+                setReviewText={setReviewText}
+                onSubmit={handleSingleSubmit}
+                loading={loading}
+                output={singleOutput}
+                reviewGraph={reviewGraph}
+                batchFile={batchFile}
+                setBatchFile={setBatchFile}
+                onBatchSubmit={handleBatchSubmit}
+                jobStatus={jobStatus}
+                kpis={kpis}
+                leaderboardRows={leaderboardRows}
+                impactRows={impactMatrix}
+                segmentRows={segmentRows}
+                weeklySummary={weeklySummary}
+                alerts={alerts}
+                evidenceRows={evidenceRows}
+                onOpenGraph={() => setActivePage("GraphExplorer")}
+                onOpenAnalytics={() => setActivePage("AspectAnalytics")}
+                isDark={isDark}
+              />
+            ) : null}
+            {activePage === "Alerts" ? (
+              <AlertsPage 
+                alerts={alerts} 
+                isDark={isDark} 
+                onAlertClick={handleAlertClick}
+                onAlertClear={handleAlertClear}
+              />
+            ) : null}
+            {activePage === "UserReviews" ? (
+              <UserReviewsInsights
+                summary={userReviewSummary}
+                list={userReviewList}
+                isDark={isDark}
+              />
+            ) : null}
+            {activePage === "AlertDetail" ? (
+              <AlertDetailPage 
+                alert={selectedAlert} 
+                isDark={isDark} 
+                onBack={() => setActivePage("Alerts")} 
+              />
+            ) : null}
+          </Suspense>
         </div>
       </main>
     </div>

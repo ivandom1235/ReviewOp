@@ -10,7 +10,15 @@ from utils import stable_id, write_json, utc_now_iso
 
 
 def run_experiments(base_cfg: BuilderConfig, overrides: list[dict[str, Any]], output_dir: Path) -> list[dict[str, Any]]:
-    run_id = stable_id(base_cfg.input_dir, base_cfg.output_dir, base_cfg.model_family, base_cfg.benchmark_key or "auto")
+    run_id = stable_id(
+        base_cfg.input_dir,
+        base_cfg.output_dir,
+        base_cfg.model_family,
+        base_cfg.benchmark_key or "auto",
+        base_cfg.implicit_mode,
+        base_cfg.multilingual_mode,
+        base_cfg.use_coref,
+    )
     plan = build_experiment_plan()
     results: list[dict[str, Any]] = []
     for index, override in enumerate(overrides, start=1):

@@ -31,6 +31,7 @@ class ImplicitPipelineTests(unittest.TestCase):
         )
         implicit = supported["implicit"]
         self.assertEqual(implicit["aspects"], ["power"])
+        self.assertEqual(implicit["mode"], "zeroshot")
         self.assertFalse(implicit["needs_review"])
         self.assertEqual(implicit["spans"][0]["support_type"], "exact")
         self.assertEqual(implicit["spans"][0]["matched_surface"].lower(), "battery life")
@@ -48,6 +49,7 @@ class ImplicitPipelineTests(unittest.TestCase):
         self.assertEqual(fallback_implicit["aspects"], ["general"])
         self.assertTrue(fallback_implicit["needs_review"])
         self.assertEqual(fallback_implicit["review_reason"], "fallback_general")
+        self.assertFalse(fallback_implicit["llm_fallback_used"])
 
     def test_build_implicit_row_maps_surface_to_latent_facet(self) -> None:
         row = build_implicit_row(
@@ -83,6 +85,49 @@ class ImplicitPipelineTests(unittest.TestCase):
         self.assertNotIn("compatibility", taxi_row["implicit"]["aspects"])
         self.assertIn("timeliness", taxi_row["implicit"]["aspects"])
 
+    def test_strict_domain_conditioning_filters_out_of_domain_latent_matches(self) -> None:
+        row = build_implicit_row(
+            {"id": "7", "split": "train", "review_text": "The food was great but checkout was slow."},
+            text_column="review_text",
+            candidate_aspects=[],
+            confidence_threshold=0.6,
+            row_index=0,
+            domain="laptop",
+            candidate_aspects_by_domain={"laptop": ["battery", "screen", "performance"]},
+            strict_domain_conditioning=True,
+        )
+        implicit = row["implicit"]
+        self.assertNotIn("food quality", implicit["aspects"])
+        self.assertGreaterEqual(int(implicit.get("domain_filtered_matches", 0)), 1)
+
+    def test_adaptive_soft_conditioning_keeps_out_of_domain_when_evidence_is_strong(self) -> None:
+        strict_row = build_implicit_row(
+            {"id": "8", "split": "train", "review_text": "The food was great."},
+            text_column="review_text",
+            candidate_aspects=[],
+            confidence_threshold=0.6,
+            row_index=0,
+            domain="laptop",
+            candidate_aspects_by_domain={"laptop": ["battery", "screen", "performance"]},
+            domain_conditioning_mode="strict_hard",
+        )
+        adaptive_row = build_implicit_row(
+            {"id": "9", "split": "train", "review_text": "The food was great."},
+            text_column="review_text",
+            candidate_aspects=[],
+            confidence_threshold=0.6,
+            row_index=0,
+            domain="laptop",
+            candidate_aspects_by_domain={"laptop": ["battery", "screen", "performance"]},
+            domain_conditioning_mode="adaptive_soft",
+            domain_prior_penalty=0.08,
+            domain_support_rows=20,
+            weak_domain_support_row_threshold=80,
+        )
+        self.assertIn("general", strict_row["implicit"]["aspects"])
+        self.assertIn("food quality", adaptive_row["implicit"]["aspects"])
+        self.assertGreaterEqual(int(adaptive_row["implicit"].get("domain_prior_penalty_count", 0)), 1)
+
     def test_collect_diagnostics_counts_support_and_fallback(self) -> None:
         rows = [
             {
@@ -106,6 +151,22 @@ class ImplicitPipelineTests(unittest.TestCase):
         self.assertEqual(diagnostics["fallback_only_count"], 1)
         self.assertEqual(diagnostics["needs_review_count"], 1)
         self.assertEqual(diagnostics["span_support"]["exact"], 1)
+        self.assertIn("review_reason_counts", diagnostics)
+        self.assertIn("fallback_branch_counts", diagnostics)
+
+    def test_hybrid_gold_support_does_not_force_review(self) -> None:
+        row = build_implicit_row(
+            {"id": "6", "split": "train", "review_text": "The battery life is excellent", "aspect": "battery life"},
+            text_column="review_text",
+            candidate_aspects=[],
+            confidence_threshold=0.6,
+            row_index=0,
+            implicit_mode="hybrid",
+        )
+        implicit = row["implicit"]
+        self.assertIn("power", implicit["aspects"])
+        self.assertFalse(implicit["needs_review"])
+        self.assertIsNone(implicit["review_reason"])
 
 
 if __name__ == "__main__":
