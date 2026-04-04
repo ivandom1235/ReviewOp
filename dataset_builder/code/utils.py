@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -77,3 +78,18 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
             if line:
                 rows.append(json.loads(line))
     return rows
+
+
+def compress_output_folder(output_dir: Path) -> Path | None:
+    """Compresses the output folder into a ZIP file in the sibling 'zip' directory."""
+    if not output_dir.exists():
+        return None
+    zip_root = output_dir.parent / "zip"
+    zip_root.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_base = f"output_{timestamp}"
+    zip_target = zip_root / zip_base
+    
+    archive_path = shutil.make_archive(str(zip_target), "zip", output_dir)
+    return Path(archive_path)

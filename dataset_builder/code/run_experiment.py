@@ -6,12 +6,21 @@ import itertools
 import json
 from pathlib import Path
 from typing import Any
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from build_dataset import run_pipeline
 from contracts import BuilderConfig
 from experiments import run_experiments
 from research_stack import build_experiment_plan, benchmark_registry_payload, model_registry_payload
-from utils import stable_id, utc_now_iso, write_json
+from utils import stable_id, utc_now_iso, write_json, compress_output_folder
+
+try:
+    from llm_utils import flush_llm_cache
+except Exception:  # pragma: no cover
+    def flush_llm_cache() -> None:
+        return None
 
 QUALITY_GATES = {
     "fallback_only_rate_max": 0.22,
@@ -36,8 +45,8 @@ QUALITY_GATES = {
     "gold_span_overlap_f1_min": 0.4,
 }
 NOVELTY_GATES = {
-    "required_ablations": ["explicit-only", "implicit-only", "no-grounding", "no-domain-conditioning", "full"],
-    "full_model_must_outperform_count": 3,
+    "required_ablations": ["explicit-only", "implicit-only", "no-grounding", "no-domain-conditioning", "llm-direct", "v5-full"],
+    "full_model_must_outperform_count": 4,
 }
 
 
@@ -180,11 +189,12 @@ def _rank_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
 
 def _run_ablation_matrix(cfg: BuilderConfig, run_dir: Path) -> dict[str, Any]:
     ablation_configs: list[tuple[str, BuilderConfig]] = [
-        ("full", replace(cfg)),
-        ("no-grounding", replace(cfg, enforce_grounding=False)),
-        ("no-domain-conditioning", replace(cfg, use_domain_conditioning=False)),
-        ("implicit-only", replace(cfg, use_domain_conditioning=True, enforce_grounding=True)),
-        ("explicit-only", replace(cfg, implicit_min_tokens=999, enforce_grounding=False, enable_llm_fallback=False)),
+        ("v5-full", replace(cfg, enable_reasoned_recovery=True)),
+        ("no-grounding", replace(cfg, enable_reasoned_recovery=True, enforce_grounding=False)),
+        ("no-domain-conditioning", replace(cfg, enable_reasoned_recovery=True, use_domain_conditioning=False)),
+        ("implicit-only", replace(cfg, enable_reasoned_recovery=True, use_domain_conditioning=True, enforce_grounding=True)),
+        ("explicit-only", replace(cfg, implicit_min_tokens=999, enforce_grounding=False, enable_llm_fallback=False, enable_reasoned_recovery=False)),
+        ("llm-direct", replace(cfg, implicit_mode="zeroshot", enable_llm_fallback=True, enable_reasoned_recovery=True, implicit_min_tokens=1)),
     ]
     rows: list[dict[str, Any]] = []
     for name, ab_cfg in ablation_configs:
@@ -199,7 +209,7 @@ def _run_ablation_matrix(cfg: BuilderConfig, run_dir: Path) -> dict[str, Any]:
             "core_score": _core_score(metrics),
         })
     by_name = {row["name"]: row for row in rows}
-    full = by_name.get("full")
+    full = by_name.get("v5-full")
     outperform = 0
     if full:
         for name, row in by_name.items():
@@ -377,6 +387,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--unseen-implicit-not-ready-rate-max", type=float, default=0.35)
     parser.add_argument("--unseen-domain-leakage-row-rate-max", type=float, default=0.02)
     parser.add_argument("--train-fallback-general-policy", type=str, default="cap", choices=["keep", "cap", "drop"])
+    parser.add_argument("--enable-reasoned-recovery", dest="enable_reasoned_recovery", action="store_true")
+    parser.add_argument("--no-enable-reasoned-recovery", dest="enable_reasoned_recovery", action="store_false")
+    # Backward-compatible alias for older scripts.
+    parser.add_argument("--no-enable-reasoned_recovery", dest="enable_reasoned_recovery", action="store_false")
+    parser.set_defaults(enable_reasoned_recovery=bool(runtime_defaults.get("enable_reasoned_recovery", True)))
+    parser.add_argument("--llm-provider", type=str, default=str(runtime_defaults.get("llm_provider", "runpod")), choices=["runpod", "openai", "anthropic", "ollama"])
+    parser.add_argument("--llm-model-name", type=str, default=str(runtime_defaults.get("llm_model_name", "llama3-8b-instruct")))
+    parser.add_argument("--llm-api-key", type=str, default=None)
+    parser.add_argument("--llm-base-url", type=str, default=None)
+    parser.add_argument("--llm-max-retries", type=int, default=3)
     parser.add_argument("--train-fallback-general-cap-ratio", type=float, default=0.15)
     parser.add_argument("--train-review-filter-mode", type=str, default="reasoned_strict", choices=["keep", "drop_needs_review", "reasoned_strict"])
     parser.add_argument("--train-salvage-mode", type=str, default="recover_non_general", choices=["off", "recover_non_general"])
@@ -418,6 +438,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     args = build_parser().parse_args(argv)
     domain_conditioning_mode = str(args.domain_conditioning_mode or "").strip().lower()
     if not args.use_domain_conditioning:
@@ -475,6 +496,12 @@ def main(argv: list[str] | None = None) -> int:
         unseen_non_general_coverage_min=args.unseen_non_general_coverage_min,
         unseen_implicit_not_ready_rate_max=args.unseen_implicit_not_ready_rate_max,
         unseen_domain_leakage_row_rate_max=args.unseen_domain_leakage_row_rate_max,
+        enable_reasoned_recovery=args.enable_reasoned_recovery,
+        llm_provider=args.llm_provider,
+        llm_model_name=args.llm_model_name,
+        llm_api_key=args.llm_api_key,
+        llm_base_url=args.llm_base_url,
+        llm_max_retries=args.llm_max_retries,
         train_fallback_general_policy=args.train_fallback_general_policy,
         train_fallback_general_cap_ratio=args.train_fallback_general_cap_ratio,
         train_review_filter_mode=args.train_review_filter_mode,
@@ -524,6 +551,11 @@ def main(argv: list[str] | None = None) -> int:
             "status": "planned",
             "config": asdict(cfg),
         })
+        flush_llm_cache()
+        if not cfg.dry_run:
+            zip_path = compress_output_folder(cfg.output_dir)
+            if zip_path:
+                print(f"Output compressed: {zip_path}")
         return 0
 
     if args.execute_baseline:
@@ -537,6 +569,11 @@ def main(argv: list[str] | None = None) -> int:
             "config": asdict(cfg),
             "report": report,
         })
+        flush_llm_cache()
+        if not cfg.dry_run:
+            zip_path = compress_output_folder(cfg.output_dir)
+            if zip_path:
+                print(f"Output compressed: {zip_path}")
         return 0
 
     if args.execute_v4_sweep:
@@ -584,6 +621,11 @@ def main(argv: list[str] | None = None) -> int:
             "promoted_defaults": promoted_defaults if args.apply_best_defaults else None,
             "defaults_applied": bool(args.apply_best_defaults and promoted_defaults),
         })
+        flush_llm_cache()
+        if not cfg.dry_run:
+            zip_path = compress_output_folder(cfg.output_dir)
+            if zip_path:
+                print(f"Output compressed: {zip_path}")
         return 0
 
     run_experiments(
@@ -603,6 +645,11 @@ def main(argv: list[str] | None = None) -> int:
         "status": "configured",
         "config": asdict(cfg),
     })
+    flush_llm_cache()
+    if not cfg.dry_run:
+        zip_path = compress_output_folder(cfg.output_dir)
+        if zip_path:
+            print(f"Output compressed: {zip_path}")
     return 0
 
 

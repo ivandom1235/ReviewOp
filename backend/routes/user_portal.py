@@ -5,7 +5,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, BackgroundTasks
 from sqlalchemy import and_, case, desc, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -32,7 +32,11 @@ from models.tables import (
     UserProductReview,
     UserSession,
 )
-from services.review_pipeline import refresh_corpus_graph, run_single_review_pipeline
+from services.review_pipeline import (
+    refresh_corpus_graph,
+    _refresh_corpus_graph_task,
+    run_single_review_pipeline,
+)
 
 
 router = APIRouter(prefix="/user", tags=["user_portal"])
@@ -237,11 +241,8 @@ def search_products(
     _: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
-    # Ensure ProductCatalog contains both user-reviewed and ML-inferred products
     _ensure_products_seeded(db)
 
-    # Also seed any ML-inferred Review product_ids that aren't in the catalog yet
-    # so batch-uploaded products appear in search results.
     ml_review_pids = (
         db.query(Review.product_id)
         .outerjoin(ProductCatalog, ProductCatalog.product_id == Review.product_id)
@@ -265,7 +266,6 @@ def search_products(
     if needle:
         escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         like = f"%{escaped}%"
-        # Also match product_ids from ML Review table whose texts contain the query
         ml_product_ids = (
             select(Review.product_id)
             .where(
@@ -295,9 +295,6 @@ def search_products(
             )
         )
 
-    # Only apply rating filter when user actually requests a threshold above 1.
-    # Products with no user reviews have cached_average_rating=0.0 and should
-    # still appear in search — filtering them out makes the search return nothing.
     if min_rating and min_rating > 1:
         query = query.filter(ProductCatalog.cached_average_rating >= min_rating)
 
@@ -324,27 +321,37 @@ def product_detail(
     if not product:
         raise HTTPException(status_code=404, detail="product not found")
 
-    avg_rating, review_count = (
-        db.query(func.coalesce(func.avg(UserProductReview.rating), 0), func.count(UserProductReview.id))
+    # Combined query for stats and counts per star
+    stats = (
+        db.query(
+            func.avg(UserProductReview.rating).label("avg_rating"),
+            func.count(UserProductReview.id).label("total"),
+            # Distribution aggregation
+            func.count(case((UserProductReview.rating == 5, 1))).label("s5"),
+            func.count(case((UserProductReview.rating == 4, 1))).label("s4"),
+            func.count(case((UserProductReview.rating == 3, 1))).label("s3"),
+            func.count(case((UserProductReview.rating == 2, 1))).label("s2"),
+            func.count(case((UserProductReview.rating == 1, 1))).label("s1"),
+        )
         .filter(UserProductReview.product_id == product_id)
         .first()
     )
 
-    stars = (
-        db.query(UserProductReview.rating, func.count(UserProductReview.id))
-        .filter(UserProductReview.product_id == product_id)
-        .group_by(UserProductReview.rating)
-        .all()
-    )
-    count_by_star = {int(s): int(c) for s, c in stars}
-    distribution = [StarDistributionOut(stars=i, count=count_by_star.get(i, 0)) for i in range(5, 0, -1)]
+    distribution = [
+        StarDistributionOut(stars=5, count=int(stats.s5 or 0)),
+        StarDistributionOut(stars=4, count=int(stats.s4 or 0)),
+        StarDistributionOut(stars=3, count=int(stats.s3 or 0)),
+        StarDistributionOut(stars=2, count=int(stats.s2 or 0)),
+        StarDistributionOut(stars=1, count=int(stats.s1 or 0)),
+    ]
+
     return ProductDetailOut(
         product_id=product.product_id,
         name=product.name,
         category=product.category,
         summary=product.summary,
-        average_rating=float(avg_rating or 0.0),
-        review_count=int(review_count or 0),
+        average_rating=float(stats.avg_rating or 0.0),
+        review_count=int(stats.total or 0),
         star_distribution=distribution,
     )
 
@@ -376,7 +383,6 @@ def product_reviews(
 
     rows = query.offset((page - 1) * page_size).limit(page_size).all()
     
-    # Pre-fetch predictions for all linked reviews to avoid N+1 query
     linked_review_ids = [row.linked_review_id for row in rows if row.linked_review_id]
     predictions_by_review = {}
     if linked_review_ids:
@@ -395,14 +401,13 @@ def product_reviews(
     for row in rows:
         aspects: list[AspectSummaryOut] = []
         if row.linked_review_id and row.linked_review_id in predictions_by_review:
-            preds = predictions_by_review[row.linked_review_id][:6] # limit to top 6 as before
+            preds = predictions_by_review[row.linked_review_id][:6]
             seen = set()
             for aspect, sentiment in preds:
                 key = f"{aspect}:{sentiment}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                aspects.append(AspectSummaryOut(aspect=aspect, sentiment=sentiment))
+                if key not in seen:
+                    seen.add(key)
+                    aspects.append(AspectSummaryOut(aspect=aspect, sentiment=sentiment))
         out.append(
             ProductReviewOut(
                 review_id=row.id,
@@ -422,6 +427,7 @@ def product_reviews(
 @router.post("/reviews", response_model=SubmitReviewOut)
 def submit_review(
     payload: SubmitReviewIn,
+    background_tasks: BackgroundTasks,
     current: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
@@ -468,18 +474,13 @@ def submit_review(
     )
     db.add(user_review)
     
-    # Update cache
     product.cached_review_count += 1
-    # new_avg = (old_avg * old_count + new_rating) / new_count
     old_count = product.cached_review_count - 1
     product.cached_average_rating = ((product.cached_average_rating * old_count) + payload.rating) / product.cached_review_count
     product.cached_latest_review_at = datetime.utcnow()
 
     db.commit()
-    try:
-        refresh_corpus_graph(db, domain=product.category)
-    except Exception:
-        logger.exception("Failed refreshing corpus graph after review submit")
+    background_tasks.add_task(_refresh_corpus_graph_task, product.category)
     db.refresh(user_review)
     return SubmitReviewOut(review_id=user_review.id, product_id=clean_product_id, linked_review_id=review.id)
 
@@ -496,6 +497,20 @@ def my_reviews(
         .limit(200)
         .all()
     )
+
+    linked_ids = [row.linked_review_id for row in rows if row.linked_review_id]
+    preds_by_id = {}
+    if linked_ids:
+        all_preds = (
+            db.query(Prediction.review_id, Prediction.aspect_cluster, Prediction.sentiment)
+            .filter(Prediction.review_id.in_(linked_ids))
+            .all()
+        )
+        for r_id, aspect, sentiment in all_preds:
+            if r_id not in preds_by_id:
+                preds_by_id[r_id] = []
+            preds_by_id[r_id].append(AspectSummaryOut(aspect=aspect, sentiment=sentiment))
+
     return [
         ProductReviewOut(
             review_id=row.id,
@@ -506,7 +521,7 @@ def my_reviews(
             review_text=row.review_text,
             review_date=row.created_at.isoformat(),
             helpful_count=row.helpful_count,
-            aspects=[],
+            aspects=preds_by_id.get(row.linked_review_id, [])[:6],
         )
         for row in rows
     ]
@@ -516,6 +531,7 @@ def my_reviews(
 def edit_review(
     review_id: int,
     payload: SubmitReviewIn,
+    background_tasks: BackgroundTasks,
     current: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
@@ -531,7 +547,6 @@ def edit_review(
 
     product = db.query(ProductCatalog).filter(ProductCatalog.product_id == row.product_id).first()
     if product and product.cached_review_count > 0:
-        # Recompute total rating
         total_rating = (product.cached_average_rating * product.cached_review_count) - row.rating + payload.rating
         product.cached_average_rating = total_rating / product.cached_review_count
         product.updated_at = datetime.utcnow()
@@ -561,10 +576,7 @@ def edit_review(
     row.recommendation = payload.recommendation
     row.updated_at = datetime.utcnow()
     db.commit()
-    try:
-        refresh_corpus_graph(db, domain=linked_review.domain)
-    except Exception:
-        logger.exception("Failed refreshing corpus graph after review edit")
+    background_tasks.add_task(_refresh_corpus_graph_task, linked_review.domain)
     return SubmitReviewOut(review_id=row.id, product_id=row.product_id, linked_review_id=row.linked_review_id)
 
 
@@ -594,6 +606,12 @@ def delete_review(
             product.cached_average_rating = total_rating / product.cached_review_count
             product.cached_helpful_count -= row.helpful_count
 
+    linked_id = row.linked_review_id
     db.delete(row)
+    if linked_id:
+        linked_r = db.query(Review).filter(Review.id == linked_id).first()
+        if linked_r:
+            db.delete(linked_r)
+
     db.commit()
     return {"ok": True}

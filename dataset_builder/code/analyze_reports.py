@@ -31,6 +31,7 @@ def _score_from_verdict(*, usable_for_training: bool, research_ready: bool, publ
 def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
     row_counts = build.get("row_counts", {})
     output_quality = build.get("output_quality", {})
+    strict_quality = build.get("strict_quality", output_quality.get("strict_quality", {}))
     validation = build.get("validation", {})
     target = build.get("train_target_stats", {})
     train_topup = build.get("train_topup_stats", {})
@@ -86,6 +87,10 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
         )
     if float(output_quality.get("fallback_only_rate", 0.0)) > 0.25:
         failures.append(f"Fallback-only rate remains high at {float(output_quality.get('fallback_only_rate', 0.0)):.4f}.")
+    if float(strict_quality.get("explicit_in_implicit_rate", 0.0)) > 0.0:
+        failures.append("Strict implicit export has explicit contamination.")
+    if int(strict_quality.get("boundary_false_positive_count", 0)) > 0:
+        failures.append("Strict implicit export has boundary false positives.")
     if float(build.get("train_positive_ratio", 0.0)) > float(build.get("config", {}).get("train_max_positive_ratio", 0.5)):
         failures.append("Positive sentiment remains above configured maximum in train export.")
 
@@ -182,6 +187,7 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
                 "generic_implicit_aspects": int(output_quality.get("generic_implicit_aspects", 0)),
                 "rejected_implicit_aspects": int(output_quality.get("rejected_implicit_aspects", 0)),
             },
+            "strict_quality": strict_quality,
         },
         "training_set_integrity": {
             "post_filter_quality": {

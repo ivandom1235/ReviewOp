@@ -11,6 +11,10 @@ from services.hybrid_merge import merge_predictions
 from services.review_pipeline import run_single_review_pipeline
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 PredictionLike = Dict[str, Any]
 
 
@@ -99,8 +103,8 @@ def run_single_review_hybrid_pipeline(
         review_text=text,
         domain=domain,
     )
-    print("EXPLICIT:", explicit_predictions)
-    print("IMPLICIT:", implicit_predictions)
+    logger.debug("EXPLICIT: %s", explicit_predictions)
+    logger.debug("IMPLICIT: %s", implicit_predictions)
 
     # Step C: merge explicit + implicit
     merged_predictions = merge_predictions(

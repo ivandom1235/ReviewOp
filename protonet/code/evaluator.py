@@ -47,6 +47,7 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
     confidences: List[float] = []
     correctness: List[int] = []
     low_confidence_count = 0
+    running_correct = 0
     per_aspect: Dict[str, List[int]] = defaultdict(list)
     predictions: List[Dict[str, Any]] = []
 
@@ -76,6 +77,7 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
                     confidences.append(confidence)
                     is_correct = int(true_label == pred_label)
                     correctness.append(is_correct)
+                    running_correct += is_correct
                     if confidence < cfg.low_confidence_threshold:
                         low_confidence_count += 1
                     per_aspect[_aspect_from_joint(true_label)].append(is_correct)
@@ -93,7 +95,11 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
                     )
                 bar.update(1)
                 if y_true:
-                    bar.set_postfix(acc=f"{accuracy_score(y_true, y_pred):.3f}")
+                    bar.set_postfix(
+                        acc=f"{running_correct / len(y_true):.3f}",
+                        queries=len(y_true),
+                        low_conf=f"{low_confidence_count / max(1, len(y_true)):.3f}",
+                    )
 
     elapsed = time.perf_counter() - start_time
     metrics = {

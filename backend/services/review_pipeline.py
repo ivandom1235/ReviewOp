@@ -1,7 +1,10 @@
 from __future__ import annotations
+import logging
 
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
+
+from core.db import SessionLocal
 
 from models.tables import EvidenceSpan, Prediction, Review
 from services.evidence import find_evidence_for_aspect
@@ -79,3 +82,14 @@ def run_single_review_pipeline(
 def refresh_corpus_graph(db: Session, domain: str | None = None) -> dict:
     builder = KGBuilder(model_name="sentence-transformers/all-MiniLM-L6-v2")
     return builder.rebuild(db=db, domain=domain, cfg=KGConfig())
+
+
+def _refresh_corpus_graph_task(domain: str | None) -> None:
+    logger = logging.getLogger(__name__)
+    db = SessionLocal()
+    try:
+        refresh_corpus_graph(db, domain=domain)
+    except Exception:
+        logger.exception("Failed refreshing corpus graph in background task")
+    finally:
+        db.close()

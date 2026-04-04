@@ -10,6 +10,8 @@ from build_dataset import (
     _apply_train_fallback_general_policy,
     _apply_train_review_filter,
     _apply_train_sentiment_balance,
+    _strict_quality_metrics,
+    _strict_row_passes,
     _strict_topup_recovery,
     _strict_train_domain_leakage_filter,
     _train_domain_leakage_metrics,
@@ -46,6 +48,8 @@ def _row(
             "review_reason": review_reason,
             "aspect_confidence": aspect_conf,
             "spans": spans,
+            "hardness_tier": "H2" if support_type != "exact" else "H1",
+            "implicit_quality_tier": "strict_pass" if not needs_review else "needs_review",
         },
     }
 
@@ -185,7 +189,7 @@ class TrainExportPolicyTests(unittest.TestCase):
             _row("r2", domain="restaurant", language="en", aspects=["service quality"], sentiment="negative"),
         ]
         candidates = [
-            _row("r3", domain="restaurant", language="en", aspects=["value"], sentiment="neutral", needs_review=True, review_reason="weak_support", support_type="near_exact", confidence=0.9),
+            _row("r3", domain="restaurant", language="en", aspects=["food quality"], sentiment="neutral", needs_review=True, review_reason="weak_support", support_type="near_exact", confidence=0.9),
             _row("r4", domain="restaurant", language="en", aspects=["general"], sentiment="neutral", needs_review=True, review_reason="fallback_general", support_type="exact", confidence=0.9),
             _row("r5", domain="restaurant", language="en", aspects=["performance"], sentiment="positive", needs_review=True, review_reason="weak_support", support_type="near_exact", confidence=0.9),
         ]
@@ -276,6 +280,24 @@ class TrainExportPolicyTests(unittest.TestCase):
         )
         self.assertEqual(metrics["train_domain_leakage_rows"], 0)
         self.assertEqual(metrics["train_domain_leakage_row_rate"], 0.0)
+
+    def test_strict_quality_metrics_capture_contamination_and_multi_aspect(self) -> None:
+        clean = _row("c1", domain="restaurant", language="en", aspects=["food quality", "service quality"], sentiment="positive", needs_review=False, support_type="near_exact")
+        contaminated = _row("x1", domain="restaurant", language="en", aspects=["performance"], sentiment="neutral", needs_review=False, support_type="exact")
+        contaminated["implicit"]["spans"] = [{"support_type": "exact", "label_type": "explicit", "leakage_flags": ["explicit_keyword_surface_leakage"]}]
+        contaminated["implicit"]["implicit_quality_tier"] = "strict_pass"
+        metrics = _strict_quality_metrics([clean, contaminated], challenge_macro_f1=1.0)
+        self.assertGreater(metrics["explicit_in_implicit_rate"], 0.0)
+        self.assertGreater(metrics["boundary_false_positive_count"], 0)
+        self.assertGreater(metrics["multi_aspect_ratio"], 0.0)
+        self.assertEqual(metrics["challenge_macro_f1"], 1.0)
+
+    def test_strict_row_passes_rejects_explicit_span(self) -> None:
+        row = _row("p1", domain="restaurant", language="en", aspects=["food quality"], sentiment="positive", needs_review=False, support_type="near_exact")
+        row["implicit"]["implicit_quality_tier"] = "strict_pass"
+        self.assertTrue(_strict_row_passes(row))
+        row["implicit"]["spans"] = [{"support_type": "exact", "label_type": "explicit"}]
+        self.assertFalse(_strict_row_passes(row))
 
 
 if __name__ == "__main__":

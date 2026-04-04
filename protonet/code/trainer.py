@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -14,13 +15,13 @@ try:
     from .config import ProtonetConfig
     from .evaluator import evaluate_episodes
     from .model import ProtoNetModel
-    from .progress import task_bar
+    from .progress import announce, task_bar
     from .prototype_bank import PrototypeBank, build_global_prototype_bank
 except ImportError:
     from config import ProtonetConfig
     from evaluator import evaluate_episodes
     from model import ProtoNetModel
-    from progress import task_bar
+    from progress import announce, task_bar
     from prototype_bank import PrototypeBank, build_global_prototype_bank
 
 
@@ -217,9 +218,13 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
     _warmup_representations(model, cfg, optimizer, train_episodes)
 
     for epoch in range(1, cfg.epochs + 1):
+        announce(f"[train] epoch {epoch}/{cfg.epochs}")
         model.train()
         running_loss = 0.0
         running_acc = 0.0
+        recent_loss: deque[float] = deque(maxlen=20)
+        recent_acc: deque[float] = deque(maxlen=20)
+        optimizer_updates = 0
         optimizer.zero_grad(set_to_none=True)
         with task_bar(total=len(train_episodes), desc=f"train:{epoch}/{cfg.epochs}", enabled=cfg.progress_enabled) as bar:
             for step_index, episode in enumerate(train_episodes, start=1):
@@ -236,12 +241,23 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
                         scaler.update()
                     else:
                         optimizer.step()
+                    optimizer_updates += 1
                     optimizer.zero_grad(set_to_none=True)
 
-                running_loss += float(loss.detach().cpu().item())
+                current_loss = float(loss.detach().cpu().item())
+                running_loss += current_loss
                 running_acc += accuracy
+                recent_loss.append(current_loss)
+                recent_acc.append(accuracy)
                 bar.update(1)
-                bar.set_postfix(loss=f"{running_loss / step_index:.3f}", acc=f"{running_acc / step_index:.3f}")
+                bar.set_postfix(
+                    loss=f"{current_loss:.3f}",
+                    avg_loss=f"{running_loss / step_index:.3f}",
+                    avg_acc=f"{running_acc / step_index:.3f}",
+                    recent_loss=f"{sum(recent_loss) / len(recent_loss):.3f}",
+                    recent_acc=f"{sum(recent_acc) / len(recent_acc):.3f}",
+                    updates=optimizer_updates,
+                )
 
         train_metrics = {
             "epoch": epoch,
@@ -256,14 +272,23 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
             }
         )
         history.append(train_metrics)
+        announce(
+            f"[train] epoch {epoch} complete "
+            f"loss={train_metrics['train_loss']:.3f} "
+            f"acc={train_metrics['train_accuracy']:.3f} "
+            f"val_acc={train_metrics['val_accuracy']:.3f} "
+            f"val_f1={train_metrics['val_macro_f1']:.3f}"
+        )
 
         if val_metrics["accuracy"] > best_val:
             best_val = val_metrics["accuracy"]
             wait = 0
             _save_checkpoint(model, cfg, history, checkpoint_path)
+            announce(f"[train] new best checkpoint val_acc={best_val:.3f}")
         else:
             wait += 1
             if wait >= cfg.patience:
+                announce(f"[train] early stopping at epoch {epoch} (patience={cfg.patience})")
                 break
 
     load_checkpoint(model, checkpoint_path)

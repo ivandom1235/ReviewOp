@@ -67,7 +67,9 @@ def _normalize_review_columns(frame: pd.DataFrame) -> pd.DataFrame:
         return frame
     for alias in _REVIEW_COLUMN_ALIASES:
         if alias in frame.columns:
-            frame = frame.rename(columns={alias: "review"})
+            # Keep source schema intact for text_column_override compatibility.
+            frame = frame.copy()
+            frame["review"] = frame[alias]
             return frame
     return frame
 

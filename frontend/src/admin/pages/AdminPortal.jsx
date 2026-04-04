@@ -228,13 +228,22 @@ export default function AdminPortal() {
 
 
   return (
-    <div className={`min-h-screen ${isDark ? "bg-[#060b18] text-slate-100" : "bg-[#f1f5f9] text-slate-800"}`}>
-      <header className={`border-b ${isDark ? "border-slate-800 bg-[#050a16]" : "border-slate-200 bg-white"}`}>
+    <div className="min-h-screen bg-app text-[hsl(var(--text-main))]">
+      <header className="border-b border-border-subtle bg-[hsla(var(--bg-surface)/0.82)] backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-5">
-          <div className="text-3xl font-bold tracking-[0.08em]">REVIEWOP</div>
+          <div className="text-3xl font-bold tracking-[0.08em] text-brand-primary">REVIEWOP</div>
           <div className="flex flex-wrap items-center gap-2">
             {pageNav.map((name) => (
-              <button key={name} type="button" onClick={() => setActivePage(name)} className={`rounded-xl px-3 py-2 text-sm font-semibold ${activePage === name ? "bg-emerald-500 text-slate-950" : isDark ? "bg-slate-800 text-slate-200" : "bg-slate-200 text-slate-700"}`}>
+              <button
+                key={name}
+                type="button"
+                onClick={() => setActivePage(name)}
+                className={`rounded-xl px-3 py-2 text-sm font-semibold transition-all ${
+                  activePage === name
+                    ? "premium-gradient text-white shadow-md"
+                    : "glass-card text-muted-main hover:text-brand-primary"
+                }`}
+              >
                 {name === "AspectAnalytics" ? "Analytics" : name}
               </button>
             ))}
@@ -244,19 +253,19 @@ export default function AdminPortal() {
             <button
               type="button"
               onClick={handleExportJson}
-              className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-cyan-700 text-cyan-100" : "bg-cyan-100 text-cyan-800"}`}
+              className="rounded-xl border border-border-subtle bg-app/30 px-3 py-2 text-sm font-semibold text-brand-primary transition-colors hover:bg-brand-primary/10"
             >
               Export JSON
             </button>
             <button
               type="button"
               onClick={handleExportPdf}
-              className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-violet-700 text-violet-100" : "bg-violet-100 text-violet-800"}`}
+              className="rounded-xl border border-border-subtle bg-app/30 px-3 py-2 text-sm font-semibold text-brand-primary transition-colors hover:bg-brand-primary/10"
             >
               Export PDF
             </button>
             <label className="inline-flex items-center gap-3 text-sm">
-              <span className={isDark ? "text-slate-300" : "text-slate-600"}>Day</span>
+              <span className="text-muted-main">Day</span>
               <span className="relative inline-flex items-center">
                 <input
                   type="checkbox"
@@ -265,10 +274,10 @@ export default function AdminPortal() {
                   onChange={(e) => setTheme(e.target.checked ? "dark" : "light")}
                   aria-label="Theme toggle"
                 />
-                <span className="h-8 w-14 rounded-full bg-slate-300 transition-all duration-300 peer-checked:bg-indigo-600" />
+                <span className="h-8 w-14 rounded-full bg-slate-300 transition-all duration-300 peer-checked:bg-blue-600" />
                 <span className="absolute left-1 top-1 h-6 w-6 rounded-full bg-white shadow transition-all duration-300 peer-checked:left-7" />
               </span>
-              <span className={isDark ? "text-slate-300" : "text-slate-600"}>Night</span>
+              <span className="text-muted-main">Night</span>
             </label>
             <button
               type="button"
@@ -276,7 +285,7 @@ export default function AdminPortal() {
                 logout();
                 navigate("/login");
               }}
-              className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-slate-800 text-slate-200" : "bg-slate-200 text-slate-700"}`}
+              className="rounded-xl border border-border-subtle bg-app/30 px-3 py-2 text-sm font-semibold text-muted-main transition-colors hover:bg-app/50"
             >
               Logout
             </button>
@@ -285,7 +294,7 @@ export default function AdminPortal() {
       </header>
 
       <main className="mx-auto max-w-7xl space-y-4 px-6 py-6">
-        {error ? <div className={`rounded-xl p-3 ${isDark ? "bg-red-950 text-red-300" : "bg-red-100 text-red-700"}`}>{error}</div> : null}
+        {error ? <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-red-300">{error}</div> : null}
 
         <div key={activePage} className="page-fade-in">
           <Suspense fallback={<RouteLoading label="Loading admin page..." />}>

@@ -21,7 +21,7 @@ class ImplicitPipelineTests(unittest.TestCase):
         self.assertIn("display quality", aspects)
         self.assertNotIn("the", aspects)
 
-    def test_build_implicit_row_prefers_exact_support_and_falls_back_cleanly(self) -> None:
+    def test_build_implicit_row_rejects_explicit_leakage_in_strict_mode(self) -> None:
         supported = build_implicit_row(
             {"id": "1", "split": "train", "review_text": "The battery life is great", "aspect": "battery life"},
             text_column="review_text",
@@ -30,13 +30,14 @@ class ImplicitPipelineTests(unittest.TestCase):
             row_index=0,
         )
         implicit = supported["implicit"]
-        self.assertEqual(implicit["aspects"], ["power"])
+        self.assertEqual(implicit["aspects"], ["general"])
         self.assertEqual(implicit["mode"], "zeroshot")
-        self.assertFalse(implicit["needs_review"])
-        self.assertEqual(implicit["spans"][0]["support_type"], "exact")
-        self.assertEqual(implicit["spans"][0]["matched_surface"].lower(), "battery life")
-        self.assertEqual(implicit["spans"][0]["latent_aspect"], "power")
-        self.assertEqual(implicit["spans"][0]["surface_aspect"], "battery life")
+        self.assertTrue(implicit["needs_review"])
+        self.assertEqual(implicit["review_reason"], "strict_leakage")
+        self.assertEqual(implicit["implicit_quality_tier"], "rejected")
+        self.assertEqual(implicit["strict_rejected_match_count"], 1)
+        self.assertIn("explicit_span_in_implicit", implicit["leakage_flags"])
+        self.assertEqual(len(implicit["spans"]), 0)
 
         fallback = build_implicit_row(
             {"id": "2", "split": "train", "review_text": "Nothing useful here", "aspect": "battery life"},
@@ -51,18 +52,32 @@ class ImplicitPipelineTests(unittest.TestCase):
         self.assertEqual(fallback_implicit["review_reason"], "fallback_general")
         self.assertFalse(fallback_implicit["llm_fallback_used"])
 
-    def test_build_implicit_row_maps_surface_to_latent_facet(self) -> None:
+    def test_build_implicit_row_maps_surface_to_latent_facet_with_non_explicit_cues(self) -> None:
         row = build_implicit_row(
-            {"id": "3", "split": "train", "review_text": "Disappointing for such a lovely screen and at a reasonable price", "aspect": "screen"},
+            {"id": "3", "split": "train", "review_text": "The laptop gets hot and drains in two hours."},
             text_column="review_text",
-            candidate_aspects=["screen", "price"],
+            candidate_aspects=["thermal", "power"],
             confidence_threshold=0.6,
             row_index=0,
         )
         implicit = row["implicit"]
-        self.assertIn("display quality", implicit["aspects"])
-        self.assertIn("value", implicit["aspects"])
-        self.assertTrue(all(span["latent_aspect"] in {"display quality", "value"} for span in implicit["spans"]))
+        self.assertIn("thermal", implicit["aspects"])
+        self.assertIn("power", implicit["aspects"])
+        self.assertGreaterEqual(len(implicit["aspects"]), 2)
+        self.assertIn("H1", {span["hardness_tier"] for span in implicit["spans"]})
+        self.assertTrue(all(span["label_type"] == "implicit" for span in implicit["spans"]))
+
+    def test_token_boundary_prevents_service_to_ice_false_positive(self) -> None:
+        row = build_implicit_row(
+            {"id": "svc1", "split": "train", "review_text": "The service was kind and responsive."},
+            text_column="review_text",
+            candidate_aspects=["service quality"],
+            confidence_threshold=0.6,
+            row_index=0,
+        )
+        implicit = row["implicit"]
+        self.assertNotIn("thermal", implicit["aspects"])
+        self.assertFalse(any(str(span.get("aspect", "")).lower() == "ice" for span in implicit["spans"]))
 
     def test_build_implicit_row_avoids_cross_domain_keyword_leakage(self) -> None:
         gym_row = build_implicit_row(
@@ -83,7 +98,8 @@ class ImplicitPipelineTests(unittest.TestCase):
         )
         self.assertNotIn("dining experience", gym_row["implicit"]["aspects"])
         self.assertNotIn("compatibility", taxi_row["implicit"]["aspects"])
-        self.assertIn("timeliness", taxi_row["implicit"]["aspects"])
+        self.assertEqual(taxi_row["implicit"]["aspects"], ["general"])
+        self.assertEqual(taxi_row["implicit"]["review_reason"], "strict_leakage")
 
     def test_strict_domain_conditioning_filters_out_of_domain_latent_matches(self) -> None:
         row = build_implicit_row(
@@ -98,7 +114,7 @@ class ImplicitPipelineTests(unittest.TestCase):
         )
         implicit = row["implicit"]
         self.assertNotIn("food quality", implicit["aspects"])
-        self.assertGreaterEqual(int(implicit.get("domain_filtered_matches", 0)), 1)
+        self.assertIn("performance", implicit["aspects"])
 
     def test_adaptive_soft_conditioning_keeps_out_of_domain_when_evidence_is_strong(self) -> None:
         strict_row = build_implicit_row(
@@ -125,8 +141,8 @@ class ImplicitPipelineTests(unittest.TestCase):
             weak_domain_support_row_threshold=80,
         )
         self.assertIn("general", strict_row["implicit"]["aspects"])
-        self.assertIn("food quality", adaptive_row["implicit"]["aspects"])
-        self.assertGreaterEqual(int(adaptive_row["implicit"].get("domain_prior_penalty_count", 0)), 1)
+        self.assertEqual(adaptive_row["implicit"]["aspects"], ["general"])
+        self.assertEqual(adaptive_row["implicit"]["review_reason"], "strict_leakage")
 
     def test_collect_diagnostics_counts_support_and_fallback(self) -> None:
         rows = [
@@ -156,7 +172,7 @@ class ImplicitPipelineTests(unittest.TestCase):
 
     def test_hybrid_gold_support_does_not_force_review(self) -> None:
         row = build_implicit_row(
-            {"id": "6", "split": "train", "review_text": "The battery life is excellent", "aspect": "battery life"},
+            {"id": "6", "split": "train", "review_text": "It gets hot while gaming.", "aspect": "thermal"},
             text_column="review_text",
             candidate_aspects=[],
             confidence_threshold=0.6,
@@ -164,7 +180,7 @@ class ImplicitPipelineTests(unittest.TestCase):
             implicit_mode="hybrid",
         )
         implicit = row["implicit"]
-        self.assertIn("power", implicit["aspects"])
+        self.assertIn("thermal", implicit["aspects"])
         self.assertFalse(implicit["needs_review"])
         self.assertIsNone(implicit["review_reason"])
 

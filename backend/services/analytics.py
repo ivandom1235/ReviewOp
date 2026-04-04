@@ -9,9 +9,9 @@ from statistics import pstdev
 from typing import Optional, List, Tuple
 
 from sqlalchemy import func, case, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
-from models.tables import Alert, DismissedAlert, ProductCatalog, Review, Prediction, User, UserProductReview
+from models.tables import Alert, DismissedAlert, ProductCatalog, Review, Prediction, EvidenceSpan, User, UserProductReview
 from services.graph_builders import _infer_origin
 
 
@@ -405,19 +405,38 @@ def aspect_detail(db: Session, aspect: str, interval: str = "day", domain: Optio
         }
 
     examples = evidence_drilldown(db, aspect=aspect, limit=8, domain=domain)
-    explicit_count = sum(1 for item in examples if item["origin"] == "explicit")
-    implicit_count = sum(1 for item in examples if item["origin"] == "implicit")
 
-    connections = defaultdict(int)
-    reviews = db.query(Review).join(Prediction, Prediction.review_id == Review.id).filter(Prediction.aspect_raw == aspect)
+    origin_samples = db.query(
+        Prediction.aspect_raw.label("aspect"),
+        func.count(Prediction.id).label("count"),
+        func.max(EvidenceSpan.snippet).label("snippet"),
+    ).outerjoin(EvidenceSpan, EvidenceSpan.prediction_id == Prediction.id).join(Review, Review.id == Prediction.review_id).filter(Prediction.aspect_raw == aspect)
     if domain:
-        reviews = reviews.filter(Review.domain == domain)
-    for review in reviews.limit(400).all():
-        others = {p.aspect_raw for p in review.predictions if p.aspect_raw != aspect}
-        for other in others:
-            connections[other] += 1
+        origin_samples = origin_samples.filter(Review.domain == domain)
+    origin_samples = origin_samples.group_by(Prediction.aspect_raw).all()
+    explicit_count = 0
+    implicit_count = 0
+    for sample in origin_samples:
+        origin = _infer_origin(sample.aspect, sample.snippet)
+        count = int(sample.count or 0)
+        if origin == "implicit":
+            implicit_count += count
+        else:
+            explicit_count += count
 
-    connected = [{"aspect": key, "weight": val} for key, val in sorted(connections.items(), key=lambda item: (-item[1], item[0]))[:12]]
+    pred_anchor = aliased(Prediction)
+    pred_peer = aliased(Prediction)
+    connected_q = db.query(
+        pred_peer.aspect_raw.label("aspect"),
+        func.count(func.distinct(pred_anchor.review_id)).label("weight"),
+    ).join(pred_peer, pred_peer.review_id == pred_anchor.review_id).join(Review, Review.id == pred_anchor.review_id).filter(
+        pred_anchor.aspect_raw == aspect,
+        pred_peer.aspect_raw != aspect,
+    )
+    if domain:
+        connected_q = connected_q.filter(Review.domain == domain)
+    connected_rows = connected_q.group_by(pred_peer.aspect_raw).order_by(text("weight DESC"), pred_peer.aspect_raw.asc()).limit(12).all()
+    connected = [{"aspect": row.aspect, "weight": int(row.weight or 0)} for row in connected_rows]
     trend = aspect_trends(db, interval=interval, domain=domain, limit=5000)
     trend = [t for t in trend if t["aspect"] == aspect]
     return {
@@ -625,13 +644,33 @@ def segment_drilldown(db: Session, domain: Optional[str] = None, limit: int = 20
     ).join(Prediction, Prediction.review_id == Review.id).group_by(Review.domain)
     if domain:
         domain_q = domain_q.filter(Review.domain == domain)
-    for row in domain_q.all():
+    domain_rows = domain_q.all()
+
+    domain_top_neg_q = db.query(
+        Review.domain.label("segment"),
+        Prediction.aspect_raw.label("aspect"),
+        func.count(Prediction.id).label("c"),
+    ).join(Prediction, Prediction.review_id == Review.id).filter(Prediction.sentiment == "negative")
+    if domain:
+        domain_top_neg_q = domain_top_neg_q.filter(Review.domain == domain)
+    domain_top_neg_rows = domain_top_neg_q.group_by(Review.domain, Prediction.aspect_raw).all()
+    domain_top_negative: dict[str, tuple[str, int]] = {}
+    for row in domain_top_neg_rows:
+        key = row.segment or "unknown"
+        current = domain_top_negative.get(key)
+        count = int(row.c or 0)
+        aspect = str(row.aspect)
+        if current is None or count > current[1] or (count == current[1] and aspect < current[0]):
+            domain_top_negative[key] = (aspect, count)
+
+    for row in domain_rows:
         mentions = int(row.mentions or 0)
         neg = int(row.neg or 0)
-        top_neg = db.query(Prediction.aspect_raw, func.count(Prediction.id).label("c")).join(Review, Review.id == Prediction.review_id).filter(Review.domain == row.segment, Prediction.sentiment == "negative").group_by(Prediction.aspect_raw).order_by(text("c DESC")).first()
+        segment_key = row.segment or "unknown"
+        top_neg = domain_top_negative.get(segment_key)
         out.append({
             "segment_type": "domain",
-            "segment_value": row.segment or "unknown",
+            "segment_value": segment_key,
             "review_count": int(row.reviews or 0),
             "mention_count": mentions,
             "negative_pct": round((neg / mentions) * 100, 2) if mentions else 0.0,

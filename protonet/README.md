@@ -1,154 +1,78 @@
-# Protonet
+# ProtoNet
 
-`protonet/` is the standalone few-shot training pipeline for ReviewOp. It can train from:
+Standalone few-shot training pipeline for ReviewOp.
 
-- episodic example rows in `input/episodic/`
-- review-level rows in `input/reviewlevel/`
+CLI entrypoint: `protonet/code/cli.py`
 
-The entry point is `code/cli.py`, which supports `train`, `eval`, and `export`.
+Supported commands:
 
-## Directory Layout
+- `train`
+- `eval`
+- `export`
 
-```text
-protonet/
-|-- code/
-|-- input/
-|   |-- episodic/
-|   `-- reviewlevel/
-|-- metadata/
-|-- output/
-`-- requirements.txt
-```
+## Install
 
-## Installation
-
-From the repo root:
+From repo root:
 
 ```powershell
 pip install -r protonet\requirements.txt
 ```
 
-Or from inside `protonet/`:
+## Recommended Input Source
+
+Use dataset builder compatibility exports directly (no copy needed):
+
+- Episodic: `dataset_builder/output/compat/protonet/episodic/`
+- Review-level: `dataset_builder/output/compat/protonet/reviewlevel/`
+
+## Important Path Clarification
+
+- `--input-dir` points to where ProtoNet reads data from (for example `dataset_builder/output/...`).
+- ProtoNet output is **not** written into `dataset_builder/output/`.
+- By default, ProtoNet writes to:
+  - `protonet/output/` (checkpoints, episode cache, predictions, history)
+  - `protonet/metadata/` (report and exported bundle)
+- You only change this behavior if you explicitly pass `--output-dir` or `--metadata-dir`.
+
+## Train
+
+### Production-style transformer run
 
 ```powershell
-pip install -r requirements.txt
+python protonet\code\cli.py train --input-type episodic --input-dir dataset_builder\output\compat\protonet\episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer
 ```
 
-## Input Modes
-
-### Episodic input
-
-This is the primary path for the repo. Copy the dataset builder output into `protonet/input/episodic/`:
+If model download is required:
 
 ```powershell
-Copy-Item "dataset_builder\output\episodic\*" -Destination "protonet\input\episodic\" -Recurse -Force
+python protonet\code\cli.py train --input-type episodic --input-dir dataset_builder\output\compat\protonet\episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer --allow-model-download
 ```
 
-If you are already inside `protonet/`, use:
+### Fast CPU-friendly smoke run
 
 ```powershell
-Copy-Item "..\dataset_builder\output\episodic\*" -Destination ".\input\episodic\" -Recurse -Force
+python protonet\code\cli.py train --input-type episodic --input-dir dataset_builder\output\compat\protonet\episodic --encoder-backend bow --n-way 2 --k-shot 1 --q-query 1 --epochs 2 --patience 1 --max-train-episodes 40 --max-eval-episodes 16
 ```
 
-Expected files:
-
-- `protonet/input/episodic/train.jsonl`
-- `protonet/input/episodic/val.jsonl`
-- `protonet/input/episodic/test.jsonl`
-
-### Review-level input
-
-You can also train from review-level rows:
+### Train from review-level export
 
 ```powershell
-Copy-Item "dataset_builder\output\reviewlevel\*" -Destination "protonet\input\reviewlevel\" -Recurse -Force
+python protonet\code\cli.py train --input-type reviewlevel --input-dir dataset_builder\output\compat\protonet\reviewlevel --encoder-backend transformer --production-require-transformer
 ```
 
-If you are already inside `protonet/`, use:
+## Evaluate
 
 ```powershell
-Copy-Item "..\dataset_builder\output\reviewlevel\*" -Destination ".\input\reviewlevel\" -Recurse -Force
+python protonet\code\cli.py eval --input-type episodic --input-dir dataset_builder\output\compat\protonet\episodic --split test --checkpoint protonet\output\checkpoints\best.pt
 ```
 
-The CLI will adapt review-level rows into the format needed for episode generation.
-
-## CLI Commands
-
-### Train
-
-#### From the repo root
-
-Default transformer-oriented training run:
+## Export
 
 ```powershell
-python protonet\code\cli.py train --input-type episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer
+python protonet\code\cli.py export --input-type episodic --input-dir dataset_builder\output\compat\protonet\episodic --checkpoint protonet\output\checkpoints\best.pt
 ```
 
-Lower-cost CPU-friendly run:
-
-```powershell
-python protonet\code\cli.py train --input-type episodic --encoder-backend bow --n-way 2 --k-shot 1 --q-query 1 --epochs 2 --patience 1 --max-train-episodes 40 --max-eval-episodes 16
-```
-
-Transformer run with model download enabled:
-
-```powershell
-python protonet\code\cli.py train --input-type episodic --force-rebuild-episodes --encoder-backend transformer --encoder-model-name distilroberta-base --production-require-transformer --allow-model-download
-```
-
-Train from review-level input:
-
-```powershell
-python protonet\code\cli.py train --input-type reviewlevel --encoder-backend transformer --production-require-transformer
-```
-
-#### From inside `protonet/`
-
-Default episodic run:
-
-```powershell
-cd protonet
-python code\cli.py train --input-type episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer
-```
-
-Review-level run:
-
-```powershell
-cd protonet
-python code\cli.py train --input-type reviewlevel --encoder-backend transformer --production-require-transformer
-```
-
-### Evaluate
-
-Evaluate a saved checkpoint on a split:
-
-```powershell
-python protonet\code\cli.py eval --input-type episodic --split test --checkpoint protonet\output\checkpoints\best.pt
-```
-
-Inside `protonet/`:
-
-```powershell
-python code\cli.py eval --input-type episodic --split test --checkpoint output\checkpoints\best.pt
-```
-
-### Export
-
-Export a portable model bundle from a checkpoint:
-
-```powershell
-python protonet\code\cli.py export --input-type episodic --checkpoint protonet\output\checkpoints\best.pt
-```
-
-Inside `protonet/`:
-
-```powershell
-python code\cli.py export --input-type episodic --checkpoint output\checkpoints\best.pt
-```
-
-## Important Options
-
-Common flags exposed by `code/cli.py`:
+## Key CLI Options
 
 ```text
 --input-type {episodic,reviewlevel}
@@ -157,76 +81,24 @@ Common flags exposed by `code/cli.py`:
 --metadata-dir
 --encoder-backend {auto,transformer,bow}
 --encoder-model-name
---n-way
---k-shot
---q-query
---epochs
---warmup-epochs
---patience
---max-train-episodes
---max-eval-episodes
---contrastive-weight
---prototype-smoothing
---low-confidence-threshold
---seed
---no-progress
 --force-rebuild-episodes
---strict-encoder
 --production-require-transformer
 --allow-model-download
 ```
 
-Current default transformer model:
-
-```text
-microsoft/deberta-v3-base
-```
+Default transformer model: `microsoft/deberta-v3-base`
 
 ## Outputs
 
-Training writes artifacts to both `output/` and `metadata/`.
+- `protonet/output/checkpoints/best.pt`
+- `protonet/output/predictions/*.jsonl`
+- `protonet/output/training_history.json`
+- `protonet/metadata/report.json`
+- `protonet/metadata/model_bundle.pt`
 
-### `output/`
-
-- `output/checkpoints/best.pt`
-- `output/episodes/`
-- `output/predictions/val_predictions.jsonl`
-- `output/predictions/test_predictions.jsonl`
-- `output/training_history.json`
-
-### `metadata/`
-
-- `metadata/report.json`
-- `metadata/model_bundle.pt`
-
-`metadata/report.json` summarizes:
-
-- resolved config
-- input split sizes
-- generated episode counts
-- train, validation, and test metrics
-- exported artifact paths
-
-
-
-## Typical End-to-End Flow
+## End-to-End Commands (Repo Root)
 
 ```powershell
-python dataset_builder\code\build_dataset.py
-Copy-Item "dataset_builder\output\episodic\*" -Destination "protonet\input\episodic\" -Recurse -Force
-python protonet\code\cli.py train --input-type episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer
-```
-
-That flow leaves the trained checkpoint in `protonet/output/checkpoints/` and the portable bundle plus report in `protonet/metadata/`.
-
-## Fastest Correct Commands
-
-If you only want the shortest working sequence for this repo:
-
-From the repo root:
-
-```powershell
-python dataset_builder\code\build_dataset.py
-Copy-Item "dataset_builder\output\episodic\*" -Destination "protonet\input\episodic\" -Recurse -Force
-python protonet\code\cli.py train --input-type episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer
+python dataset_builder\code\build_dataset.py --input-dir dataset_builder\input --output-dir dataset_builder\output
+python protonet\code\cli.py train --input-type episodic --input-dir dataset_builder\output\compat\protonet\episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer
 ```

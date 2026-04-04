@@ -10,10 +10,19 @@ import torch
 
 
 PROTONET_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = PROTONET_ROOT.parent
 CODE_ROOT = PROTONET_ROOT / "code"
 INPUT_ROOT = PROTONET_ROOT / "input"
 OUTPUT_ROOT = PROTONET_ROOT / "output"
 METADATA_ROOT = PROTONET_ROOT / "metadata"
+COMPAT_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output" / "compat" / "protonet"
+
+
+def resolve_default_input_dir(input_type: str) -> Path:
+    compat_dir = COMPAT_INPUT_ROOT / input_type
+    if compat_dir.exists():
+        return compat_dir
+    return INPUT_ROOT / input_type
 
 
 @dataclass

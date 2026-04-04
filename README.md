@@ -1,163 +1,112 @@
 # ReviewOp
 
-ReviewOp is a monorepo for aspect-based sentiment analysis workflows across four main areas:
+ReviewOp is a monorepo for aspect-based sentiment analysis with:
 
-- `frontend/`: React + Vite UI for admin analytics and the user review portal.
-- `backend/`: FastAPI + MySQL application for inference, analytics, graph views, jobs, and user flows.
-- `dataset_builder/`: Offline pipeline that produces explicit and implicit JSONL datasets.
-- `protonet/`: Standalone prototypical network training and export pipeline for few-shot experiments.
-
-The current repo layout uses the active `protonet/` module for the implicit prototype pipeline.
+- `backend/`: FastAPI + MySQL APIs for inference, analytics, graph, and user flows
+- `frontend/`: React + Vite UI
+- `dataset_builder/`: dataset generation pipeline (explicit + implicit JSONL outputs)
+- `protonet/`: few-shot ProtoNet training/eval/export pipeline
 
 ## Repo Layout
 
 ```text
 ReviewOp/
 |-- backend/
-|-- dataset_builder/
 |-- frontend/
+|-- dataset_builder/
 |-- protonet/
 |-- run-project.ps1
 `-- run-services.ps1
 ```
 
-## Quick Start
+## Prerequisites
 
-### Automated setup
+- Python `3.10` to `3.13`
+- Node.js `18+`
+- MySQL running locally (or reachable from this machine)
 
-From the repo root:
+## Quick Start (Windows PowerShell)
+
+### 1. One-time setup
 
 ```powershell
+Copy-Item .env.example .env
 .\run-project.ps1
 ```
 
-This script:
+`run-project.ps1` installs backend and frontend dependencies and prepares `backend/venv`.
 
-- checks for Python and Node.js
-- creates `backend/venv` if needed
-- installs backend Python dependencies
-- installs frontend npm dependencies
-- pauses so you can confirm backend database settings
-
-After setup, start both services:
+### 2. Start backend + frontend
 
 ```powershell
 .\run-services.ps1
 ```
 
-### Manual setup
-
-Backend:
+Or run manually in two terminals:
 
 ```powershell
+# Terminal 1
 cd backend
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-Copy-Item .env.example .env
+.\venv\Scripts\Activate.ps1
 python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-Frontend:
-
 ```powershell
+# Terminal 2
 cd frontend
-npm install
 npm run dev
 ```
 
-## Configuration
+### 3. Verify
 
-### Backend
+- Backend health: `http://127.0.0.1:8000/health`
+- API docs: `http://127.0.0.1:8000/docs`
+- Frontend: URL printed by Vite (usually `http://127.0.0.1:5173`)
 
-The backend reads environment variables from `backend/.env`. Start from `backend/.env.example` and update the MySQL values:
+## Environment Setup
 
-```text
+Edit `.env` (repo root) and set at least:
+
+```dotenv
 MYSQL_HOST=127.0.0.1
 MYSQL_PORT=3306
 MYSQL_USER=root
-MYSQL_PASSWORD=your_local_password_here
+MYSQL_PASSWORD=your_password
 MYSQL_DB=protodb
 ```
 
-When those credentials are valid, the backend will create the configured database automatically if it does not already exist.
+Optional LLM/provider settings are in `.env.example`.
 
-Useful backend defaults:
+## Common Workflows
 
-- API docs: `http://127.0.0.1:8000/docs`
-- Health check: `http://127.0.0.1:8000/health`
-- Default seq2seq model: `google/flan-t5-small`
-
-Seeded accounts created on startup:
-
-- Admin: `admin` / `12345`
-- User: `user` / `12345`
-
-### Frontend
-
-The Vite dev server proxies API requests to `http://127.0.0.1:8000` by default. You can override that with:
-
-- `VITE_PROXY_TARGET`
-- `VITE_API_BASE_URL`
-
-## Data and Model Workflow
-
-### 1. Build datasets
-
-Place raw files in `dataset_builder/input/`, then run:
+### Build datasets
 
 ```powershell
 python dataset_builder\code\build_dataset.py --input-dir dataset_builder\input --output-dir dataset_builder\output
 ```
 
-This writes:
+Key outputs:
 
-- explicit data to `dataset_builder/output/explicit/`
-- implicit data to `dataset_builder/output/implicit/`
-- quality reports to `dataset_builder/output/reports/`
+- `dataset_builder/output/explicit/*.jsonl`
+- `dataset_builder/output/implicit/*.jsonl`
+- `dataset_builder/output/implicit_strict/*.jsonl`
+- `dataset_builder/output/reports/build_report.json`
+- `dataset_builder/output/compat/protonet/episodic/*.jsonl`
+- `dataset_builder/output/compat/protonet/reviewlevel/*.jsonl`
 
-See `dataset_builder/README.md` for CLI flags and output details.
-
-### 2. Train the ProtoNet pipeline
-
-The ProtoNet module can train from the implicit output after copying or adapting it into `protonet/input/episodic/`:
+### Train ProtoNet from dataset builder output
 
 ```powershell
-Copy-Item "dataset_builder\output\implicit\*" -Destination "protonet\input\episodic\" -Recurse -Force
-python protonet\code\cli.py train --input-type episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer
+python protonet\code\cli.py train --input-type episodic --input-dir dataset_builder\output\compat\protonet\episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer
 ```
 
-Training artifacts are written under:
+If model weights are not cached yet:
 
-- `protonet/output/`
-- `protonet/metadata/`
-
-See `protonet/README.md` for `train`, `eval`, and `export` commands.
-
-## Current Application Surface
-
-Backend routes currently include:
-
-- `/infer`
-- `/jobs`
-- `/analytics`
-- `/graph`
-- `/user`
-
-The frontend includes:
-
-- admin dashboards and analytics views
-- graph exploration screens
-- user authentication and review submission flows
-- product search and review history pages
+```powershell
+python protonet\code\cli.py train --input-type episodic --input-dir dataset_builder\output\compat\protonet\episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer --allow-model-download
+```
 
 ## Module Docs
 
 - `dataset_builder/README.md`
 - `protonet/README.md`
-
-## Notes
-
-- Generated datasets, checkpoints, and local artifacts should stay out of version control unless you intentionally want to track them.
-- Some training and inference flows may download model weights the first time they run.
-- Temporary folders may be created by tests under `protonet/`; they are not part of the stable input/output contract.

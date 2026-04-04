@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
-from core.db import engine, Base, get_db, SessionLocal
+from core.db import engine, get_db, SessionLocal, init_db
 from core.config import settings
+from core.errors import AppError, DatabaseFailure
 from models.schemas import InferReviewIn, InferReviewOut, PredictionOut, EvidenceSpanOut
 from services.seq2seq_infer import Seq2SeqEngine
-from services.review_pipeline import refresh_corpus_graph
+from services.review_pipeline import refresh_corpus_graph, _refresh_corpus_graph_task
 from services.hybrid_pipeline import run_single_review_hybrid_pipeline
 from services.implicit_client import ImplicitClient
 from services.llm_verifier import LLMVerifier
@@ -23,13 +26,16 @@ from routes.infer import router as infer_router
 from routes.user_portal import router as user_portal_router, seed_default_accounts
 
 
-app = FastAPI(title="Proto ReviewOps MVP (Hybrid)", version="0.4.0")
+app = FastAPI(title="Proto ReviewOps MVP (Hybrid)", version="5.5.0")
 logger = logging.getLogger(__name__)
+
+
+
 
 
 @app.on_event("startup")
 def on_startup():
-    Base.metadata.create_all(bind=engine)
+    init_db()
     _apply_schema_patches()
 
     db = SessionLocal()
@@ -41,6 +47,39 @@ def on_startup():
     app.state.seq2seq_engine = Seq2SeqEngine.load()
     app.state.implicit_client = ImplicitClient()
     app.state.llm_verifier = LLMVerifier()
+
+
+@app.exception_handler(AppError)
+async def app_error_handler(_: Request, exc: AppError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"ok": False, "error": exc.to_payload()},
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def sqlalchemy_error_handler(_: Request, exc: SQLAlchemyError):
+    logger.exception("Database failure", exc_info=exc)
+    failure = DatabaseFailure()
+    return JSONResponse(
+        status_code=failure.status_code,
+        content={"ok": False, "error": failure.to_payload()},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(_: Request, exc: Exception):
+    logger.exception("Unhandled server error", exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "ok": False,
+            "error": {
+                "code": "internal_error",
+                "message": "An unexpected error occurred.",
+            },
+        },
+    )
 
 
 def _apply_schema_patches() -> None:
@@ -88,12 +127,28 @@ def health(db: Session = Depends(get_db)):
             "llm_verifier_enabled": settings.enable_llm_verifier,
             "llm_model": settings.llm_model_name if settings.enable_llm_verifier else None,
         }
+    except SQLAlchemyError as ex:
+        logger.warning("Health check failed due to database connectivity", exc_info=ex)
+        return {
+            "ok": False,
+            "error": {
+                "code": "database_unavailable",
+                "message": "Database connectivity check failed.",
+            },
+        }
     except Exception as ex:
-        return {"ok": False, "error": str(ex)}
+        logger.exception("Health check failed", exc_info=ex)
+        return {
+            "ok": False,
+            "error": {
+                "code": "health_check_failed",
+                "message": "Health check failed.",
+            },
+        }
 
 
 @app.post("/infer/review", response_model=InferReviewOut, tags=["infer"])
-def infer_review(payload: InferReviewIn, db: Session = Depends(get_db)):
+def infer_review(payload: InferReviewIn, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     text_in = (payload.text or "").strip()
     if not text_in:
         raise HTTPException(status_code=400, detail="text is required")
@@ -113,10 +168,7 @@ def infer_review(payload: InferReviewIn, db: Session = Depends(get_db)):
     )
     db.commit()
 
-    try:
-        refresh_corpus_graph(db, domain=review_obj.domain)
-    except Exception:
-        logger.exception("Failed refreshing corpus graph after infer/review")
+    background_tasks.add_task(_refresh_corpus_graph_task, review_obj.domain)
 
     db.refresh(review_obj)
 

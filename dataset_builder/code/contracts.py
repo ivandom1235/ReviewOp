@@ -34,12 +34,21 @@ class BuilderConfig:
     no_drop: bool = False
     enable_llm_fallback: bool = True
     llm_fallback_threshold: float = 0.65
+    enable_reasoned_recovery: bool = True
+    llm_provider: str | None = None  # options: runpod, openai, anthropic, ollama
+    llm_model_name: str = "llama3-8b-instruct"
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_max_retries: int = 3
     benchmark_key: str | None = None
     model_family: str = "heuristic_latent"
     augmentation_mode: str = "none"
     prompt_mode: str = "constrained"
     output_version: str = "v4"
     reset_output: bool = True
+    high_difficulty: bool = False
+    adversarial_refine: bool = False
+    multi_aspect_ratio: float = 0.0
     gold_annotations_path: Path | None = None
     emit_review_set: bool = False
     review_set_size: int = 300
@@ -79,6 +88,14 @@ class BuilderConfig:
     train_topup_allowed_support_types: tuple[str, ...] = ("exact", "near_exact", "gold")
     train_target_min_rows: int = 1600
     train_target_max_rows: int = 2000
+    strict_implicit_enabled: bool = True
+    strict_review_sample_size: int = 200
+    strict_explicit_in_implicit_rate_max: float = 0.0
+    strict_boundary_fp_max: int = 0
+    strict_h2_h3_ratio_min: float = 0.35
+    strict_multi_aspect_ratio_min: float = 0.12
+    strict_challenge_macro_f1_min: float = 0.5
+    max_workers: int = 10
 
     @property
     def explicit_dir(self) -> Path:
@@ -92,13 +109,17 @@ class BuilderConfig:
     def reports_dir(self) -> Path:
         return self.output_dir / self.reports_subdir
 
+    @property
+    def implicit_strict_dir(self) -> Path:
+        return self.output_dir / "implicit_strict"
+
     def ensure_dirs(self, *, reset_output: bool | None = None) -> None:
         should_reset = self.reset_output if reset_output is None else reset_output
         if self.dry_run or self.preview_only:
             should_reset = False
         if should_reset and self.output_dir.exists():
             shutil.rmtree(self.output_dir)
-        for path in (self.output_dir, self.explicit_dir, self.implicit_dir, self.reports_dir):
+        for path in (self.output_dir, self.explicit_dir, self.implicit_dir, self.implicit_strict_dir, self.reports_dir):
             path.mkdir(parents=True, exist_ok=True)
 
 

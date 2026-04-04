@@ -36,8 +36,6 @@ def ensure_database_exists() -> None:
     admin_engine.dispose()
 
 
-ensure_database_exists()
-
 engine = create_engine(
     settings.mysql_url,
     pool_pre_ping=True,
@@ -46,6 +44,12 @@ engine = create_engine(
 )
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+
+def init_db():
+    """Initializes the database and ensures it exists."""
+    ensure_database_exists()
+    Base.metadata.create_all(bind=engine)
 
 
 def get_db():

@@ -23,6 +23,14 @@ class DatasetSummary:
     input_type: str
 
 
+def _normalize_sentiment(value: Any, fallback: str = "neutral") -> str:
+    candidate = value
+    if isinstance(candidate, list):
+        candidate = candidate[0] if candidate else fallback
+    sentiment = str(candidate or fallback).strip().lower()
+    return sentiment or fallback
+
+
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
@@ -69,7 +77,9 @@ def validate_reviewlevel_rows(rows: List[Dict[str, Any]], split: str) -> None:
                 {
                     "aspect": aspect,
                     "implicit_aspect": aspect,
-                    "sentiment": implicit.get("aspect_sentiments", {}).get(aspect, implicit.get("dominant_sentiment", "neutral")),
+                    "sentiment": _normalize_sentiment(
+                        implicit.get("aspect_sentiments", {}).get(aspect, implicit.get("dominant_sentiment", "neutral"))
+                    ),
                     "confidence": float(implicit.get("aspect_confidence", {}).get(aspect, implicit.get("avg_confidence", 0.5))),
                     "evidence_sentence": row.get("source_text", row.get("review_text", "")),
                 }
@@ -78,6 +88,9 @@ def validate_reviewlevel_rows(rows: List[Dict[str, Any]], split: str) -> None:
             row["labels"] = labels
         if "labels" not in row or not isinstance(row["labels"], list) or not row["labels"]:
             raise ValueError(f"reviewlevel row {index} in split {split} has no labels")
+        for label in row["labels"]:
+            if isinstance(label, dict):
+                label["sentiment"] = _normalize_sentiment(label.get("sentiment"))
         if not row.get("review_text") and not row.get("clean_text") and not row.get("source_text"):
             raise ValueError(f"reviewlevel row {index} in split {split} is missing review text")
         if row.get("split") and str(row["split"]).lower() != split:
@@ -102,7 +115,9 @@ def validate_episodic_rows(rows: List[Dict[str, Any]], split: str) -> str:
                         "domain": row.get("domain", "unknown"),
                         "aspect": aspect,
                         "implicit_aspect": aspect,
-                        "sentiment": implicit.get("aspect_sentiments", {}).get(aspect, implicit.get("dominant_sentiment", "neutral")),
+                        "sentiment": _normalize_sentiment(
+                            implicit.get("aspect_sentiments", {}).get(aspect, implicit.get("dominant_sentiment", "neutral"))
+                        ),
                         "label_type": "implicit",
                         "confidence": float(implicit.get("aspect_confidence", {}).get(aspect, implicit.get("avg_confidence", 0.5))),
                         "split": row.get("split", split),

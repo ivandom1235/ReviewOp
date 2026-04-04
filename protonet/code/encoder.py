@@ -143,24 +143,28 @@ class HybridTextEncoder(nn.Module):
         encoded = {key: value.to(self.cfg.device) for key, value in encoded.items()}
         outputs = self.model(**encoded)
         hidden = outputs.last_hidden_state
-        attention_mask = encoded["attention_mask"]
+        attention_mask = encoded["attention_mask"].to(self.cfg.device)
         start_id = self.tokenizer.convert_tokens_to_ids("[E_START]")
         end_id = self.tokenizer.convert_tokens_to_ids("[E_END]")
 
-        pooled: List[torch.Tensor] = []
-        for row_index in range(hidden.size(0)):
-            input_ids = encoded["input_ids"][row_index]
-            start_pos = (input_ids == start_id).nonzero(as_tuple=False)
-            end_pos = (input_ids == end_id).nonzero(as_tuple=False)
-            if len(start_pos) and len(end_pos):
-                start = int(start_pos[0].item()) + 1
-                end = int(end_pos[0].item())
-                if start < end:
-                    pooled.append(hidden[row_index, start:end].mean(dim=0))
-                    continue
-            mask = attention_mask[row_index].unsqueeze(-1)
-            pooled.append((hidden[row_index] * mask).sum(dim=0) / mask.sum().clamp(min=1))
-        return torch.stack(pooled, dim=0)
+        # Vectorized evidence-aware pooling
+        input_ids = encoded["input_ids"].to(self.cfg.device)
+        start_mask = (input_ids == start_id)
+        end_mask = (input_ids == end_id)
+        has_both = start_mask.any(dim=1) & end_mask.any(dim=1)
+        
+        if has_both.any():
+            start_indices = start_mask.float().argmax(dim=1)
+            end_indices = end_mask.float().argmax(dim=1)
+            seq_range = torch.arange(input_ids.size(1), device=self.cfg.device).unsqueeze(0)
+            range_mask = (seq_range > start_indices.unsqueeze(1)) & (seq_range < end_indices.unsqueeze(1))
+            range_mask = range_mask & has_both.unsqueeze(1) & (start_indices.unsqueeze(1) < end_indices.unsqueeze(1))
+            final_mask = torch.where(range_mask.any(dim=1, keepdim=True), range_mask, attention_mask.bool())
+        else:
+            final_mask = attention_mask.bool()
+            
+        mask_float = final_mask.float().unsqueeze(-1)
+        return (hidden * mask_float).sum(dim=1) / mask_float.sum(dim=1).clamp(min=1.0)
 
     def forward(self, texts: List[str]) -> torch.Tensor:
         return self.encode(texts)
