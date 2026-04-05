@@ -58,6 +58,10 @@ class ProtonetRuntime:
         encoder = HybridTextEncoder(cfg)
         projection = ProjectionHead(encoder.hidden_size, int(cfg.projection_dim), float(cfg.dropout))
         projection.load_state_dict(payload["projection_state_dict"])
+        if "encoder_state" in payload:
+            encoder_state = payload["encoder_state"]
+            if "state_dict" in encoder_state and encoder.model is not None:
+                encoder.model.load_state_dict(encoder_state["state_dict"])
         encoder.eval()
         projection.eval()
         prototype_bank = payload["prototype_bank"]

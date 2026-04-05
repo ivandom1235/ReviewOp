@@ -70,6 +70,7 @@ class ProtonetConfig:
     strict_encoder: bool = False
     production_require_transformer: bool = False
     allow_model_download: bool = False
+    compile_model: bool = False
 
     joint_label_separator: str = "__"
     min_examples_per_label: int = 4
@@ -88,10 +89,10 @@ class ProtonetConfig:
             path.mkdir(parents=True, exist_ok=True)
 
     @property
-    def device(self) -> str:
+    def device(self) -> torch.device:
         if torch.cuda.is_available():
-            return "cuda"
-        return "cpu"
+            return torch.device("cuda")
+        return torch.device("cpu")
 
     @property
     def progress_enabled(self) -> bool:
@@ -102,7 +103,7 @@ class ProtonetConfig:
         for key, value in list(payload.items()):
             if isinstance(value, Path):
                 payload[key] = str(value)
-        payload["device"] = self.device
+        payload["device"] = str(self.device)
         return payload
 
 

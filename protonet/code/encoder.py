@@ -93,6 +93,13 @@ class HybridTextEncoder(nn.Module):
                 if not self.trainable:
                     for param in self.model.parameters():
                         param.requires_grad = False
+                        
+                # PyTorch 2.0 optimization: Compile model for faster execution
+                if cfg.compile_model and hasattr(torch, "compile"):
+                    try:
+                        self.model = torch.compile(self.model)
+                    except Exception:
+                        pass
             except Exception as exc:
                 if backend == "transformer" and cfg.strict_encoder:
                     raise RuntimeError(
@@ -141,8 +148,15 @@ class HybridTextEncoder(nn.Module):
             return_tensors="pt",
         )
         encoded = {key: value.to(self.cfg.device) for key, value in encoded.items()}
-        outputs = self.model(**encoded)
-        hidden = outputs.last_hidden_state
+        
+        device_type = self.cfg.device.type
+        use_amp = self.cfg.use_amp and device_type == "cuda"
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        
+        with torch.autocast(device_type=device_type, dtype=amp_dtype, enabled=use_amp):
+            outputs = self.model(**encoded)
+            hidden = outputs.last_hidden_state
+            
         attention_mask = encoded["attention_mask"].to(self.cfg.device)
         start_id = self.tokenizer.convert_tokens_to_ids("[E_START]")
         end_id = self.tokenizer.convert_tokens_to_ids("[E_END]")

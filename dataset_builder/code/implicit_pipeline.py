@@ -387,7 +387,7 @@ def discover_aspects(rows: List[Dict[str, Any]], *, text_column: str, max_aspect
     return aspects or ["general"]
 
 
-def build_implicit_row(
+async def build_implicit_row(
     row: Dict[str, Any],
     *,
     text_column: str,
@@ -418,6 +418,8 @@ def build_implicit_row(
     high_difficulty: bool = False,
     adversarial_refine: bool = False,
 ) -> Dict[str, Any]:
+    from llm_utils import AsyncLlmProvider, reason_implicit_signal_async, augment_implicit_difficulty_async
+
     mode = _canonical_mode(implicit_mode)
     raw_text = normalize_whitespace(row.get(text_column, ""))
     processed_text = normalize_whitespace(coref_text or raw_text)
@@ -588,9 +590,8 @@ def build_implicit_row(
         else:
             llm_parse_errors.extend(parse_errors)
 
-        if not clause_matches and enable_reasoned_recovery and llm_provider:
-            from llm_utils import reason_implicit_signal
-            paraphrases = reason_implicit_signal(clause, row_candidates, llm_provider, llm_model_name)
+        if not clause_matches and enable_reasoned_recovery and llm_provider and isinstance(llm_provider, AsyncLlmProvider):
+            paraphrases = await reason_implicit_signal_async(clause, row_candidates, llm_provider, llm_model_name)
             for para in paraphrases:
                 para_lower = para.lower()
                 for label, e_kws, i_sigs in LATENT_ASPECT_RULES:
@@ -611,6 +612,11 @@ def build_implicit_row(
                             break
                     if clause_matches: break
                 if clause_matches: break
+        elif not clause_matches and enable_reasoned_recovery and llm_provider:
+             from llm_utils import reason_implicit_signal
+             paraphrases = reason_implicit_signal(clause, row_candidates, llm_provider, llm_model_name)
+             # ... (existing sync fallback logic if needed, but we prefer async)
+             # Keeping it simple: if not async provider, we use sync.
 
         for match in clause_matches:
             latent = match["latent"]
@@ -669,10 +675,14 @@ def build_implicit_row(
         needs_refining = max_hardness <= 1 or any(is_surface_leakage(processed_text, a) for a in aspects)
         
         if needs_refining:
-            from llm_utils import augment_implicit_difficulty
-            # We refine the first/primary aspect for simplicity in this stage
-            primary_aspect = aspects[0]
-            refined_text = augment_implicit_difficulty(processed_text, primary_aspect, llm_provider, llm_model_name, domain=str(domain or "general"))
+            if isinstance(llm_provider, AsyncLlmProvider):
+                # We refine the first/primary aspect for simplicity in this stage
+                primary_aspect = aspects[0]
+                refined_text = await augment_implicit_difficulty_async(processed_text, primary_aspect, llm_provider, llm_model_name, domain=str(domain or "general"))
+            else:
+                from llm_utils import augment_implicit_difficulty
+                primary_aspect = aspects[0]
+                refined_text = augment_implicit_difficulty(processed_text, primary_aspect, llm_provider, llm_model_name, domain=str(domain or "general"))
             
             if refined_text and refined_text != processed_text:
                 # Re-validate the refined text

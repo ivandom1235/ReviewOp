@@ -24,6 +24,8 @@ class EpisodeForwardOutput:
     ordered_labels: List[str]
     predictions: List[str]
     probabilities: torch.Tensor
+    support_embeddings: torch.Tensor
+    query_embeddings: torch.Tensor
 
 
 def _item_joint_label(item: Dict[str, Any], separator: str) -> str:
@@ -73,26 +75,34 @@ class ProtoNetModel(nn.Module):
         query_labels = [_item_joint_label(item, self.cfg.joint_label_separator) for item in query]
         ordered_labels = sorted(dict.fromkeys(support_labels))
 
-        prototype_rows = []
+        # Vectorized prototype calculation
+        num_support = support_embeddings.size(0)
+        num_labels = len(ordered_labels)
+        
+        # Create a one-hot mask for each label: (num_labels, num_support)
+        label_to_index = {label: idx for idx, label in enumerate(ordered_labels)}
+        target_indices = torch.tensor([label_to_index[lab] for lab in support_labels], device=self.cfg.device)
+        one_hot = F.one_hot(target_indices, num_classes=num_labels).float().T # (num_labels, num_support)
+        
+        # Apply confidence weights
+        weights = torch.tensor(
+            [float(item.get("confidence", 1.0)) for item in support],
+            dtype=torch.float32,
+            device=self.cfg.device,
+        )
+        weighted_one_hot = one_hot * weights.unsqueeze(0) # (num_labels, num_support)
+        
+        # Normalize weights per label
+        weight_sums = weighted_one_hot.sum(dim=1, keepdim=True).clamp(min=1e-6)
+        normalized_weights = weighted_one_hot / weight_sums # (num_labels, num_support)
+        
+        # Compute prototypes: (num_labels, hidden)
+        prototypes = torch.matmul(normalized_weights, support_embeddings)
+        
+        # Apply smoothing and global mean
         global_mean = support_embeddings.mean(dim=0)
-        for label in ordered_labels:
-            mask = torch.tensor([lab == label for lab in support_labels], device=self.cfg.device, dtype=torch.bool)
-            label_embeddings = support_embeddings[mask]
-            label_items = [item for item, lab in zip(support, support_labels) if lab == label]
-            weights = torch.tensor(
-                [float(item.get("confidence", 1.0)) for item in label_items],
-                dtype=torch.float32,
-                device=self.cfg.device,
-            )
-            weights = weights / weights.sum().clamp(min=1e-6)
-            prototype = (label_embeddings * weights.unsqueeze(-1)).sum(dim=0)
-            prototype = F.normalize(
-                (1.0 - self.cfg.prototype_smoothing) * prototype + self.cfg.prototype_smoothing * global_mean,
-                p=2,
-                dim=-1,
-            )
-            prototype_rows.append(prototype)
-        prototypes = torch.stack(prototype_rows, dim=0)
+        prototypes = (1.0 - self.cfg.prototype_smoothing) * prototypes + self.cfg.prototype_smoothing * global_mean
+        prototypes = F.normalize(prototypes, p=2, dim=-1)
 
         logits = -torch.cdist(query_embeddings, prototypes, p=2).pow(2) / self.temperature
         label_to_index = {label: idx for idx, label in enumerate(ordered_labels)}
@@ -106,6 +116,8 @@ class ProtoNetModel(nn.Module):
             ordered_labels=ordered_labels,
             predictions=predictions,
             probabilities=probabilities.detach().cpu(),
+            support_embeddings=support_embeddings,
+            query_embeddings=query_embeddings,
         )
 
     def export_description(self) -> Dict[str, object]:

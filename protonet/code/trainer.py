@@ -218,7 +218,7 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
     _warmup_representations(model, cfg, optimizer, train_episodes)
 
     for epoch in range(1, cfg.epochs + 1):
-        announce(f"[train] epoch {epoch}/{cfg.epochs}")
+        announce(f"\n[train] Epoch {epoch}/{cfg.epochs} | Processing {len(train_episodes)} episodes...")
         model.train()
         running_loss = 0.0
         running_acc = 0.0
@@ -226,8 +226,14 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
         recent_acc: deque[float] = deque(maxlen=20)
         optimizer_updates = 0
         optimizer.zero_grad(set_to_none=True)
-        with task_bar(total=len(train_episodes), desc=f"train:{epoch}/{cfg.epochs}", enabled=cfg.progress_enabled) as bar:
+        
+        desc = f"train:{epoch}/{cfg.epochs}"
+        with task_bar(total=len(train_episodes), desc=desc, enabled=cfg.progress_enabled) as bar:
+            # Refresh bar immediately to show it's active even before the first episode finishes
+            bar.set_postfix(status="initializing...")
             for step_index, episode in enumerate(train_episodes, start=1):
+                if step_index == 1:
+                    bar.set_postfix(status="running forward pass...")
                 loss, accuracy = _episode_loss(model, episode, cfg)
                 scaled_loss = loss / max(1, cfg.gradient_accumulation_steps)
                 if scaler.is_enabled():
@@ -272,6 +278,8 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
             }
         )
         history.append(train_metrics)
+        # Summary for researchers to track progress in terminal
+        announce(f"[report] Epoch {epoch} summary: loss={train_metrics['train_loss']:.4f}, acc={train_metrics['train_accuracy']:.4f} | val_acc={val_metrics['accuracy']:.4f}")
         announce(
             f"[train] epoch {epoch} complete "
             f"loss={train_metrics['train_loss']:.3f} "

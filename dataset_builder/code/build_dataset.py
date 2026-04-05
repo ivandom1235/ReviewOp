@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 import json
 import random
@@ -75,8 +76,14 @@ class _ProgressTracker:
 
 
 def _assign_ids(frame: pd.DataFrame) -> pd.DataFrame:
+    # Optimized: Use vectorized operations where possible, or faster row iteration
     out = frame.copy()
-    out["id"] = [stable_id(row.get("source_file", "source"), idx, row.to_json()) for idx, row in out.iterrows()]
+    # Create a deterministic ID using source_file and a hash of the content (stable_id)
+    # We still use a comprehension but we avoid to_json if possible by using a tuple of keys
+    out["id"] = [
+        stable_id(row.get("source_file", "source"), idx, str(tuple(row.values())))
+        for idx, row in enumerate(out.to_dict(orient="records"))
+    ]
     return out
 
 
@@ -781,7 +788,7 @@ def _apply_train_size_target(
     }
 
 
-def _salvage_train_rows(
+async def _salvage_train_rows(
     dropped_rows: list[dict[str, Any]],
     *,
     mode: str,
@@ -807,6 +814,7 @@ def _salvage_train_rows(
     max_workers: int,
     llm_provider: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    import asyncio
     mode_name = str(mode or "recover_non_general").strip().lower()
     accepted_support = {str(value).strip() for value in salvage_accepted_support_types if str(value).strip()}
     if not accepted_support:
@@ -830,50 +838,56 @@ def _salvage_train_rows(
     recovered_by_reason: Counter[str] = Counter()
     recovered_span_support: Counter[str] = Counter()
 
-    def process_salvage(item):
-        idx, row = item
-        source_text = str(row.get("source_text") or "")
-        language = str(row.get("language", "unknown"))
-        domain = str(row.get("domain", "unknown"))
-        coref_text = None
-        if use_coref:
-            coref_result = heuristic_coref(source_text)
-            coref_text = coref_result.text
-        return build_implicit_row(
-            {
-                "id": row.get("id"),
-                "split": "train",
-                text_column: source_text,
-                "source_text": source_text,
-                "gold_labels": row.get("gold_labels", []),
-            },
-            text_column=text_column,
-            candidate_aspects=candidate_aspects,
-            confidence_threshold=max(float(confidence_threshold), float(salvage_confidence_threshold)),
-            row_index=idx,
-            domain=domain,
-            language=language,
-            implicit_mode=implicit_mode,
-            multilingual_mode=multilingual_mode,
-            use_coref=use_coref,
-            coref_text=coref_text,
-            implicit_ready=True,
-            llm_fallback_threshold=llm_fallback_threshold,
-            enable_llm_fallback=enable_llm_fallback,
-            candidate_aspects_by_language=candidate_aspects_by_language,
-            candidate_aspects_by_domain=candidate_aspects_by_domain,
-            strict_domain_conditioning=strict_domain_conditioning,
-            domain_conditioning_mode=domain_conditioning_mode,
-            domain_prior_boost=domain_prior_boost,
-            domain_prior_penalty=domain_prior_penalty,
-            weak_domain_support_row_threshold=weak_domain_support_row_threshold,
-            domain_support_rows=int(train_domain_support.get(domain, 0)),
-            enforce_grounding=enforce_grounding,
-            llm_provider=llm_provider,
-        )["implicit"]
+    async def process_salvage(item, semaphore):
+        async with semaphore:
+            idx, row = item
+            source_text = str(row.get("source_text") or "")
+            language = str(row.get("language", "unknown"))
+            domain = str(row.get("domain", "unknown"))
+            coref_text = None
+            if use_coref:
+                coref_result = heuristic_coref(source_text)
+                coref_text = coref_result.text
+            from implicit_pipeline import build_implicit_row
+            res = await build_implicit_row(
+                {
+                    "id": row.get("id"),
+                    "split": "train",
+                    text_column: source_text,
+                    "source_text": source_text,
+                    "gold_labels": row.get("gold_labels", []),
+                },
+                text_column=text_column,
+                candidate_aspects=candidate_aspects,
+                confidence_threshold=max(float(confidence_threshold), float(salvage_confidence_threshold)),
+                row_index=idx,
+                domain=domain,
+                language=language,
+                implicit_mode=implicit_mode,
+                multilingual_mode=multilingual_mode,
+                use_coref=use_coref,
+                coref_text=coref_text,
+                implicit_ready=True,
+                llm_fallback_threshold=llm_fallback_threshold,
+                enable_llm_fallback=enable_llm_fallback,
+                candidate_aspects_by_language=candidate_aspects_by_language,
+                candidate_aspects_by_domain=candidate_aspects_by_domain,
+                strict_domain_conditioning=strict_domain_conditioning,
+                domain_conditioning_mode=domain_conditioning_mode,
+                domain_prior_boost=domain_prior_boost,
+                domain_prior_penalty=domain_prior_penalty,
+                weak_domain_support_row_threshold=weak_domain_support_row_threshold,
+                domain_support_rows=int(train_domain_support.get(domain, 0)),
+                enforce_grounding=enforce_grounding,
+                llm_provider=llm_provider,
+            )
+            return res["implicit"]
 
-    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
-        results = list(executor.map(process_salvage, enumerate(sent_for_salvage)))
+    semaphore = asyncio.Semaphore(max_workers)
+    tasks = [process_salvage(item, semaphore) for item in enumerate(sent_for_salvage)]
+    
+    from tqdm.asyncio import tqdm as as_tqdm
+    results = await as_tqdm.gather(*tasks, desc=f"recovering {len(sent_for_salvage)} rows via Stage B", leave=False)
 
     for (idx, row), retry in zip(enumerate(sent_for_salvage), results):
         aspects = list(retry.get("aspects") or [])
@@ -903,6 +917,15 @@ def _salvage_train_rows(
         "salvage_accepted_support_types": sorted(accepted_support),
     }
 
+    return recovered, {
+        "salvage_mode": mode_name,
+        "salvage_sent_rows": len(sent_for_salvage),
+        "salvage_recovered_rows": len(recovered),
+        "salvage_recovery_rate": round(len(recovered) / len(sent_for_salvage), 4) if sent_for_salvage else 0.0,
+        "salvage_recovered_by_reason": dict(recovered_by_reason),
+        "salvage_recovered_span_support": dict(recovered_span_support),
+        "salvage_accepted_support_types": sorted(accepted_support),
+    }
 
 def _expand_domain_candidates_from_rows(
     *,
@@ -944,7 +967,7 @@ def _expand_domain_candidates_from_rows(
     return updated
 
 
-def _re_infer_recoverable_train_rows(
+async def _re_infer_recoverable_train_rows(
     rows: list[dict[str, Any]],
     *,
     text_column: str,
@@ -967,6 +990,7 @@ def _re_infer_recoverable_train_rows(
     max_workers: int,
     llm_provider: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    import asyncio
     target_reasons = {"weak_support", "low_confidence", "llm_parse_error"}
     stats: Counter[str] = Counter()
     candidate_indices = [
@@ -977,50 +1001,56 @@ def _re_infer_recoverable_train_rows(
     if not candidate_indices:
         return list(rows), {}
 
-    def process_re_infer(item):
-        idx, row = item
-        source_text = str(row.get("source_text") or "")
-        language = str(row.get("language", "unknown"))
-        domain = str(row.get("domain", "unknown"))
-        coref_text = None
-        if use_coref:
-            coref_result = heuristic_coref(source_text)
-            coref_text = coref_result.text
-        return build_implicit_row(
-            {
-                "id": row.get("id"),
-                "split": "train",
-                text_column: source_text,
-                "source_text": source_text,
-                "gold_labels": row.get("gold_labels", []),
-            },
-            text_column=text_column,
-            candidate_aspects=candidate_aspects,
-            confidence_threshold=confidence_threshold,
-            row_index=idx,
-            domain=domain,
-            language=language,
-            implicit_mode=implicit_mode,
-            multilingual_mode=multilingual_mode,
-            use_coref=use_coref,
-            coref_text=coref_text,
-            implicit_ready=True,
-            llm_fallback_threshold=llm_fallback_threshold,
-            enable_llm_fallback=enable_llm_fallback,
-            candidate_aspects_by_language=candidate_aspects_by_language,
-            candidate_aspects_by_domain=candidate_aspects_by_domain,
-            strict_domain_conditioning=strict_domain_conditioning,
-            domain_conditioning_mode=domain_conditioning_mode,
-            domain_prior_boost=domain_prior_boost,
-            domain_prior_penalty=domain_prior_penalty,
-            weak_domain_support_row_threshold=weak_domain_support_row_threshold,
-            domain_support_rows=int(train_domain_support.get(domain, 0)),
-            enforce_grounding=enforce_grounding,
-            llm_provider=llm_provider,
-        )["implicit"]
+    async def process_re_infer(item, semaphore):
+        async with semaphore:
+            idx, row = item
+            source_text = str(row.get("source_text") or "")
+            language = str(row.get("language", "unknown"))
+            domain = str(row.get("domain", "unknown"))
+            coref_text = None
+            if use_coref:
+                coref_result = heuristic_coref(source_text)
+                coref_text = coref_result.text
+            from implicit_pipeline import build_implicit_row
+            res = await build_implicit_row(
+                {
+                    "id": row.get("id"),
+                    "split": "train",
+                    text_column: source_text,
+                    "source_text": source_text,
+                    "gold_labels": row.get("gold_labels", []),
+                },
+                text_column=text_column,
+                candidate_aspects=candidate_aspects,
+                confidence_threshold=confidence_threshold,
+                row_index=idx,
+                domain=domain,
+                language=language,
+                implicit_mode=implicit_mode,
+                multilingual_mode=multilingual_mode,
+                use_coref=use_coref,
+                coref_text=coref_text,
+                implicit_ready=True,
+                llm_fallback_threshold=llm_fallback_threshold,
+                enable_llm_fallback=enable_llm_fallback,
+                candidate_aspects_by_language=candidate_aspects_by_language,
+                candidate_aspects_by_domain=candidate_aspects_by_domain,
+                strict_domain_conditioning=strict_domain_conditioning,
+                domain_conditioning_mode=domain_conditioning_mode,
+                domain_prior_boost=domain_prior_boost,
+                domain_prior_penalty=domain_prior_penalty,
+                weak_domain_support_row_threshold=weak_domain_support_row_threshold,
+                domain_support_rows=int(train_domain_support.get(domain, 0)),
+                enforce_grounding=enforce_grounding,
+                llm_provider=llm_provider,
+            )
+            return res["implicit"]
 
-    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
-        results = list(executor.map(process_re_infer, candidate_indices))
+    semaphore = asyncio.Semaphore(max_workers)
+    tasks = [process_re_infer(item, semaphore) for item in candidate_indices]
+    
+    from tqdm.asyncio import tqdm as as_tqdm
+    results = await as_tqdm.gather(*tasks, desc=f"re-inferring {len(candidate_indices)} rows", leave=False)
 
     updated_rows = list(rows)
     for (orig_idx, row), retry in zip(candidate_indices, results):
@@ -1038,7 +1068,6 @@ def _re_infer_recoverable_train_rows(
         updated_rows[orig_idx] = updated
         
     return updated_rows, dict(stats)
-
 
 def _strict_topup_recovery(
     *,
@@ -1454,7 +1483,7 @@ def _prepare_rows(frame: pd.DataFrame, cfg: BuilderConfig, text_column: str, pro
     return out
 
 
-def _process_row(
+async def _process_row(
     item: tuple[int, dict[str, Any]],
     *,
     split_name: str,
@@ -1489,7 +1518,8 @@ def _process_row(
     )
 
     domain = _canonical_domain(str(row.get("source_file", "unknown")))
-    implicit = build_implicit_row(
+    from implicit_pipeline import build_implicit_row
+    implicit = await build_implicit_row(
         {**row, "split": split_name},
         text_column=text_column,
         candidate_aspects=candidate_aspects,
@@ -1569,7 +1599,7 @@ def _resolve_promotion_eligibility(
     return "eligible" if quality_ok else "blocked_quality"
 
 
-def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
+async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     run_profile = _normalize_run_profile(cfg)
     sampled_run = (cfg.sample_size is not None) or (cfg.chunk_size is not None)
     if run_profile == "research" and sampled_run:
@@ -1581,7 +1611,8 @@ def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     cfg.ensure_dirs()
     progress = _ProgressTracker(enabled=bool(getattr(cfg, "progress", True)), total_steps=10)
     
-    llm_provider = resolve_llm_provider(cfg.llm_provider, model_name=cfg.llm_model_name)
+    from llm_utils import resolve_async_llm_provider
+    llm_provider = resolve_async_llm_provider(cfg.llm_provider, model_name=cfg.llm_model_name)
     
     frame = load_inputs(cfg.input_dir)
     if frame.empty:
@@ -1646,16 +1677,16 @@ def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     feature_categorical_columns = _feature_columns(schema.categorical_columns, text_column=text_column, target_column=schema.target_column)
     artifacts = fit_explicit_artifacts(train_frame, feature_numeric_columns, feature_categorical_columns)
 
-    def build_split(rows: list[dict[str, Any]], split_name: str, domain_conditioning_mode: str) -> list[dict[str, Any]]:
+    async def build_split(rows: list[dict[str, Any]], split_name: str, domain_conditioning_mode: str) -> list[dict[str, Any]]:
+        import asyncio
         if not rows:
             return []
         
-        progress.step(f"building {split_name} (parallel)", 0)
+        progress.step(f"building {split_name} (async)", 0)
         
-        with ThreadPoolExecutor(max_workers=max(1, cfg.max_workers)) as executor:
-            items = list(enumerate(rows))
-            results = list(executor.map(
-                lambda item: _process_row(
+        async def _run_batch(items):
+            tasks = [
+                _process_row(
                     item,
                     split_name=split_name,
                     text_column=text_column,
@@ -1670,14 +1701,25 @@ def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
                     train_domain_support=dict(train_domain_support),
                     domain_conditioning_mode=domain_conditioning_mode,
                     llm_provider=llm_provider
-                ),
-                items
-            ))
+                )
+                for item in items
+            ]
+            return await asyncio.gather(*tasks)
+
+        # Process in chunks to avoid overwhelming the event loop or APIs
+        chunk_size = cfg.max_workers * 2
+        results = []
+        with tqdm(total=len(rows), desc=f"Processing {split_name}", leave=False, disable=not cfg.progress) as pbar:
+            for i in range(0, len(rows), chunk_size):
+                chunk = list(enumerate(rows))[i : i + chunk_size]
+                chunk_results = await _run_batch(chunk)
+                results.extend(chunk_results)
+                pbar.update(len(chunk))
         return results
 
-    train_built = build_split(train_rows, "train", train_domain_conditioning_mode)
-    val_built = build_split(val_rows, "val", eval_domain_conditioning_mode)
-    test_built = build_split(test_rows, "test", eval_domain_conditioning_mode)
+    train_built = await build_split(train_rows, "train", train_domain_conditioning_mode)
+    val_built = await build_split(val_rows, "val", eval_domain_conditioning_mode)
+    test_built = await build_split(test_rows, "test", eval_domain_conditioning_mode)
     
     progress.step("train/val/test implicit+explicit build")
 
@@ -1723,7 +1765,7 @@ def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     train_general_policy_dropped_rows = [
         row for row in train_built if str(row.get("id") or "") not in train_after_general_ids
     ]
-    train_export_rows, train_reinference_stats = _re_infer_recoverable_train_rows(
+    train_export_rows, train_reinference_stats = await _re_infer_recoverable_train_rows(
         train_export_rows,
         text_column=text_column,
         candidate_aspects=candidate_aspects,
@@ -1756,7 +1798,7 @@ def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         train_export_rows,
         candidate_aspects_by_domain=candidate_aspects_by_domain_train,
     )
-    salvaged_rows, train_salvage_stats = _salvage_train_rows(
+    salvaged_rows, train_salvage_stats = await _salvage_train_rows(
         train_review_dropped_soft_rows,
         mode=cfg.train_salvage_mode,
         text_column=text_column,
@@ -2379,7 +2421,8 @@ def main(argv: list[str] | None = None) -> int:
         enable_reasoned_recovery=args.enable_reasoned_recovery,
         max_workers=args.max_workers,
     )
-    report = run_pipeline(cfg)
+    import asyncio
+    report = asyncio.run(run_pipeline(cfg))
     
     if not cfg.dry_run:
         zip_path = compress_output_folder(cfg.output_dir)

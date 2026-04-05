@@ -16,8 +16,8 @@ except ImportError:
     from progress import task_bar
 
 
-def _aspect_from_joint(label: str) -> str:
-    return label.split("__", 1)[0]
+def _aspect_from_joint(label: str, separator: str) -> str:
+    return label.split(separator, 1)[0]
 
 
 def _expected_calibration_error(confidences: List[float], correct: List[int], bins: int = 10) -> float:
@@ -72,15 +72,15 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
                     ]
                     y_true.append(true_label)
                     y_pred.append(pred_label)
-                    y_true_aspect.append(_aspect_from_joint(true_label))
-                    y_pred_aspect.append(_aspect_from_joint(pred_label))
+                    y_true_aspect.append(_aspect_from_joint(true_label, cfg.joint_label_separator))
+                    y_pred_aspect.append(_aspect_from_joint(pred_label, cfg.joint_label_separator))
                     confidences.append(confidence)
                     is_correct = int(true_label == pred_label)
                     correctness.append(is_correct)
                     running_correct += is_correct
                     if confidence < cfg.low_confidence_threshold:
                         low_confidence_count += 1
-                    per_aspect[_aspect_from_joint(true_label)].append(is_correct)
+                    per_aspect[_aspect_from_joint(true_label, cfg.joint_label_separator)].append(is_correct)
                     predictions.append(
                         {
                             "episode_id": episode.get("episode_id"),

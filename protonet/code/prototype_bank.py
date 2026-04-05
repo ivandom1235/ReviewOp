@@ -40,7 +40,7 @@ def build_global_prototype_bank(model, episodes: List[Dict[str, Any]], cfg: Prot
 
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for item in unique_examples.values():
-        label = str(item.get("joint_label") or f"{item.get('aspect')}__{item.get('sentiment')}")
+        label = str(item.get("joint_label") or f"{item.get('aspect')}{cfg.joint_label_separator}{item.get('sentiment')}")
         grouped.setdefault(label, []).append(item)
 
     labels = sorted(grouped)
@@ -53,7 +53,14 @@ def build_global_prototype_bank(model, episodes: List[Dict[str, Any]], cfg: Prot
         with task_bar(total=len(labels), desc="prototype-bank", enabled=cfg.progress_enabled) as bar:
             for label in labels:
                 items = grouped[label]
-                embeddings = model.encode_items(items)
+                # Memory safety: batch large label clusters during prototype aggregation
+                batch_size = 32 if model.encoder.backend == "transformer" else 512
+                embeddings_list: List[torch.Tensor] = []
+                for i in range(0, len(items), batch_size):
+                    batch = items[i : i + batch_size]
+                    embeddings_list.append(model.encode_items(batch))
+                embeddings = torch.cat(embeddings_list, dim=0)
+                
                 embedding_cache[label] = embeddings
                 raw_confidences = [float(item.get("confidence", 1.0)) for item in items]
                 weights = torch.tensor(

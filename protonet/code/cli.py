@@ -55,6 +55,7 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         strict_encoder=args.strict_encoder,
         production_require_transformer=args.production_require_transformer,
         allow_model_download=args.allow_model_download,
+        compile_model=args.compile_model,
     )
 
 
@@ -178,6 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--strict-encoder", action="store_true")
     common.add_argument("--production-require-transformer", action="store_true")
     common.add_argument("--allow-model-download", action="store_true")
+    common.add_argument("--compile-model", action="store_true")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("train", help="Train, validate, test, and export", parents=[common])

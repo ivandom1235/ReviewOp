@@ -1,11 +1,20 @@
-# ReviewOp
+# ReviewOp (V5.5 Research-Grade)
 
-ReviewOp is a monorepo for aspect-based sentiment analysis with:
+ReviewOp is a monorepo for aspect-based sentiment analysis with a **Reasoning-Augmented Hybrid** architecture:
 
 - `backend/`: FastAPI + MySQL APIs for inference, analytics, graph, and user flows
-- `frontend/`: React + Vite UI
-- `dataset_builder/`: dataset generation pipeline (explicit + implicit JSONL outputs)
-- `protonet/`: few-shot ProtoNet training/eval/export pipeline
+- `frontend/`: React + Vite UI (Performance-optimized, native fetch)
+- `dataset_builder/`: High-throughput **Symbolic-Neural Synthesis** pipeline (async)
+- `protonet/`: Few-shot Prototypical training/eval/export pipeline
+
+## Technical Vision (V5.5)
+
+ReviewOp V5.5 bridges the "Implicit Aspect Gap" by combining the reliability of symbolic matching with the reasoning power of neural models.
+
+1.  **Stage A (Symbolic):** Heuristic keyword grounding to ensure zero-hallucination.
+2.  **Stage B (Neural):** LLM-mediated reasoned recovery for ambiguous or implicit clausal signals.
+
+For more technical depth, see the [Research Overview](SEARCH_OVERVIEW.md).
 
 ## Repo Layout
 
@@ -16,7 +25,8 @@ ReviewOp/
 |-- dataset_builder/
 |-- protonet/
 |-- run-project.ps1
-`-- run-services.ps1
+|-- run-services.ps1
+`-- RESEARCH_OVERVIEW.md
 ```
 
 ## Prerequisites
@@ -42,69 +52,24 @@ Copy-Item .env.example .env
 .\run-services.ps1
 ```
 
-Or run manually in two terminals:
-
-```powershell
-# Terminal 1
-cd backend
-.\venv\Scripts\Activate.ps1
-python -m uvicorn app:app --host 127.0.0.1 --port 8000
-```
-
-```powershell
-# Terminal 2
-cd frontend
-npm run dev
-```
-
 ### 3. Verify
 
 - Backend health: `http://127.0.0.1:8000/health`
 - API docs: `http://127.0.0.1:8000/docs`
 - Frontend: URL printed by Vite (usually `http://127.0.0.1:5173`)
 
-## Environment Setup
+## Performance & Scaling
 
-Edit `.env` (repo root) and set at least:
+ReviewOp is designed for large-scale research trials:
 
-```dotenv
-MYSQL_HOST=127.0.0.1
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=your_password
-MYSQL_DB=protodb
-```
+- **Async Pipeline:** Truly parallel LLM calls in the dataset builder.
+- **Vectorized Centroids:** Faster prototypical clustering.
+- **AMP Support:** Automatic Mixed Precision for NVIDIA H100/A100.
 
-Optional LLM/provider settings are in `.env.example`.
+## Security & Ethics
 
-## Common Workflows
-
-### Build datasets
-
-```powershell
-python dataset_builder\code\build_dataset.py --input-dir dataset_builder\input --output-dir dataset_builder\output
-```
-
-Key outputs:
-
-- `dataset_builder/output/explicit/*.jsonl`
-- `dataset_builder/output/implicit/*.jsonl`
-- `dataset_builder/output/implicit_strict/*.jsonl`
-- `dataset_builder/output/reports/build_report.json`
-- `dataset_builder/output/compat/protonet/episodic/*.jsonl`
-- `dataset_builder/output/compat/protonet/reviewlevel/*.jsonl`
-
-### Train ProtoNet from dataset builder output
-
-```powershell
-python protonet\code\cli.py train --input-type episodic --input-dir dataset_builder\output\compat\protonet\episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer
-```
-
-If model weights are not cached yet:
-
-```powershell
-python protonet\code\cli.py train --input-type episodic --input-dir dataset_builder\output\compat\protonet\episodic --force-rebuild-episodes --encoder-backend transformer --production-require-transformer --allow-model-download
-```
+- **No Axios:** Standardized on `httpx` (Python) and `fetch` (JS) for security.
+- **Grounding-First:** Neural models are restricted to preprocessing; decision logic is symbolic and observable.
 
 ## Module Docs
 
