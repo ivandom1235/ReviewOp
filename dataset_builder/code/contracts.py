@@ -113,13 +113,17 @@ class BuilderConfig:
     def implicit_strict_dir(self) -> Path:
         return self.output_dir / "implicit_strict"
 
+    @property
+    def benchmark_dir(self) -> Path:
+        return self.output_dir / "benchmark" / "ambiguity_openworld"
+
     def ensure_dirs(self, *, reset_output: bool | None = None) -> None:
         should_reset = self.reset_output if reset_output is None else reset_output
         if self.dry_run or self.preview_only:
             should_reset = False
         if should_reset and self.output_dir.exists():
             shutil.rmtree(self.output_dir)
-        for path in (self.output_dir, self.explicit_dir, self.implicit_dir, self.implicit_strict_dir, self.reports_dir):
+        for path in (self.output_dir, self.benchmark_dir, self.reports_dir):
             path.mkdir(parents=True, exist_ok=True)
 
 
@@ -135,3 +139,32 @@ class ReviewRecord:
     explicit: dict[str, Any] = field(default_factory=dict)
     implicit: dict[str, Any] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GoldInterpretation:
+    aspect_label: str
+    sentiment: str
+    evidence_text: str
+    annotator_support: int = 1
+    evidence_span: tuple[int, int] | None = None
+
+
+@dataclass
+class SplitProtocolAssignment:
+    random: str
+    source_holdout: str
+    domain_holdout: str
+
+
+@dataclass
+class BenchmarkInstance:
+    instance_id: str
+    review_text: str
+    domain: str
+    gold_interpretations: list[GoldInterpretation] = field(default_factory=list)
+    abstain_acceptable: bool = False
+    novel_aspect_acceptable: bool = False
+    ambiguity_score: float = 0.0
+    split_protocol: SplitProtocolAssignment | None = None
+    group_id: str = "unknown"

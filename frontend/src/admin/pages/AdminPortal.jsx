@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   inferSingleReview,
@@ -24,6 +24,7 @@ import {
 } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
 import { RouteLoading } from "../../components/RouteLoading";
+import { useTheme } from "../../theme/ThemeContext";
 
 const Dashboard = lazy(() => import("./Dashboard"));
 const AspectAnalytics = lazy(() => import("./AspectAnalytics"));
@@ -38,14 +39,14 @@ const initialGraphFilters = {
   product_id: "",
   from: "",
   to: "",
+  graph_mode: "accepted",
   min_edge_weight: 2,
 };
 
 export default function AdminPortal() {
   const { logout } = useAuth();
   const navigate = useNavigate();
-  const [theme, setTheme] = useState(() => localStorage.getItem("reviewop-theme") || "dark");
-  const isDark = theme === "dark";
+  const { isDark, setTheme } = useTheme();
   const [activePage, setActivePage] = useState("Dashboard");
   const [selectedAlert, setSelectedAlert] = useState(null);
 
@@ -74,25 +75,14 @@ export default function AdminPortal() {
   const [graphLoading, setGraphLoading] = useState(false);
   const [error, setError] = useState("");
   const [jobStatus, setJobStatus] = useState(null);
+  const mountedRef = useRef(true);
+  const batchPollingRef = useRef(false);
 
-  useEffect(() => {
-    localStorage.setItem("reviewop-theme", theme);
-    document.documentElement.classList.toggle("dark", theme === "dark");
-  }, [theme]);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        await refreshAnalytics();
-        await refreshBatchGraph(initialGraphFilters);
-      } catch {
-        // allow empty startup
-      }
-    };
-    load();
+  useEffect(() => () => {
+    mountedRef.current = false;
   }, []);
 
-  async function refreshAnalytics() {
+  const refreshAnalytics = useCallback(async () => {
     const [k, l, t, e, ev, a, impact, segments, weekly, urs, url] = await Promise.all([
       getDashboardKpis(),
       getAspectLeaderboard(),
@@ -106,6 +96,8 @@ export default function AdminPortal() {
       getUserReviewsSummary(),
       getUserReviewsList({ limit: 100, offset: 0 }),
     ]);
+    if (!mountedRef.current) return;
+
     setKpis(k);
     setLeaderboard(l || []);
     setAspectTrends(t || []);
@@ -118,21 +110,33 @@ export default function AdminPortal() {
     setUserReviewSummary(urs || null);
     setUserReviewList(url || { total: 0, limit: 50, offset: 0, rows: [] });
 
-    if (l?.length) {
+    if (l?.length && mountedRef.current) {
       const detail = await getAspectDetail(l[0].aspect);
-      setAspectDetail(detail);
+      if (mountedRef.current) setAspectDetail(detail);
     }
-  }
+  }, []);
 
-  async function refreshBatchGraph(nextFilters = graphFilters) {
+  const refreshBatchGraph = useCallback(async (nextFilters) => {
     setGraphLoading(true);
     try {
       const graph = await getBatchAspectGraph(nextFilters);
-      setBatchGraph(graph);
+      if (mountedRef.current) setBatchGraph(graph);
     } finally {
-      setGraphLoading(false);
+      if (mountedRef.current) setGraphLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        await refreshAnalytics();
+        await refreshBatchGraph(initialGraphFilters);
+      } catch {
+        // allow empty startup
+      }
+    };
+    load();
+  }, [refreshAnalytics, refreshBatchGraph]);
 
   async function handleSingleSubmit(e) {
     e.preventDefault();
@@ -140,45 +144,49 @@ export default function AdminPortal() {
     setLoading(true);
     try {
       const out = await inferSingleReview(reviewText.trim());
+      if (!mountedRef.current) return;
       setSingleOutput(out);
       const graph = await getReviewGraph(out.review_id);
+      if (!mountedRef.current) return;
       setReviewGraph(graph);
       setActivePage("ReviewExplorer");
     } catch (ex) {
-      setError(ex.message || "Single review inference failed");
+      if (mountedRef.current) setError(ex.message || "Single review inference failed");
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }
 
-  async function handleBatchSubmit(e) {
+  const handleBatchSubmit = useCallback(async (e) => {
     e.preventDefault();
-    if (!batchFile) return;
+    if (!batchFile || batchPollingRef.current) return;
 
     setError("");
     setLoading(true);
+    batchPollingRef.current = true;
     try {
       const created = await inferBatchCsv(batchFile);
       let latest = created;
-      setJobStatus(created);
+      if (mountedRef.current) setJobStatus(created);
       for (let i = 0; i < 15; i += 1) {
         const status = await getJob(created.job_id);
         latest = status;
-        setJobStatus(status);
+        if (mountedRef.current) setJobStatus(status);
         if (["done", "failed"].includes((status.status || "").toLowerCase())) break;
         await new Promise((r) => setTimeout(r, 800));
       }
       if ((latest.status || "").toLowerCase() === "failed") throw new Error(latest.error || "Batch job failed");
       await Promise.all([refreshAnalytics(), refreshBatchGraph(graphFilters)]);
-      setActivePage("ReviewExplorer");
+      if (mountedRef.current) setActivePage("ReviewExplorer");
     } catch (ex) {
-      setError(ex.message || "Batch CSV inference failed");
+      if (mountedRef.current) setError(ex.message || "Batch CSV inference failed");
     } finally {
-      setLoading(false);
+      batchPollingRef.current = false;
+      if (mountedRef.current) setLoading(false);
     }
-  }
+  }, [batchFile, graphFilters, refreshAnalytics, refreshBatchGraph]);
 
-  async function applyBatchGraphFilters(e) {
+  const applyBatchGraphFilters = useCallback(async (e) => {
     e.preventDefault();
     setError("");
     try {
@@ -186,17 +194,17 @@ export default function AdminPortal() {
     } catch (ex) {
       setError(ex.message || "Batch graph load failed");
     }
-  }
+  }, [graphFilters, refreshBatchGraph]);
 
   const leaderboardRows = useMemo(() => leaderboard.map((row, idx) => ({ id: `${row.aspect}-${idx}`, ...row })), [leaderboard]);
   const pageNav = ["Dashboard", "AspectAnalytics", "GraphExplorer", "ReviewExplorer", "Alerts", "UserReviews"];
 
-  const handleAlertClick = (alert) => {
+  const handleAlertClick = useCallback((alert) => {
     setSelectedAlert(alert);
     setActivePage("AlertDetail");
-  };
+  }, []);
 
-  async function handleAlertClear(alert) {
+  const handleAlertClear = useCallback(async (alert) => {
     if (!alert?.id) return;
     try {
       await clearAlert(alert.id);
@@ -208,7 +216,7 @@ export default function AdminPortal() {
     } catch (ex) {
       setError(ex.message || "Failed to clear alert");
     }
-  }
+  }, [refreshAnalytics, selectedAlert?.id]);
 
   async function handleExportJson() {
     try {

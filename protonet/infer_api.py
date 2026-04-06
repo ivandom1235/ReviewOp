@@ -62,13 +62,28 @@ def _predict_with_runtime(
 ) -> List[Dict[str, Any]]:
     protonet_runtime = runtime["runtime"]
     best_by_aspect: Dict[str, Dict[str, Any]] = {}
+    abstained: List[Dict[str, Any]] = []
+    novel_candidates: List[Dict[str, Any]] = []
     clauses = split_clauses(review_text)
     clauses = clauses or [{"snippet": review_text, "start_char": 0, "end_char": len(review_text)}]
 
     for clause in clauses:
         snippet = str(clause.get("snippet", "")).strip() or review_text
-        candidates = protonet_runtime.score_text(review_text=review_text, evidence_text=snippet, domain=domain)
-        for candidate in candidates[: max(top_k * 2, 8)]:
+        selective = protonet_runtime.score_text_selective(review_text=review_text, evidence_text=snippet, domain=domain)
+        if selective.get("decision") == "abstain":
+            abstained.append(
+                {
+                    "abstain": True,
+                    "decision": "abstain",
+                    "reason": "low_selective_confidence",
+                    "confidence": float(selective.get("confidence", 0.0)),
+                    "ambiguity_score": float(selective.get("ambiguity_score", 0.0)),
+                    "evidence_spans": [dict(clause)],
+                    "source": "implicit",
+                }
+            )
+            continue
+        for candidate in list(selective.get("accepted_predictions", []))[: max(top_k * 2, 8)]:
             aspect = str(candidate.get("aspect", "")).strip()
             if not aspect:
                 continue
@@ -91,16 +106,29 @@ def _predict_with_runtime(
                 "rationale": "Implicit aspect inferred by protonet prototype bank; sentiment taken from the joint label or refined with Seq2Seq on the best snippet.",
                 "model_family": "protonet",
                 "source": "implicit",
+                "decision": str(selective.get("decision") or "single_label"),
+                "abstain": False,
+                "ambiguity_score": float(selective.get("ambiguity_score", 0.0)),
+                "novelty_score": float(selective.get("novelty_score", 0.0)),
+                "routing": str(candidate.get("routing") or "known"),
+                "novel_candidates": list(selective.get("novel_candidates", [])),
             }
             existing = best_by_aspect.get(aspect)
             if existing is None or float(row["confidence"]) > float(existing["confidence"]):
                 best_by_aspect[aspect] = row
+        novel_candidates.extend(list(selective.get("novel_candidates", [])))
 
-    return sorted(
+    merged = sorted(
         best_by_aspect.values(),
         key=lambda item: (float(item.get("confidence", 0.0)), float(item.get("raw_score", 0.0))),
         reverse=True,
     )
+    if abstained and not merged:
+        return abstained[:top_k]
+    for row in merged:
+        row["abstained_predictions"] = abstained
+        row["novel_candidates"] = novel_candidates
+    return merged
 
 
 def _merge_predictions(rows: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
@@ -137,4 +165,9 @@ def predict_implicit_aspects(
         top_k=top_k,
         sentiment_engine=sentiment_engine,
     )
+    if rows and not any(
+        str(row.get("aspect_cluster") or row.get("aspect_raw") or "").strip()
+        for row in rows
+    ):
+        return rows[:top_k]
     return _merge_predictions(rows, top_k=top_k)

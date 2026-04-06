@@ -68,89 +68,104 @@ def read_split_rows(path: Path, *, progress_enabled: bool) -> List[Dict[str, Any
     return list(track(rows, total=len(rows), desc=f"load:{path.stem}", enabled=progress_enabled))
 
 
-def validate_reviewlevel_rows(rows: List[Dict[str, Any]], split: str) -> None:
-    for index, row in enumerate(rows):
-        labels = row.get("labels")
-        if (labels is None or not isinstance(labels, list) or not labels) and isinstance(row.get("implicit"), dict):
-            implicit = row.get("implicit", {})
-            labels = [
-                {
-                    "aspect": aspect,
-                    "implicit_aspect": aspect,
-                    "sentiment": _normalize_sentiment(
-                        implicit.get("aspect_sentiments", {}).get(aspect, implicit.get("dominant_sentiment", "neutral"))
-                    ),
-                    "confidence": float(implicit.get("aspect_confidence", {}).get(aspect, implicit.get("avg_confidence", 0.5))),
-                    "evidence_sentence": row.get("source_text", row.get("review_text", "")),
-                }
-                for aspect in implicit.get("aspects", []) or []
-            ]
-            row["labels"] = labels
-        if "labels" not in row or not isinstance(row["labels"], list) or not row["labels"]:
-            raise ValueError(f"reviewlevel row {index} in split {split} has no labels")
-        for label in row["labels"]:
-            if isinstance(label, dict):
-                label["sentiment"] = _normalize_sentiment(label.get("sentiment"))
-        if not row.get("review_text") and not row.get("clean_text") and not row.get("source_text"):
-            raise ValueError(f"reviewlevel row {index} in split {split} is missing review text")
-        if row.get("split") and str(row["split"]).lower() != split:
-            raise ValueError(f"reviewlevel row {index} in split {split} declares split {row['split']}")
+def _label_from_interpretation(
+    instance_id: str,
+    review_text: str,
+    domain: str,
+    interp: Dict[str, Any],
+    split: str,
+    idx: int,
+    gold_joint_labels: List[str],
+    split_protocol: Dict[str, Any],
+    ambiguity_score: float,
+    abstain_acceptable: bool,
+    novel_aspect_acceptable: bool,
+) -> Dict[str, Any]:
+    sentiment = _normalize_sentiment(interp.get("sentiment"))
+    evidence_text = str(interp.get("evidence_text") or "").strip()
+    evidence_span = interp.get("evidence_span")
+    if not (isinstance(evidence_span, list) and len(evidence_span) == 2):
+        evidence_span = [-1, -1]
+    if not evidence_text:
+        evidence_text = review_text
+    return {
+        "example_id": f"{instance_id}_g{idx}",
+        "parent_review_id": instance_id,
+        "review_text": review_text,
+        "evidence_sentence": evidence_text,
+        "evidence_text": evidence_text,
+        "evidence_span": evidence_span,
+        "evidence_fallback_used": evidence_span == [-1, -1],
+        "domain": domain,
+        "aspect": str(interp.get("aspect_label") or "unknown").strip(),
+        "implicit_aspect": str(interp.get("aspect_label") or "unknown").strip(),
+        "sentiment": sentiment,
+        "label_type": "implicit",
+        "confidence": float(interp.get("annotator_support", 1)),
+        "split": split,
+        "abstain_acceptable": bool(abstain_acceptable),
+        "novel_aspect_acceptable": bool(novel_aspect_acceptable),
+        "gold_joint_labels": gold_joint_labels,
+        "split_protocol": split_protocol,
+        "benchmark_ambiguity_score": float(ambiguity_score),
+    }
 
 
-def validate_episodic_rows(rows: List[Dict[str, Any]], split: str) -> str:
+def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> str:
     if not rows:
-        raise ValueError(f"No episodic rows found for split {split}")
-    first = rows[0]
-    if "implicit" in first and isinstance(first.get("implicit"), dict):
-        expanded: List[Dict[str, Any]] = []
-        for row in rows:
-            implicit = row.get("implicit", {})
-            for idx, aspect in enumerate(implicit.get("aspects", []) or [], start=1):
-                expanded.append(
-                    {
-                        "example_id": f"{row.get('id')}_e{idx}",
-                        "parent_review_id": row.get("id"),
-                        "review_text": row.get("source_text", row.get("review_text", "")),
-                        "evidence_sentence": row.get("source_text", row.get("review_text", "")),
-                        "domain": row.get("domain", "unknown"),
-                        "aspect": aspect,
-                        "implicit_aspect": aspect,
-                        "sentiment": _normalize_sentiment(
-                            implicit.get("aspect_sentiments", {}).get(aspect, implicit.get("dominant_sentiment", "neutral"))
-                        ),
-                        "label_type": "implicit",
-                        "confidence": float(implicit.get("aspect_confidence", {}).get(aspect, implicit.get("avg_confidence", 0.5))),
-                        "split": row.get("split", split),
-                    }
-                )
-        rows[:] = expanded
-        return "examples"
-    if "support_set" in first and "query_set" in first:
-        for index, row in enumerate(rows):
-            if not isinstance(row.get("support_set"), list) or not isinstance(row.get("query_set"), list):
-                raise ValueError(f"episode row {index} in split {split} has invalid support/query sets")
-        return "episodes"
-    required = {"example_id", "parent_review_id", "review_text", "aspect", "sentiment"}
+        raise ValueError(f"No benchmark rows found for split {split}")
+    expanded: List[Dict[str, Any]] = []
     for index, row in enumerate(rows):
-        missing = sorted(required - set(row))
-        if missing:
-            raise ValueError(f"episodic row {index} in split {split} is missing fields: {missing}")
-        if row.get("split") and str(row["split"]).lower() != split:
-            raise ValueError(f"episodic row {index} in split {split} declares split {row['split']}")
-    return "examples"
+        instance_id = str(row.get("instance_id") or "").strip()
+        review_text = str(row.get("review_text") or "").strip()
+        domain = str(row.get("domain") or "unknown")
+        if not instance_id or not review_text:
+            raise ValueError(f"benchmark row {index} in split {split} is missing instance_id/review_text")
+        interpretations = row.get("gold_interpretations")
+        if not isinstance(interpretations, list) or not interpretations:
+            raise ValueError(f"benchmark row {index} in split {split} has no gold_interpretations")
+        split_protocol = row.get("split_protocol") if isinstance(row.get("split_protocol"), dict) else {}
+        ambiguity_score = float(row.get("ambiguity_score", 0.0))
+        abstain_acceptable = bool(row.get("abstain_acceptable", False))
+        novel_aspect_acceptable = bool(row.get("novel_aspect_acceptable", False))
+        gold_joint_labels = []
+        for interp in interpretations:
+            if not isinstance(interp, dict):
+                continue
+            aspect = str(interp.get("aspect_label") or "unknown").strip()
+            sentiment = _normalize_sentiment(interp.get("sentiment"))
+            gold_joint_labels.append(f"{aspect}__{sentiment}")
+        for interp_idx, interp in enumerate(interpretations, start=1):
+            if not isinstance(interp, dict):
+                continue
+            expanded.append(
+                _label_from_interpretation(
+                    instance_id,
+                    review_text,
+                    domain,
+                    interp,
+                    split,
+                    interp_idx,
+                    gold_joint_labels,
+                    split_protocol,
+                    ambiguity_score,
+                    abstain_acceptable,
+                    novel_aspect_acceptable,
+                )
+            )
+    rows[:] = expanded
+    return "benchmark_examples"
 
 
 def load_input_dataset(cfg: ProtonetConfig) -> tuple[Dict[str, List[Dict[str, Any]]], DatasetSummary]:
+    if cfg.input_type != "benchmark":
+        raise ValueError("V6 runtime only supports input_type='benchmark'")
     rows_by_split: Dict[str, List[Dict[str, Any]]] = {}
     detected_format = "unknown"
     for split in VALID_SPLITS:
         path = split_file(cfg.input_dir, split)
         rows = read_split_rows(path, progress_enabled=cfg.progress_enabled)
-        if cfg.input_type == "reviewlevel":
-            validate_reviewlevel_rows(rows, split)
-            detected_format = "reviewlevel"
-        else:
-            detected_format = validate_episodic_rows(rows, split)
+        detected_format = validate_benchmark_rows(rows, split)
         rows_by_split[split] = rows
     summary = DatasetSummary(
         split_sizes={split: len(rows) for split, rows in rows_by_split.items()},

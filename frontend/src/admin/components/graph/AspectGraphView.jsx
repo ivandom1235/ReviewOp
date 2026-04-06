@@ -159,6 +159,8 @@ export default function AspectGraphView({
   const [selection, setSelection] = useState({ type: "node", data: null });
   const containerRef = useRef(null);
   const networkRef = useRef(null);
+  const nodeSetRef = useRef(null);
+  const edgeSetRef = useRef(null);
 
   const normalizedGraph = useMemo(() => normalizeGraph(graph, scope), [graph, scope]);
   const hasGraph = Boolean((normalizedGraph?.nodes || []).length);
@@ -178,13 +180,19 @@ export default function AspectGraphView({
       return;
     }
 
-    if (networkRef.current) {
-      networkRef.current.destroy();
-      networkRef.current = null;
+    if (networkRef.current && nodeSetRef.current && edgeSetRef.current) {
+      nodeSetRef.current.clear();
+      edgeSetRef.current.clear();
+      nodeSetRef.current.add(visData.nodes);
+      edgeSetRef.current.add(visData.edges);
+      networkRef.current.fit({ animation: { duration: 220, easingFunction: "easeInOutQuad" } });
+      return;
     }
 
     const nodes = new DataSet(visData.nodes);
     const edges = new DataSet(visData.edges);
+    nodeSetRef.current = nodes;
+    edgeSetRef.current = edges;
 
     const options = {
       autoResize: true,
@@ -253,6 +261,8 @@ export default function AspectGraphView({
     return () => {
       network.destroy();
       if (networkRef.current === network) networkRef.current = null;
+      nodeSetRef.current = null;
+      edgeSetRef.current = null;
     };
   }, [visData, hasGraph, scope]);
 

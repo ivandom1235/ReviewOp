@@ -7,7 +7,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session, selectinload
 
-from models.tables import Prediction, Review
+from models.tables import NovelCandidate, Prediction, Review
 
 
 SENTIMENT_SCORE = {"positive": 1.0, "neutral": 0.0, "negative": -1.0}
@@ -193,9 +193,23 @@ def build_batch_aspect_graph(
     dt_from: str | None = None,
     dt_to: str | None = None,
     min_edge_weight: int = 1,
+    graph_mode: str = "accepted",
 ) -> dict:
     f = _parse_dt(dt_from)
     t = _parse_dt(dt_to)
+    mode = (graph_mode or "accepted").strip().lower()
+
+    if mode == "novel_side":
+        return _build_batch_novel_graph(
+            db=db,
+            domain=domain,
+            product_id=product_id,
+            dt_from=dt_from,
+            dt_to=dt_to,
+            min_edge_weight=min_edge_weight,
+            f=f,
+            t=t,
+        )
 
     reviews_query = (
         db.query(Review)
@@ -301,6 +315,96 @@ def build_batch_aspect_graph(
             "product_id": product_id,
             "from": dt_from,
             "to": dt_to,
+            "graph_mode": "accepted",
+            "min_edge_weight": max(int(min_edge_weight or 1), 1),
+            "time_bucket_ready": True,
+        },
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def _build_batch_novel_graph(
+    db: Session,
+    domain: str | None,
+    product_id: str | None,
+    dt_from: str | None,
+    dt_to: str | None,
+    min_edge_weight: int,
+    f: datetime | None,
+    t: datetime | None,
+) -> dict:
+    query = db.query(NovelCandidate, Review).join(Review, NovelCandidate.review_id == Review.id)
+    if domain:
+        query = query.filter(Review.domain == domain)
+    if product_id:
+        query = query.filter(Review.product_id == product_id)
+    if f:
+        query = query.filter(Review.created_at >= f)
+    if t:
+        query = query.filter(Review.created_at <= t)
+    rows = query.all()
+
+    aspects_by_review: dict[int, set[str]] = defaultdict(set)
+    node_counts: Counter = Counter()
+    novelty_sum: defaultdict[str, float] = defaultdict(float)
+    edge_weights: defaultdict[tuple[str, str], int] = defaultdict(int)
+
+    for novel_row, review in rows:
+        aspect = (novel_row.aspect or "").strip()
+        if not aspect:
+            continue
+        node_counts[aspect] += 1
+        novelty_sum[aspect] += float(novel_row.novelty_score or 0.0)
+        aspects_by_review[int(review.id)].add(aspect)
+
+    for review_aspects in aspects_by_review.values():
+        for source, target in combinations(sorted(review_aspects), 2):
+            edge_weights[(source, target)] += 1
+
+    nodes = []
+    for aspect, count in sorted(node_counts.items(), key=lambda item: (-item[1], item[0])):
+        nodes.append(
+            {
+                "id": aspect,
+                "label": _aspect_label(aspect),
+                "frequency": int(count),
+                "avg_sentiment": 0.0,
+                "dominant_sentiment": "neutral",
+                "negative_ratio": 0.0,
+                "explicit_count": 0,
+                "implicit_count": int(count),
+                "origin": "novel_side",
+                "confidence": round(novelty_sum[aspect] / max(count, 1), 4),
+            }
+        )
+
+    edges = []
+    for (source, target), weight in sorted(edge_weights.items(), key=lambda item: (-item[1], item[0][0], item[0][1])):
+        if weight < max(int(min_edge_weight or 1), 1):
+            continue
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "type": "novel_cooccurrence",
+                "weight": float(weight),
+                "directional": False,
+                "pair_count": int(weight),
+                "polarity_hint": "neutral",
+                "example_reviews": [],
+            }
+        )
+
+    return {
+        "scope": "batch",
+        "generated_at": datetime.utcnow().isoformat(),
+        "filters": {
+            "domain": domain,
+            "product_id": product_id,
+            "from": dt_from,
+            "to": dt_to,
+            "graph_mode": "novel_side",
             "min_edge_weight": max(int(min_edge_weight or 1), 1),
             "time_bucket_ready": True,
         },

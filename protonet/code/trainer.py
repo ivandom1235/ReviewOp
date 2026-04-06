@@ -35,6 +35,17 @@ class TrainingResult:
     prototype_bank: PrototypeBank
 
 
+def _composite_selection_score(metrics: Dict[str, Any]) -> float:
+    return float(
+        0.30 * float(metrics.get("macro_f1", 0.0))
+        + 0.20 * float(metrics.get("flexible_match_score", metrics.get("accuracy", 0.0)))
+        + 0.15 * float(1.0 - metrics.get("calibration_ece", 1.0))
+        + 0.15 * float(metrics.get("coverage", 0.0))
+        + 0.10 * float(metrics.get("known_vs_novel_quality", 0.0))
+        + 0.10 * float(metrics.get("protocol_breakdown", {}).get("domain_holdout", {}).get("accuracy", metrics.get("accuracy", 0.0)))
+    )
+
+
 def _joint_label_from_item(item: Dict[str, Any], separator: str) -> str:
     label = item.get("joint_label")
     if label:
@@ -288,11 +299,12 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
             f"val_f1={train_metrics['val_macro_f1']:.3f}"
         )
 
-        if val_metrics["accuracy"] > best_val:
-            best_val = val_metrics["accuracy"]
+        selection_score = _composite_selection_score(val_metrics)
+        if selection_score > best_val:
+            best_val = selection_score
             wait = 0
             _save_checkpoint(model, cfg, history, checkpoint_path)
-            announce(f"[train] new best checkpoint val_acc={best_val:.3f}")
+            announce(f"[train] new best checkpoint composite_score={best_val:.3f}")
         else:
             wait += 1
             if wait >= cfg.patience:

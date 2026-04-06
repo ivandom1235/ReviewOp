@@ -24,6 +24,7 @@ def batch_graph(
     dt_from: str | None = Query(default=None, alias="from"),
     dt_to: str | None = Query(default=None, alias="to"),
     min_edge_weight: int = 1,
+    graph_mode: str = Query(default="accepted", pattern="^(accepted|novel_side)$"),
     db: Session = Depends(get_db),
 ):
     return build_batch_aspect_graph(
@@ -33,4 +34,5 @@ def batch_graph(
         dt_from=dt_from,
         dt_to=dt_to,
         min_edge_weight=min_edge_weight,
+        graph_mode=graph_mode,
     )

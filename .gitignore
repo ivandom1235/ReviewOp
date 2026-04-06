@@ -39,3 +39,7 @@ CLAUDE.md
 agent_docs/
 dataset_builder/zip
 datasets/
+.agents
+.claude
+*.csv
+skills-lock.json

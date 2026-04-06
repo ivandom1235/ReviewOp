@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { AdminRoute, UserRoute } from "./auth/ProtectedRoute";
 import { RouteLoading } from "./components/RouteLoading";
+import { ThemeProvider } from "./theme/ThemeContext";
 
 const AdminPortal = lazy(() => import("./admin/pages/AdminPortal"));
 const LoginPage = lazy(() => import("./pages/user/LoginPage"));
@@ -87,8 +88,10 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppRoutes />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

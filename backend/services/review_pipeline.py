@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import logging
 
 from sqlalchemy import delete
@@ -82,6 +83,48 @@ def run_single_review_pipeline(
 def refresh_corpus_graph(db: Session, domain: str | None = None) -> dict:
     builder = KGBuilder(model_name="sentence-transformers/all-MiniLM-L6-v2")
     return builder.rebuild(db=db, domain=domain, cfg=KGConfig())
+
+
+def split_selective_states(predictions: list[dict]) -> dict:
+    accepted: list[dict] = []
+    abstained: list[dict] = []
+    novel: list[dict] = []
+    seen_abstained: set[str] = set()
+    seen_novel: set[str] = set()
+    for row in predictions or []:
+        for abstained_row in list(row.get("abstained_predictions") or []):
+            if not isinstance(abstained_row, dict):
+                continue
+            abstained_key = json.dumps(abstained_row, sort_keys=True, default=str)
+            if abstained_key in seen_abstained:
+                continue
+            seen_abstained.add(abstained_key)
+            abstained.append(abstained_row)
+        if bool(row.get("abstain")) or str(row.get("decision") or "").lower() == "abstain":
+            abstained_key = json.dumps(row, sort_keys=True, default=str)
+            if abstained_key not in seen_abstained:
+                seen_abstained.add(abstained_key)
+                abstained.append(row)
+            continue
+        accepted.append(row)
+        if str(row.get("routing") or "known") == "novel":
+            novel_key = json.dumps(row, sort_keys=True, default=str)
+            if novel_key not in seen_novel:
+                seen_novel.add(novel_key)
+                novel.append(row)
+        for candidate in list(row.get("novel_candidates") or []):
+            if not isinstance(candidate, dict):
+                continue
+            novel_key = json.dumps(candidate, sort_keys=True, default=str)
+            if novel_key in seen_novel:
+                continue
+            seen_novel.add(novel_key)
+            novel.append(candidate)
+    return {
+        "accepted_predictions": accepted,
+        "abstained_predictions": abstained,
+        "novel_candidates": novel,
+    }
 
 
 def _refresh_corpus_graph_task(domain: str | None) -> None:

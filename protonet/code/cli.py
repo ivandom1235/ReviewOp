@@ -11,7 +11,6 @@ try:
     from .evaluator import evaluate_episodes
     from .export_bundle import export_model_bundle, export_report
     from .model import ProtoNetModel
-    from .reviewlevel_adapter import adapt_reviewlevel_rows
     from .trainer import load_checkpoint, train_model
 except ImportError:
     from config import METADATA_ROOT, OUTPUT_ROOT, ProtonetConfig, resolve_default_input_dir, seed_everything
@@ -20,7 +19,6 @@ except ImportError:
     from evaluator import evaluate_episodes
     from export_bundle import export_model_bundle, export_report
     from model import ProtoNetModel
-    from reviewlevel_adapter import adapt_reviewlevel_rows
     from trainer import load_checkpoint, train_model
 
 
@@ -49,6 +47,13 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         contrastive_weight=args.contrastive_weight,
         prototype_smoothing=args.prototype_smoothing,
         low_confidence_threshold=args.low_confidence_threshold,
+        selective_alpha=args.selective_alpha,
+        selective_beta=args.selective_beta,
+        selective_gamma=args.selective_gamma,
+        selective_delta=args.selective_delta,
+        abstain_threshold=args.abstain_threshold,
+        multi_label_margin=args.multi_label_margin,
+        novelty_threshold=args.novelty_threshold,
         seed=args.seed,
         no_progress=args.no_progress,
         force_rebuild_episodes=args.force_rebuild_episodes,
@@ -61,8 +66,6 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
 
 def _prepare_examples(cfg: ProtonetConfig):
     rows_by_split, summary = load_input_dataset(cfg)
-    if cfg.input_type == "reviewlevel":
-        rows_by_split = adapt_reviewlevel_rows(rows_by_split, progress_enabled=cfg.progress_enabled)
     return rows_by_split, summary
 
 
@@ -156,7 +159,7 @@ def run_export(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Standalone ProtoNet training pipeline")
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--input-type", choices=["episodic", "reviewlevel"], default="episodic")
+    common.add_argument("--input-type", choices=["benchmark"], default="benchmark")
     common.add_argument("--input-dir", type=str, default=None)
     common.add_argument("--output-dir", type=str, default=None)
     common.add_argument("--metadata-dir", type=str, default=None)
@@ -173,6 +176,13 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--contrastive-weight", type=float, default=0.15)
     common.add_argument("--prototype-smoothing", type=float, default=0.05)
     common.add_argument("--low-confidence-threshold", type=float, default=0.55)
+    common.add_argument("--selective-alpha", type=float, default=0.6)
+    common.add_argument("--selective-beta", type=float, default=0.25)
+    common.add_argument("--selective-gamma", type=float, default=0.1)
+    common.add_argument("--selective-delta", type=float, default=0.05)
+    common.add_argument("--abstain-threshold", type=float, default=0.55)
+    common.add_argument("--multi-label-margin", type=float, default=0.08)
+    common.add_argument("--novelty-threshold", type=float, default=0.45)
     common.add_argument("--seed", type=int, default=42)
     common.add_argument("--no-progress", action="store_true")
     common.add_argument("--force-rebuild-episodes", action="store_true")

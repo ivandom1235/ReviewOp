@@ -110,7 +110,11 @@ def load_gold_annotations(path: Path) -> list[dict]:
             "domain": row.get("domain"),
             "text": row.get("text"),
             "gold_labels": labels if isinstance(labels, list) else [],
+            "gold_interpretations": row.get("gold_interpretations") if isinstance(row.get("gold_interpretations"), list) else [],
+            "abstain_acceptable": bool(row.get("abstain_acceptable", False)),
+            "novel_aspect_acceptable": bool(row.get("novel_aspect_acceptable", False)),
             "annotator_id": row.get("annotator_id"),
+            "annotator_support": row.get("annotator_support"),
             "review_status": row.get("review_status", "pending"),
         })
     return cleaned

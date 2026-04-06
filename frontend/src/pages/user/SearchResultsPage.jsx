@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { searchProducts } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
@@ -19,6 +19,7 @@ export default function SearchResultsPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const searchAbortRef = useRef(null);
 
   const q = params.get("q") || "";
   const minRating = Number(params.get("min_rating") ?? "0");
@@ -32,13 +33,21 @@ export default function SearchResultsPage() {
     // Reset when keywords or filters change
     setError("");
     setLoading(true);
-    searchProducts(token, { q, min_rating: minRating, sort, offset: 0 })
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
+    searchProducts(token, { q, min_rating: minRating, sort, offset: 0 }, { signal: controller.signal })
       .then((data) => {
         setRows(data);
         setHasMore(data.length === limit);
       })
-      .catch((ex) => setError(ex.message || "Search failed"))
+      .catch((ex) => {
+        if (controller.signal.aborted) return;
+        setError(ex.message || "Search failed");
+      })
       .finally(() => setLoading(false));
+    return () => controller.abort();
   }, [token, q, minRating, sort]);
 
   useEffect(() => {

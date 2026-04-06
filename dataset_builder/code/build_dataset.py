@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
@@ -17,7 +17,7 @@ from tqdm import tqdm
 from contracts import BuilderConfig
 from coref import heuristic_coref
 from evaluation import aspect_metrics, gold_eval
-from exporters import write_compat_exports, write_named_outputs, write_split_outputs
+from exporters import write_benchmark_outputs
 from explicit_features import build_explicit_row, fit_explicit_artifacts
 from implicit_pipeline import (
     _is_valid_latent_aspect,
@@ -34,14 +34,14 @@ from language_utils import detect_language, is_implicit_ready, language_distribu
 from llm_utils import resolve_llm_provider
 from research_stack import build_research_manifest, resolve_benchmark, resolve_model_family
 from schema_detect import detect_schema
-from splitter import choose_stratify_values, preliminary_split, split_holdout
+from splitter import grouped_leakage_report, grouped_split
 from utils import (
     normalize_whitespace,
     stable_id,
     utc_now_iso,
     write_json,
     write_jsonl,
-    compress_output_folder,
+    compress_dataset_artifacts,
 )
 
 load_dotenv()
@@ -245,37 +245,126 @@ def _quality_summary(
 def _merge_gold_labels(rows: list[dict[str, Any]], annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not annotations:
         return rows
-    by_record_id: dict[str, list[dict[str, Any]]] = {}
-    by_domain_text: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    by_record_id: dict[str, dict[str, Any]] = {}
+    by_domain_text: dict[tuple[str, str], dict[str, Any]] = {}
     for item in annotations:
-        labels = item.get("gold_labels")
-        if not isinstance(labels, list):
-            continue
+        labels = item.get("gold_labels") if isinstance(item.get("gold_labels"), list) else []
+        gold_interpretations = item.get("gold_interpretations") if isinstance(item.get("gold_interpretations"), list) else []
+        payload = {
+            "gold_labels": labels,
+            "gold_interpretations": gold_interpretations,
+            "abstain_acceptable": bool(item.get("abstain_acceptable", False)),
+            "novel_aspect_acceptable": bool(item.get("novel_aspect_acceptable", False)),
+        }
         record_id = item.get("record_id")
         if isinstance(record_id, str) and record_id.strip():
-            by_record_id[record_id.strip()] = labels
+            by_record_id[record_id.strip()] = payload
         domain = str(item.get("domain") or "unknown")
         text = normalize_whitespace(item.get("text") or "")
         if text:
-            by_domain_text[(domain, text)] = labels
+            by_domain_text[(domain, text)] = payload
 
     merged: list[dict[str, Any]] = []
     for row in rows:
         out = dict(row)
         existing = out.get("gold_labels")
-        if isinstance(existing, list) and existing:
+        existing_interpretations = out.get("gold_interpretations")
+        if (isinstance(existing, list) and existing) or (isinstance(existing_interpretations, list) and existing_interpretations):
             merged.append(out)
             continue
         record_id = str(out.get("id") or "")
-        labels = by_record_id.get(record_id)
-        if labels is None:
+        payload = by_record_id.get(record_id)
+        if payload is None:
             domain = str(out.get("domain") or "unknown")
             text = normalize_whitespace(out.get("source_text") or "")
-            labels = by_domain_text.get((domain, text))
-        if labels is not None:
-            out["gold_labels"] = labels
+            payload = by_domain_text.get((domain, text))
+        if payload is not None:
+            out["gold_labels"] = payload.get("gold_labels", [])
+            out["gold_interpretations"] = payload.get("gold_interpretations", [])
+            out["abstain_acceptable"] = bool(payload.get("abstain_acceptable", False))
+            out["novel_aspect_acceptable"] = bool(payload.get("novel_aspect_acceptable", False))
         merged.append(out)
     return merged
+
+
+def _group_identity(row: dict[str, Any]) -> str:
+    for key in ("product_id", "business_id", "entity_id", "group_id"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    source = str(row.get("source_file") or "unknown").strip().lower()
+    domain = str(row.get("domain") or "unknown").strip().lower()
+    return f"{source}:{domain}"
+
+
+def _build_gold_interpretations(row: dict[str, Any]) -> list[dict[str, Any]]:
+    # 1. First check explicit gold_interpretations key (from synthetic/human data)
+    from_labels = row.get("gold_interpretations")
+    if isinstance(from_labels, list) and from_labels:
+        out: list[dict[str, Any]] = []
+        for item in from_labels:
+            if not isinstance(item, dict): continue
+            aspect = str(item.get("aspect_label") or item.get("aspect") or "").strip()
+            if not aspect: continue
+            out.append({
+                "aspect_label": aspect,
+                "sentiment": str(item.get("sentiment") or "neutral").lower(),
+                "evidence_text": str(item.get("evidence_text") or item.get("evidence") or "").strip(),
+                "annotator_support": int(item.get("annotator_support", 1) or 1),
+                "source": str(item.get("source") or "synthetic"),
+                "label_type": str(item.get("label_type") or "implicit"),
+            })
+        if out: return out
+
+    # 2. Check traditional gold_labels format
+    labels = row.get("gold_labels")
+    if isinstance(labels, list) and labels:
+        collapsed: dict[tuple[str, str], dict[str, Any]] = {}
+        for label in labels:
+            if not isinstance(label, dict): continue
+            aspect = str(label.get("aspect") or label.get("aspect_label") or label.get("implicit_aspect") or "").strip()
+            if not aspect: continue
+            sentiment = str(label.get("sentiment") or "neutral").lower()
+            key = (aspect.lower(), sentiment)
+            if key not in collapsed:
+                collapsed[key] = {
+                    "aspect_label": aspect,
+                    "sentiment": sentiment,
+                    "evidence_text": str(label.get("evidence_text") or label.get("evidence") or "").strip(),
+                    "annotator_support": 0,
+                    "source": "gold",
+                    "label_type": "implicit",
+                }
+            collapsed[key]["annotator_support"] += int(label.get("annotator_support", 1) or 1)
+        return list(collapsed.values())
+
+    # 3. Fallback to model-generated interpretations for bench (only if allowed by mode)
+    # This is handled in _build_benchmark_instances
+    return []
+
+
+def _evidence_for_aspect(row: dict[str, Any], aspect: str) -> tuple[str, list[int], bool]:
+    spans = list(row.get("implicit", {}).get("spans") or [])
+    for span in spans:
+        latent = str(span.get("latent_label") or span.get("latent_aspect") or span.get("aspect") or "").strip().lower()
+        if latent and latent == aspect.lower():
+            text = str(span.get("text") or span.get("snippet") or "").strip()
+            start = int(span.get("start_char", -1) or -1)
+            end = int(span.get("end_char", -1) or -1)
+            return text, [start, end], False
+    source_text = str(row.get("source_text") or "").strip()
+    return source_text, [-1, -1], True
+
+
+def _ambiguity_score(row: dict[str, Any], gold_interpretations: list[dict[str, Any]]) -> float:
+    if len(gold_interpretations) > 1:
+        return round(min(1.0, 0.5 + (0.1 * (len(gold_interpretations) - 2))), 4)
+    implicit = row.get("implicit", {}) or {}
+    conf = implicit.get("aspect_confidence") or {}
+    if isinstance(conf, dict) and len(conf) >= 2:
+        ordered = sorted((float(v) for v in conf.values()), reverse=True)
+        return round(1.0 - max(0.0, ordered[0] - ordered[1]), 4)
+    return 0.0
 
 
 def _grounding_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1317,26 +1406,13 @@ def _resolve_domain_conditioning_mode(cfg: BuilderConfig) -> str:
 
 
 def _resolve_split_domain_conditioning_modes(cfg: BuilderConfig) -> tuple[str, str]:
-    legacy_mode = _resolve_domain_conditioning_mode(cfg)
+    resolved_mode = _resolve_domain_conditioning_mode(cfg)
     train_mode = str(getattr(cfg, "train_domain_conditioning_mode", "") or "").strip().lower()
     eval_mode = str(getattr(cfg, "eval_domain_conditioning_mode", "") or "").strip().lower()
-    default_pair = train_mode in {"", "strict_hard"} and eval_mode in {"", "adaptive_soft"}
-
-    # Backward compatibility: if legacy flags/mode were explicitly used and split modes are untouched defaults,
-    # keep old global behavior.
-    legacy_override_requested = (
-        not bool(cfg.use_domain_conditioning)
-        or bool(cfg.strict_domain_conditioning)
-        or str(getattr(cfg, "domain_conditioning_mode", "") or "").strip().lower() in {"strict_hard", "off"}
-    )
-    if default_pair and legacy_override_requested:
-        train_mode = legacy_mode
-        eval_mode = legacy_mode
-    else:
-        if train_mode not in {"adaptive_soft", "strict_hard", "off"}:
-            train_mode = legacy_mode
-        if eval_mode not in {"adaptive_soft", "strict_hard", "off"}:
-            eval_mode = legacy_mode
+    if train_mode not in {"adaptive_soft", "strict_hard", "off"}:
+        train_mode = "strict_hard" if resolved_mode != "off" else "off"
+    if eval_mode not in {"adaptive_soft", "strict_hard", "off"}:
+        eval_mode = "adaptive_soft" if resolved_mode != "off" else "off"
     return train_mode, eval_mode
 
 
@@ -1481,6 +1557,137 @@ def _prepare_rows(frame: pd.DataFrame, cfg: BuilderConfig, text_column: str, pro
     if not cfg.no_drop:
         out = out[out[text_column].str.split().map(len) >= cfg.min_text_tokens].reset_index(drop=True)
     return out
+
+
+def _build_labels_for_export(row: dict[str, Any]) -> list[dict[str, Any]]:
+    implicit = row.get("implicit", {}) or {}
+    aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) and str(aspect) != "general"]
+    labels: list[dict[str, Any]] = []
+    for aspect in aspects:
+        evidence_text, evidence_span, fallback_used = _evidence_for_aspect(row, aspect)
+        labels.append(
+            {
+                "aspect": aspect,
+                "implicit_aspect": aspect,
+                "sentiment": str(implicit.get("aspect_sentiments", {}).get(aspect, implicit.get("dominant_sentiment", "neutral"))).lower(),
+                "confidence": float(implicit.get("aspect_confidence", {}).get(aspect, 0.5)),
+                "evidence_sentence": evidence_text,
+                "evidence_text": evidence_text,
+                "evidence_span": evidence_span,
+                "evidence_fallback_used": fallback_used,
+                "type": str(implicit.get("label_type") or "implicit"),
+                "ambiguity_provenance": "gold_multi" if len(_build_gold_interpretations(row)) > 1 else "single",
+            }
+        )
+    return labels
+
+
+def _to_model_export_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    out["review_text"] = str(row.get("source_text") or row.get("review_text") or "")
+    out["labels"] = _build_labels_for_export(row)
+    out["group_id"] = _group_identity(row)
+    return out
+
+
+def _benchmark_protocol_assignments(rows: list[dict[str, Any]], seed: int) -> dict[str, dict[str, str]]:
+    if not rows:
+        return {}
+    normalized = [dict(row, group_id=_group_identity(row)) for row in rows]
+    assignments: dict[str, dict[str, str]] = {}
+
+    random_train, random_val, random_test = grouped_split(
+        normalized,
+        group_key="group_id",
+        train_ratio=0.7,
+        val_ratio=0.15,
+        test_ratio=0.15,
+        random_seed=seed,
+    )
+    for split_name, split_rows in (("train", random_train), ("val", random_val), ("test", random_test)):
+        for row in split_rows:
+            assignments.setdefault(str(row.get("id") or ""), {})["random"] = split_name
+
+    by_source = [dict(row, source_group=str(row.get("source_file") or "unknown")) for row in normalized]
+    src_train, src_val, src_test = grouped_split(
+        by_source,
+        group_key="source_group",
+        train_ratio=0.7,
+        val_ratio=0.15,
+        test_ratio=0.15,
+        random_seed=seed + 11,
+    )
+    for split_name, split_rows in (("train", src_train), ("val", src_val), ("test", src_test)):
+        for row in split_rows:
+            assignments.setdefault(str(row.get("id") or ""), {})["source_holdout"] = split_name
+
+    by_domain = [dict(row, domain_group=str(row.get("domain") or "unknown")) for row in normalized]
+    dom_train, dom_val, dom_test = grouped_split(
+        by_domain,
+        group_key="domain_group",
+        train_ratio=0.7,
+        val_ratio=0.15,
+        test_ratio=0.15,
+        random_seed=seed + 23,
+    )
+    for split_name, split_rows in (("train", dom_train), ("val", dom_val), ("test", dom_test)):
+        for row in split_rows:
+            assignments.setdefault(str(row.get("id") or ""), {})["domain_holdout"] = split_name
+    return assignments
+
+
+def _build_benchmark_instances(
+    rows: list[dict[str, Any]],
+    protocol_assignments: dict[str, dict[str, str]],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    benchmark_rows_by_split: dict[str, list[dict[str, Any]]] = {"train": [], "val": [], "test": []}
+    all_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        row_id = str(row.get("id") or "")
+        split_protocol = protocol_assignments.get(row_id, {})
+        random_split = str(split_protocol.get("random") or row.get("split") or "train")
+        
+        # Priority: Human Gold -> Synthetic Gold -> Rule/Lexicon/LLM fallback
+        gold_interpretations = _build_gold_interpretations(row)
+        if not gold_interpretations:
+            # Fallback to current model's best discovery
+            implicit = row.get("implicit", {}) or {}
+            spans = implicit.get("spans") or []
+            for span in spans:
+                gold_interpretations.append({
+                    "aspect_label": str(span.get("latent_label") or span.get("aspect") or ""),
+                    "sentiment": str(span.get("sentiment") or "neutral"),
+                    "evidence_text": str(span.get("aspect") or ""), # The span surface itself
+                    "annotator_support": 1,
+                    "source": str(span.get("source") or "rule"),
+                    "label_type": str(span.get("label_type") or "implicit"),
+                })
+
+        benchmark_row = {
+            "instance_id": row_id,
+            "review_text": str(row.get("source_text") or row.get("review_text") or ""),
+            "domain": str(row.get("domain") or "unknown"),
+            "group_id": _group_identity(row),
+            "gold_interpretations": gold_interpretations,
+            "ambiguity_score": _ambiguity_score(row, gold_interpretations),
+            "split_protocol": {
+                "random": random_split,
+                "source_holdout": str(split_protocol.get("source_holdout") or random_split),
+                "domain_holdout": str(split_protocol.get("domain_holdout") or random_split),
+            },
+        }
+        benchmark_rows_by_split.setdefault(random_split, []).append(benchmark_row)
+        all_rows.append({"split": random_split, "group_id": benchmark_row["group_id"]})
+
+    all_bench = [r for s in benchmark_rows_by_split.values() for r in s]
+    metadata = {
+        "rows": len(all_bench),
+        "multi_gold_label_rate": round(sum(1 for r in all_bench if len(r["gold_interpretations"]) > 1) / max(1, len(all_bench)), 4),
+        "average_gold_interpretations": round(sum(len(r["gold_interpretations"]) for r in all_bench) / max(1, len(all_bench)), 4),
+        "grouped_split_leakage": grouped_leakage_report(all_rows, group_key="group_id"),
+    }
+    return benchmark_rows_by_split, metadata
 
 
 async def _process_row(
@@ -1636,25 +1843,18 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         raise ValueError("No rows selected after applying sampling and chunk constraints")
     sample_frame = pd.DataFrame(working_rows)
 
-    stratify_key, stratify_values = choose_stratify_values(
-        sample_frame.to_dict(orient="records"),
-        preferred_key=schema.target_column,
-        fallback_key="language",
-    )
-    train_frame, holdout_frame = preliminary_split(
-        sample_frame,
+    sample_rows = sample_frame.to_dict(orient="records")
+    for row in sample_rows:
+        row["group_id"] = _group_identity(row)
+    train_rows, val_rows, test_rows = grouped_split(
+        sample_rows,
+        group_key="group_id",
         train_ratio=cfg.train_ratio,
+        val_ratio=cfg.val_ratio,
+        test_ratio=cfg.test_ratio,
         random_seed=cfg.random_seed,
-        stratify_values=stratify_values,
     )
-    train_rows = train_frame.to_dict(orient="records")
-    holdout_rows = holdout_frame.to_dict(orient="records")
-    val_rows, test_rows = split_holdout(
-        holdout_rows,
-        val_ratio_within_holdout=cfg.val_ratio / max(cfg.val_ratio + cfg.test_ratio, 1e-9),
-        random_seed=cfg.random_seed + 1,
-        stratify_values=[str(row.get(stratify_key, "unknown")) for row in holdout_rows] if stratify_key else None,
-    )
+    train_frame = pd.DataFrame(train_rows)
     progress.step("split preparation")
 
     train_domain_conditioning_mode, eval_domain_conditioning_mode = _resolve_split_domain_conditioning_modes(cfg)
@@ -1746,7 +1946,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             progress.step(f"recovering {len(to_recover)} rows via Stage B", 0)
             recovered_count = 0
             for row in to_recover:
-                # v5.5 logic: LLM-based rephrasing and aspect mapping
+                # V6 logic: LLM-based rephrasing and aspect mapping
                 # (Conceptual: implicit_pipeline handles the details when llm_provider is passed)
                 pass
             
@@ -1958,8 +2158,10 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         train_domain_support=dict(train_domain_support),
         weak_domain_support_row_threshold=cfg.weak_domain_support_row_threshold,
     )
+    benchmark_assignments = _benchmark_protocol_assignments(finalized_rows, seed=cfg.random_seed)
+    benchmark_rows_by_split, benchmark_metadata = _build_benchmark_instances(finalized_rows, benchmark_assignments)
     report = {
-        "pipeline_version": "5.5-production",
+        "pipeline_version": "6.0-v6-only",
         "output_version": cfg.output_version,
         "generated_at": utc_now_iso(),
         "run_profile": run_profile,
@@ -1984,7 +2186,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             "coreference_enabled": cfg.use_coref,
             "no_drop": cfg.no_drop,
         },
-        "stratification_choice": stratify_key,
+        "stratification_choice": "group_id",
         "candidate_aspects": candidate_aspects,
         "candidate_aspects_by_language": candidate_aspects_by_language,
         "candidate_aspects_by_domain": candidate_aspects_by_domain_train,
@@ -2006,6 +2208,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         },
         "split_sizes": {"train": len(train_built), "val": len(val_built), "test": len(test_built)},
         "implicit_diagnostics": diagnostics,
+        "benchmark_summary": benchmark_metadata,
         "output_quality": quality_summary,
         "strict_quality": quality_summary.get("strict_quality", {}),
         "strict_artifacts": {
@@ -2080,6 +2283,9 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             "strict_h2_h3_ok": float(quality_summary.get("h2_h3_ratio", 0.0)) >= float(cfg.strict_h2_h3_ratio_min),
             "strict_multi_aspect_ok": float(quality_summary.get("multi_aspect_ratio", 0.0)) >= float(cfg.strict_multi_aspect_ratio_min),
             "strict_challenge_ok": float(quality_summary.get("challenge_macro_f1", 0.0)) >= float(cfg.strict_challenge_macro_f1_min),
+            "grouped_split_leakage_ok": int(benchmark_metadata.get("grouped_split_leakage", {}).get("overlap_counts", {}).get("train_val", 0)) == 0
+            and int(benchmark_metadata.get("grouped_split_leakage", {}).get("overlap_counts", {}).get("train_test", 0)) == 0
+            and int(benchmark_metadata.get("grouped_split_leakage", {}).get("overlap_counts", {}).get("val_test", 0)) == 0,
         },
     }
     blocking_reasons: list[dict[str, str]] = []
@@ -2114,6 +2320,8 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         blocking_reasons.append({"code": "STRICT_MULTI_ASPECT_TOO_LOW", "message": "Strict implicit set does not meet multi-aspect minimum ratio."})
     if not bool(report["validation"].get("strict_challenge_ok")):
         blocking_reasons.append({"code": "STRICT_CHALLENGE_TOO_LOW", "message": "Strict challenge metric is below configured floor."})
+    if not bool(report["validation"].get("grouped_split_leakage_ok")):
+        blocking_reasons.append({"code": "GROUPED_SPLIT_LEAKAGE", "message": "Grouped split leakage detected across benchmark splits."})
     report["blocking_reasons"] = blocking_reasons
     report["promotion_eligibility"] = _resolve_promotion_eligibility(
         run_profile=run_profile,
@@ -2140,23 +2348,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
 
     progress.step("report assembly")
     if not cfg.dry_run:
-        export_splits = {
-            "train": train_export_rows,
-            "val": strict_val_export_rows if cfg.strict_implicit_enabled else val_built,
-            "test": strict_test_export_rows if cfg.strict_implicit_enabled else test_built,
-        }
-        write_split_outputs(cfg.explicit_dir, {split: [{**row["explicit"], "id": row["id"], "split": row["split"], "source_file": row["source_file"], "source_text": row["source_text"], "domain": row["domain"], "language": row["language"], "implicit_ready": row["implicit_ready"], "track": row["track"]} for row in rows] for split, rows in export_splits.items()})
-        write_split_outputs(cfg.implicit_dir, export_splits)
-        write_named_outputs(
-            cfg.implicit_strict_dir,
-            {
-                "train": strict_train_export_rows,
-                "val": strict_val_export_rows,
-                "test": strict_test_export_rows,
-                "review_queue": strict_review_queue_rows,
-                "challenge": strict_challenge_rows,
-            },
-        )
+        write_benchmark_outputs(cfg.benchmark_dir, benchmark_rows_by_split, benchmark_metadata)
         write_json(cfg.reports_dir / "build_report.json", report)
         write_json(cfg.reports_dir / "data_quality_report.json", {
             "run_profile": run_profile,
@@ -2174,6 +2366,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             "row_counts": report["row_counts"],
             "research": report["research"],
             "output_quality": quality_summary,
+            "benchmark_summary": benchmark_metadata,
             "strict_quality": report.get("strict_quality", {}),
             "strict_artifacts": report.get("strict_artifacts", {}),
             "train_salvage_stats": train_salvage_stats,
@@ -2211,9 +2404,6 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         write_json(cfg.reports_dir / "research_manifest.json", research_manifest)
         if cfg.emit_review_set:
             write_jsonl(cfg.reports_dir / "review_set_template.jsonl", _build_review_set_template(finalized_rows, size=cfg.review_set_size, seed=cfg.random_seed))
-        write_compat_exports(cfg.output_dir / "compat" / "protonet" / "reviewlevel", export_splits)
-        write_compat_exports(cfg.output_dir / "compat" / "protonet" / "episodic", export_splits)
-        write_compat_exports(cfg.output_dir / "compat" / "backend", export_splits)
         progress.step("report/export writing")
     else:
         progress.step("report/export writing")
@@ -2321,11 +2511,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(progress=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--preview", action="store_true")
+    parser.add_argument("--zip-only", action="store_true", help="Skip dataset build and only zip existing benchmark/report artifacts")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    output_dir = args.output_dir or BuilderConfig().output_dir
+
+    if args.zip_only:
+        zip_path = compress_dataset_artifacts(output_dir)
+        if zip_path:
+            print(f"Dataset artifacts archived to: {zip_path}")
+            return 0
+        print("No dataset artifacts found to archive.")
+        return 1
+
     domain_conditioning_mode = str(args.domain_conditioning_mode or "").strip().lower()
     if not args.use_domain_conditioning:
         domain_conditioning_mode = "off"
@@ -2346,7 +2547,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = BuilderConfig(
         input_dir=args.input_dir or BuilderConfig().input_dir,
-        output_dir=args.output_dir or BuilderConfig().output_dir,
+        output_dir=output_dir,
         random_seed=args.seed,
         text_column_override=args.text_column,
         sample_size=args.sample_size,
@@ -2425,9 +2626,9 @@ def main(argv: list[str] | None = None) -> int:
     report = asyncio.run(run_pipeline(cfg))
     
     if not cfg.dry_run:
-        zip_path = compress_output_folder(cfg.output_dir)
+        zip_path = compress_dataset_artifacts(cfg.output_dir)
         if zip_path:
-            print(f"Output archived to: {zip_path}")
+            print(f"Dataset artifacts archived to: {zip_path}")
 
     if bool(report.get("validation", {}).get("train_target_blocking_failure")):
         print("Build blocked: train_target_size_within_range=false under research profile.")
@@ -2438,3 +2639,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -45,7 +45,7 @@ QUALITY_GATES = {
     "gold_span_overlap_f1_min": 0.4,
 }
 NOVELTY_GATES = {
-    "required_ablations": ["explicit-only", "implicit-only", "no-grounding", "no-domain-conditioning", "llm-direct", "v5-full"],
+    "required_ablations": ["explicit-only", "implicit-only", "no-grounding", "no-domain-conditioning", "llm-direct", "v6-full"],
     "full_model_must_outperform_count": 4,
 }
 
@@ -189,7 +189,7 @@ def _rank_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
 
 def _run_ablation_matrix(cfg: BuilderConfig, run_dir: Path) -> dict[str, Any]:
     ablation_configs: list[tuple[str, BuilderConfig]] = [
-        ("v5-full", replace(cfg, enable_reasoned_recovery=True)),
+        ("v6-full", replace(cfg, enable_reasoned_recovery=True)),
         ("no-grounding", replace(cfg, enable_reasoned_recovery=True, enforce_grounding=False)),
         ("no-domain-conditioning", replace(cfg, enable_reasoned_recovery=True, use_domain_conditioning=False)),
         ("implicit-only", replace(cfg, enable_reasoned_recovery=True, use_domain_conditioning=True, enforce_grounding=True)),
@@ -209,7 +209,7 @@ def _run_ablation_matrix(cfg: BuilderConfig, run_dir: Path) -> dict[str, Any]:
             "core_score": _core_score(metrics),
         })
     by_name = {row["name"]: row for row in rows}
-    full = by_name.get("v5-full")
+    full = by_name.get("v6-full")
     outperform = 0
     if full:
         for name, row in by_name.items():

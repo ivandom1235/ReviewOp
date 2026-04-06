@@ -121,6 +121,11 @@ def _episode_row_from_example(row: Dict[str, Any], role: str, cfg: ProtonetConfi
         "confidence": float(row.get("confidence", 1.0)),
         "joint_label": build_joint_label(row, cfg.joint_label_separator),
         "role": role,
+        "gold_joint_labels": list(row.get("gold_joint_labels") or []),
+        "abstain_acceptable": bool(row.get("abstain_acceptable", False)),
+        "novel_aspect_acceptable": bool(row.get("novel_aspect_acceptable", False)),
+        "split_protocol": row.get("split_protocol") or {},
+        "benchmark_ambiguity_score": float(row.get("benchmark_ambiguity_score", 0.0)),
     }
 
 

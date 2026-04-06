@@ -15,20 +15,19 @@ CODE_ROOT = PROTONET_ROOT / "code"
 INPUT_ROOT = PROTONET_ROOT / "input"
 OUTPUT_ROOT = PROTONET_ROOT / "output"
 METADATA_ROOT = PROTONET_ROOT / "metadata"
-COMPAT_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output" / "compat" / "protonet"
+BENCHMARK_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output" / "benchmark" / "ambiguity_openworld"
 
 
 def resolve_default_input_dir(input_type: str) -> Path:
-    compat_dir = COMPAT_INPUT_ROOT / input_type
-    if compat_dir.exists():
-        return compat_dir
+    if input_type == "benchmark":
+        return BENCHMARK_INPUT_ROOT
     return INPUT_ROOT / input_type
 
 
 @dataclass
 class ProtonetConfig:
-    input_type: str = "episodic"
-    input_dir: Path = INPUT_ROOT / "episodic"
+    input_type: str = "benchmark"
+    input_dir: Path = BENCHMARK_INPUT_ROOT
     output_dir: Path = OUTPUT_ROOT
     metadata_dir: Path = METADATA_ROOT
     checkpoint_dir: Path = OUTPUT_ROOT / "checkpoints"
@@ -62,6 +61,13 @@ class ProtonetConfig:
     prototype_smoothing: float = 0.05
     low_confidence_threshold: float = 0.55
     top_k_debug: int = 3
+    selective_alpha: float = 0.6
+    selective_beta: float = 0.25
+    selective_gamma: float = 0.1
+    selective_delta: float = 0.05
+    abstain_threshold: float = 0.55
+    multi_label_margin: float = 0.08
+    novelty_threshold: float = 0.45
 
     seed: int = 42
     no_progress: bool = False
@@ -78,8 +84,7 @@ class ProtonetConfig:
 
     def ensure_dirs(self) -> None:
         for path in [
-            PROTONET_ROOT / "input" / "reviewlevel",
-            PROTONET_ROOT / "input" / "episodic",
+            PROTONET_ROOT / "input" / "benchmark",
             self.output_dir,
             self.checkpoint_dir,
             self.episode_cache_dir,

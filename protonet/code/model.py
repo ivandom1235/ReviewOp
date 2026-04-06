@@ -55,7 +55,11 @@ class ProtoNetModel(nn.Module):
         texts = [
             format_input_text(
                 str(item.get("review_text", "")),
-                str(item.get("evidence_sentence") or item.get("review_text", "")),
+                str(
+                    item.get("evidence_text")
+                    or item.get("evidence_sentence")
+                    or item.get("review_text", "")
+                ),
                 str(item.get("domain", "unknown")),
             )
             for item in items

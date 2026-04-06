@@ -1,10 +1,23 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 const DEFAULT_TIMEOUT_MS = 15000;
 
-function withTimeout(options = {}) {
-  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS);
+function withTimeout(options = {}, requestOptions = {}) {
+  const timeoutMs = Number(requestOptions.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS);
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const externalSignal = requestOptions.signal;
+  let cleanupExternalAbort = null;
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      const abortBridge = () => controller.abort();
+      externalSignal.addEventListener("abort", abortBridge, { once: true });
+      cleanupExternalAbort = () => externalSignal.removeEventListener("abort", abortBridge);
+    }
+  }
+
   return {
     fetchOptions: {
       ...options,
@@ -15,11 +28,12 @@ function withTimeout(options = {}) {
       signal: controller.signal,
     },
     timeoutId,
+    cleanupExternalAbort,
   };
 }
 
-async function request(path, options = {}) {
-  const { fetchOptions, timeoutId } = withTimeout(options);
+async function request(path, options = {}, requestOptions = {}) {
+  const { fetchOptions, timeoutId, cleanupExternalAbort } = withTimeout(options, requestOptions);
   let response;
   try {
     response = await fetch(`${API_BASE}${path}`, fetchOptions);
@@ -30,6 +44,7 @@ async function request(path, options = {}) {
     throw new Error("Backend is unreachable. Start backend API and check VITE_PROXY_TARGET/VITE_API_BASE_URL.");
   } finally {
     window.clearTimeout(timeoutId);
+    cleanupExternalAbort?.();
   }
 
   const text = await response.text();
@@ -124,6 +139,7 @@ export async function getBatchAspectGraph(filters = {}) {
   if (filters.product_id) params.set("product_id", filters.product_id);
   if (filters.from) params.set("from", filters.from);
   if (filters.to) params.set("to", filters.to);
+  params.set("graph_mode", filters.graph_mode || "accepted");
   params.set("min_edge_weight", String(filters.min_edge_weight || 1));
 
   const query = params.toString();
@@ -295,13 +311,17 @@ export async function getMe(token) {
   });
 }
 
-export async function getProductSuggestions(token) {
+export async function getProductSuggestions(token, requestOptions = {}) {
   return request("/user/products/suggestions", {
     headers: { ...authHeaders(token) },
-  });
+  }, requestOptions);
 }
 
-export async function searchProducts(token, { q = "", min_rating = 1, sort = "most_recent", offset = 0 } = {}) {
+export async function searchProducts(
+  token,
+  { q = "", min_rating = 1, sort = "most_recent", offset = 0 } = {},
+  requestOptions = {}
+) {
   const params = new URLSearchParams();
   if (q) params.set("q", q);
   params.set("min_rating", String(min_rating));
@@ -309,13 +329,13 @@ export async function searchProducts(token, { q = "", min_rating = 1, sort = "mo
   params.set("offset", String(offset));
   return request(`/user/products/search?${params.toString()}`, {
     headers: { ...authHeaders(token) },
-  });
+  }, requestOptions);
 }
 
-export async function getProductDetail(token, productId) {
+export async function getProductDetail(token, productId, requestOptions = {}) {
   return request(`/user/products/${encodeURIComponent(productId)}`, {
     headers: { ...authHeaders(token) },
-  });
+  }, requestOptions);
 }
 
 export async function getProductReviews(token, productId, options = {}) {

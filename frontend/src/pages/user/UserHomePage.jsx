@@ -14,11 +14,16 @@ export default function UserHomePage() {
   const nav = useNavigate();
 
   useEffect(() => {
+    const controller = new AbortController();
     setLoading(true);
-    getProductSuggestions(token)
+    getProductSuggestions(token, { signal: controller.signal })
       .then(setSuggestions)
-      .catch((ex) => setError(ex.message || "Failed to load suggestions"))
+      .catch((ex) => {
+        if (controller.signal.aborted) return;
+        setError(ex.message || "Failed to load suggestions");
+      })
       .finally(() => setLoading(false));
+    return () => controller.abort();
   }, [token]);
 
   function onSearch(e) {

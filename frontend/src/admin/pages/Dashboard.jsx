@@ -74,7 +74,7 @@ export default function Dashboard({
                 <div className="grid gap-2">
                   {alerts.slice(0, 5).map((a, idx) => (
                     <div 
-                      key={`${a.aspect}-${idx}`} 
+                      key={`${a.id || a.aspect || "alert"}-${idx}`} 
                       className="flex items-center justify-between rounded-xl border border-border-subtle bg-app/30 p-3 transition-colors hover:bg-app/50"
                     >
                       <div className="flex items-center gap-3">
@@ -94,7 +94,7 @@ export default function Dashboard({
                     onClick={onSeeMoreAlerts}
                     className="mt-2 w-full rounded-xl py-2 text-xs font-bold uppercase tracking-widest text-brand-primary transition-all hover:bg-brand-primary/5"
                   >
-                    View All Anomalies →
+                    View All Anomalies {"->"}
                   </button>
                 )}
               </>

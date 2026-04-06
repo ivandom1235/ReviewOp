@@ -1,18 +1,12 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
-import { useEffect, useState } from "react";
+import { useTheme } from "../../theme/ThemeContext";
 
 export default function UserShell({ children, title = "ReviewOps User Portal" }) {
   const { user, logout } = useAuth();
   const nav = useNavigate();
   const location = useLocation();
-  const [theme, setTheme] = useState(() => localStorage.getItem("reviewop-user-theme") || "light");
-  const isDark = theme === "dark";
-
-  useEffect(() => {
-    localStorage.setItem("reviewop-user-theme", theme);
-    document.documentElement.classList.toggle("dark", isDark);
-  }, [theme, isDark]);
+  const { isDark, setTheme } = useTheme();
 
   return (
     <div className="min-h-screen bg-app text-[hsl(var(--text-main))]">

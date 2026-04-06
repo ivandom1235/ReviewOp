@@ -1,0 +1,50 @@
+{
+  "version": "6.0.0",
+  "runtime_contracts": {
+    "dataset_builder": {
+      "primary_artifacts": [
+        "dataset_builder/output/benchmark/ambiguity_openworld/train.jsonl",
+        "dataset_builder/output/benchmark/ambiguity_openworld/val.jsonl",
+        "dataset_builder/output/benchmark/ambiguity_openworld/test.jsonl",
+        "dataset_builder/output/benchmark/ambiguity_openworld/metadata.json"
+      ],
+      "required_fields": [
+        "instance_id",
+        "review_text",
+        "domain",
+        "gold_interpretations",
+        "abstain_acceptable",
+        "novel_aspect_acceptable",
+        "ambiguity_score",
+        "split_protocol"
+      ]
+    },
+    "protonet": {
+      "input_type": "benchmark",
+      "required_output_fields": [
+        "decision",
+        "accepted_predictions",
+        "novel_candidates",
+        "abstain",
+        "ambiguity_score",
+        "novelty_score"
+      ]
+    },
+    "backend_infer": {
+      "required_response_fields": [
+        "accepted_predictions",
+        "abstained_predictions",
+        "novel_candidates"
+      ]
+    }
+  },
+  "deprecated_signals": {
+    "blocked_tokens": [
+      "v5",
+      "5.5-production",
+      "reviewlevel",
+      "episodic",
+      "compat/protonet"
+    ]
+  }
+}

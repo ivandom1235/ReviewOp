@@ -6,9 +6,9 @@ from typing import Any, Dict, List, Tuple
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from models.tables import EvidenceSpan, Prediction
+from models.tables import AbstainedPrediction, EvidenceSpan, NovelCandidate, Prediction
 from services.hybrid_merge import merge_predictions
-from services.review_pipeline import run_single_review_pipeline
+from services.review_pipeline import run_single_review_pipeline, split_selective_states
 
 
 import logging
@@ -75,12 +75,53 @@ def _persist_final_predictions(db: Session, review_obj, final_predictions: List[
     db.flush()
 
 
+def _persist_selective_states(db: Session, review_obj, selective_states: Dict[str, Any]) -> None:
+    db.execute(delete(AbstainedPrediction).where(AbstainedPrediction.review_id == review_obj.id))
+    db.execute(delete(NovelCandidate).where(NovelCandidate.review_id == review_obj.id))
+
+    for row in selective_states.get("abstained_predictions", []) or []:
+        db.add(
+            AbstainedPrediction(
+                review_id=review_obj.id,
+                reason=str(row.get("reason") or "low_selective_confidence"),
+                confidence=float(row.get("confidence", 0.0)),
+                ambiguity_score=float(row.get("ambiguity_score", 0.0)),
+            )
+        )
+
+    seen_novel: set[str] = set()
+    for row in selective_states.get("novel_candidates", []) or []:
+        aspect = str(row.get("aspect") or row.get("aspect_raw") or row.get("aspect_cluster") or "").strip()
+        if not aspect:
+            continue
+        novelty_score = float(row.get("novelty_score", 0.0))
+        confidence = row.get("confidence", None)
+        evidence_spans = row.get("evidence_spans") or []
+        first_span = evidence_spans[0] if evidence_spans else {}
+        key = f"{aspect}|{novelty_score:.6f}|{str(first_span.get('snippet') or '')}"
+        if key in seen_novel:
+            continue
+        seen_novel.add(key)
+        db.add(
+            NovelCandidate(
+                review_id=review_obj.id,
+                aspect=aspect,
+                novelty_score=novelty_score,
+                confidence=float(confidence) if confidence is not None else None,
+                evidence=str(first_span.get("snippet") or "") or None,
+                evidence_start=int(first_span.get("start_char")) if first_span.get("start_char") is not None else None,
+                evidence_end=int(first_span.get("end_char")) if first_span.get("end_char") is not None else None,
+            )
+        )
+
+    db.flush()
+
+
 def run_single_review_hybrid_pipeline(
     db: Session,
     *,
     explicit_engine,
     implicit_client,
-    llm_verifier,
     text: str,
     domain: str | None = None,
     product_id: str | None = None,
@@ -106,20 +147,18 @@ def run_single_review_hybrid_pipeline(
     logger.debug("EXPLICIT: %s", explicit_predictions)
     logger.debug("IMPLICIT: %s", implicit_predictions)
 
-    # Step C: merge explicit + implicit
+    # Step C: V6 selective routing filter for implicit outputs
+    selective_states = split_selective_states(implicit_predictions)
+    accepted_implicit = list(selective_states.get("accepted_predictions", []))
+
+    # Step D: merge explicit + accepted implicit only
     merged_predictions = merge_predictions(
         explicit_predictions=explicit_predictions,
-        implicit_predictions=implicit_predictions,
+        implicit_predictions=accepted_implicit,
     )
 
-    # Step D: verifier
-    verified_predictions = llm_verifier.verify(
-        review_text=text,
-        explicit_predictions=explicit_predictions,
-        implicit_predictions=implicit_predictions,
-        merged_predictions=merged_predictions,
-    )
+    # V6-only: verifier no longer overrides selective states.
+    _persist_final_predictions(db, review_obj, merged_predictions)
+    _persist_selective_states(db, review_obj, selective_states)
 
-    _persist_final_predictions(db, review_obj, verified_predictions)
-
-    return review_obj, explicit_predictions, implicit_predictions, verified_predictions
+    return review_obj, explicit_predictions, implicit_predictions, merged_predictions

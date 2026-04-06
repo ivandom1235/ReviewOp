@@ -1,10 +1,11 @@
+import { useTheme } from "../theme/ThemeContext";
+
 export function RouteLoading({ label = "Loading...", isDark }) {
+  const theme = useTheme();
   const dark =
     typeof isDark === "boolean"
       ? isDark
-      : typeof document !== "undefined"
-        ? document.documentElement.classList.contains("dark")
-        : false;
+      : theme.isDark;
 
   return (
     <div

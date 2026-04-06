@@ -12,12 +12,19 @@ from sqlalchemy.exc import SQLAlchemyError
 from core.db import engine, get_db, SessionLocal, init_db
 from core.config import settings
 from core.errors import AppError, DatabaseFailure
-from models.schemas import InferReviewIn, InferReviewOut, PredictionOut, EvidenceSpanOut
+from models.schemas import (
+    AbstainedPredictionOut,
+    EvidenceSpanOut,
+    InferReviewIn,
+    InferReviewOut,
+    NovelCandidateOut,
+    PredictionOut,
+    SelectivePredictionOut,
+)
 from services.seq2seq_infer import Seq2SeqEngine
-from services.review_pipeline import refresh_corpus_graph, _refresh_corpus_graph_task
+from services.review_pipeline import refresh_corpus_graph, _refresh_corpus_graph_task, split_selective_states
 from services.hybrid_pipeline import run_single_review_hybrid_pipeline
 from services.implicit_client import ImplicitClient
-from services.llm_verifier import LLMVerifier
 
 from routes.analytics import router as analytics_router
 from routes.graph import router as graph_router
@@ -26,7 +33,7 @@ from routes.infer import router as infer_router
 from routes.user_portal import router as user_portal_router, seed_default_accounts
 
 
-app = FastAPI(title="Proto ReviewOps MVP (Hybrid)", version="5.5.0")
+app = FastAPI(title="ReviewOps V6", version="6.0.0")
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +53,6 @@ def on_startup():
 
     app.state.seq2seq_engine = Seq2SeqEngine.load()
     app.state.implicit_client = ImplicitClient()
-    app.state.llm_verifier = LLMVerifier()
 
 
 @app.exception_handler(AppError)
@@ -112,6 +118,48 @@ def _apply_schema_patches() -> None:
                     """
                 )
             )
+        if not inspector.has_table("abstained_predictions"):
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE abstained_predictions (
+                        id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                        review_id INTEGER NOT NULL,
+                        reason VARCHAR(128) NOT NULL,
+                        confidence FLOAT NOT NULL DEFAULT 0.0,
+                        ambiguity_score FLOAT NOT NULL DEFAULT 0.0,
+                        created_at DATETIME NOT NULL,
+                        INDEX ix_abstained_predictions_review_id (review_id),
+                        CONSTRAINT fk_abstained_predictions_review_id
+                          FOREIGN KEY (review_id) REFERENCES reviews(id)
+                          ON DELETE CASCADE
+                    )
+                    """
+                )
+            )
+        if not inspector.has_table("novel_candidates"):
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE novel_candidates (
+                        id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                        review_id INTEGER NOT NULL,
+                        aspect VARCHAR(255) NOT NULL,
+                        novelty_score FLOAT NOT NULL DEFAULT 0.0,
+                        confidence FLOAT NULL,
+                        evidence TEXT NULL,
+                        evidence_start INTEGER NULL,
+                        evidence_end INTEGER NULL,
+                        created_at DATETIME NOT NULL,
+                        INDEX ix_novel_candidates_review_id (review_id),
+                        INDEX ix_novel_candidates_aspect (aspect),
+                        CONSTRAINT fk_novel_candidates_review_id
+                          FOREIGN KEY (review_id) REFERENCES reviews(id)
+                          ON DELETE CASCADE
+                    )
+                    """
+                )
+            )
 
 
 @app.get("/health")
@@ -124,8 +172,8 @@ def health(db: Session = Depends(get_db)):
             "db": "connected",
             "explicit_model": settings.seq2seq_model_name,
             "implicit_enabled": settings.enable_implicit,
-            "llm_verifier_enabled": settings.enable_llm_verifier,
-            "llm_model": settings.llm_model_name if settings.enable_llm_verifier else None,
+            "llm_verifier_enabled": False,
+            "llm_model": None,
         }
     except SQLAlchemyError as ex:
         logger.warning("Health check failed due to database connectivity", exc_info=ex)
@@ -155,13 +203,11 @@ def infer_review(payload: InferReviewIn, background_tasks: BackgroundTasks, db: 
 
     explicit_engine = app.state.seq2seq_engine
     implicit_client = app.state.implicit_client
-    llm_verifier = app.state.llm_verifier
 
     review_obj, explicit_preds, implicit_preds, final_preds = run_single_review_hybrid_pipeline(
         db,
         explicit_engine=explicit_engine,
         implicit_client=implicit_client,
-        llm_verifier=llm_verifier,
         text=text_in,
         domain=payload.domain,
         product_id=payload.product_id,
@@ -194,8 +240,52 @@ def infer_review(payload: InferReviewIn, background_tasks: BackgroundTasks, db: 
                 source=source,
                 is_implicit=(source == "implicit"),
                 verification_status="kept" if source in {"explicit", "implicit", "verified"} else None,
+                decision=pred.get("decision"),
+                routing=pred.get("routing"),
+                ambiguity_score=pred.get("ambiguity_score"),
+                novelty_score=pred.get("novelty_score"),
             )
         )
+
+    selective_states = split_selective_states(implicit_preds)
+    accepted_out = [
+        SelectivePredictionOut(
+            aspect=str(row.get("aspect_cluster") or row.get("aspect_raw") or row.get("aspect") or ""),
+            sentiment=str(row.get("sentiment") or "neutral"),
+            confidence=float(row.get("confidence", 0.0)),
+            routing=str(row.get("routing") or "known"),
+            evidence=str((row.get("evidence_spans") or [{}])[0].get("snippet") or "") if row.get("evidence_spans") else None,
+            evidence_start=(
+                int((row.get("evidence_spans") or [{}])[0].get("start_char"))
+                if row.get("evidence_spans") and (row.get("evidence_spans") or [{}])[0].get("start_char") is not None
+                else None
+            ),
+            evidence_end=(
+                int((row.get("evidence_spans") or [{}])[0].get("end_char"))
+                if row.get("evidence_spans") and (row.get("evidence_spans") or [{}])[0].get("end_char") is not None
+                else None
+            ),
+        )
+        for row in selective_states.get("accepted_predictions", [])
+        if str(row.get("aspect_cluster") or row.get("aspect_raw") or row.get("aspect") or "").strip()
+    ]
+    abstained_out = [
+        AbstainedPredictionOut(
+            reason=str(row.get("reason") or "low_selective_confidence"),
+            confidence=float(row.get("confidence", 0.0)),
+            ambiguity_score=float(row.get("ambiguity_score", 0.0)),
+        )
+        for row in selective_states.get("abstained_predictions", [])
+    ]
+    novel_out = [
+        NovelCandidateOut(
+            aspect=str(row.get("aspect") or row.get("aspect_raw") or ""),
+            novelty_score=float(row.get("novelty_score", 0.0)),
+            confidence=float(row.get("confidence", 0.0)) if row.get("confidence") is not None else None,
+        )
+        for row in selective_states.get("novel_candidates", [])
+        if str(row.get("aspect") or row.get("aspect_raw") or "").strip()
+    ]
 
     return InferReviewOut(
         review_id=review_obj.id,
@@ -205,6 +295,9 @@ def infer_review(payload: InferReviewIn, background_tasks: BackgroundTasks, db: 
         overall_sentiment=review_obj.overall_sentiment,
         overall_score=review_obj.overall_score,
         overall_confidence=review_obj.overall_confidence,
+        accepted_predictions=accepted_out,
+        abstained_predictions=abstained_out,
+        novel_candidates=novel_out,
     )
 
 

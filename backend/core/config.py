@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     # App
     app_env: str = "dev"
-    version: str = "5.5.0"
+    version: str = "6.0.0"
     # Hybrid pipeline toggles
     enable_implicit: bool = True
     enable_llm_verifier: bool = True

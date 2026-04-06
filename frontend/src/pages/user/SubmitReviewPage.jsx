@@ -53,13 +53,15 @@ export default function SubmitReviewPage() {
   useEffect(() => {
     const cleanProductId = (productRef || "").trim();
     if (!cleanProductId || (productName || "").trim()) return;
-    getProductDetail(token, cleanProductId)
+    const controller = new AbortController();
+    getProductDetail(token, cleanProductId, { signal: controller.signal })
       .then((detail) => {
         if (detail?.name) setProductName(detail.name);
       })
       .catch(() => {
         // Best effort prefill.
       });
+    return () => controller.abort();
   }, [token, productRef, productName]);
 
   async function onSubmit(e) {

@@ -24,6 +24,32 @@ class PredictionOut(BaseModel):
     source: Optional[str] = None
     is_implicit: Optional[bool] = None
     verification_status: Optional[str] = None
+    decision: Optional[str] = None
+    routing: Optional[str] = None
+    ambiguity_score: Optional[float] = None
+    novelty_score: Optional[float] = None
+
+
+class SelectivePredictionOut(BaseModel):
+    aspect: str
+    sentiment: str = "neutral"
+    confidence: float
+    routing: str = "known"
+    evidence: Optional[str] = None
+    evidence_start: Optional[int] = None
+    evidence_end: Optional[int] = None
+
+
+class AbstainedPredictionOut(BaseModel):
+    reason: str
+    confidence: float
+    ambiguity_score: float
+
+
+class NovelCandidateOut(BaseModel):
+    aspect: str
+    novelty_score: float
+    confidence: Optional[float] = None
 
 
 class InferReviewIn(BaseModel):
@@ -42,6 +68,9 @@ class InferReviewOut(BaseModel):
     overall_sentiment: Optional[str] = None
     overall_score: Optional[float] = None
     overall_confidence: Optional[float] = None
+    accepted_predictions: List[SelectivePredictionOut] = Field(default_factory=list)
+    abstained_predictions: List[AbstainedPredictionOut] = Field(default_factory=list)
+    novel_candidates: List[NovelCandidateOut] = Field(default_factory=list)
 
 
 class JobCreateOut(BaseModel):

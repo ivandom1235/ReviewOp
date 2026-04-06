@@ -80,7 +80,21 @@ class ImplicitClient:
                     "evidence_spans": row.get("evidence_spans") or [],
                     "rationale": row.get("rationale") or "",
                     "source": "implicit",
+                    "decision": row.get("decision") or "single_label",
+                    "abstain": bool(row.get("abstain", False)),
+                    "ambiguity_score": float(row.get("ambiguity_score", 0.0)),
+                    "novelty_score": float(row.get("novelty_score", 0.0)),
+                    "routing": row.get("routing") or "known",
+                    "novel_candidates": row.get("novel_candidates") or [],
+                    "abstained_predictions": row.get("abstained_predictions") or [],
                 }
             )
 
-        return [x for x in cleaned if x["aspect_raw"]]
+        return [
+            x
+            for x in cleaned
+            if x["aspect_raw"]
+            or bool(x.get("abstain"))
+            or str(x.get("decision") or "").lower() == "abstain"
+            or bool(x.get("abstained_predictions"))
+        ]

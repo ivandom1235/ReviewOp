@@ -1,20 +1,11 @@
-# ReviewOp (V5.5 Research-Grade)
+# ReviewOp (V6)
 
-ReviewOp is a monorepo for aspect-based sentiment analysis with a **Reasoning-Augmented Hybrid** architecture:
+ReviewOp is a monorepo for aspect-based sentiment analysis.
 
-- `backend/`: FastAPI + MySQL APIs for inference, analytics, graph, and user flows
-- `frontend/`: React + Vite UI (Performance-optimized, native fetch)
-- `dataset_builder/`: High-throughput **Symbolic-Neural Synthesis** pipeline (async)
-- `protonet/`: Few-shot Prototypical training/eval/export pipeline
-
-## Technical Vision (V5.5)
-
-ReviewOp V5.5 bridges the "Implicit Aspect Gap" by combining the reliability of symbolic matching with the reasoning power of neural models.
-
-1.  **Stage A (Symbolic):** Heuristic keyword grounding to ensure zero-hallucination.
-2.  **Stage B (Neural):** LLM-mediated reasoned recovery for ambiguous or implicit clausal signals.
-
-For more technical depth, see the [Research Overview](SEARCH_OVERVIEW.md).
+- `dataset_builder/`: builds V6 benchmark datasets
+- `protonet/`: trains/evaluates/exports the V6 ProtoNet model
+- `backend/`: FastAPI APIs
+- `frontend/`: React + Vite UI
 
 ## Repo Layout
 
@@ -26,52 +17,53 @@ ReviewOp/
 |-- protonet/
 |-- run-project.ps1
 |-- run-services.ps1
-`-- RESEARCH_OVERVIEW.md
+`-- SEARCH_OVERVIEW.md
 ```
 
-## Prerequisites
+## V6 End-to-End (Train + See Outputs)
 
-- Python `3.10` to `3.13`
-- Node.js `18+`
-- MySQL running locally (or reachable from this machine)
+Run from repository root in PowerShell.
 
-## Quick Start (Windows PowerShell)
-
-### 1. One-time setup
+### 1) Build V6 dataset artifacts
 
 ```powershell
-Copy-Item .env.example .env
-.\run-project.ps1
+python dataset_builder\code\build_dataset.py --input-dir dataset_builder\input --output-dir dataset_builder\output
 ```
 
-`run-project.ps1` installs backend and frontend dependencies and prepares `backend/venv`.
-
-### 2. Start backend + frontend
+### 2) Train ProtoNet on V6 benchmark
 
 ```powershell
-.\run-services.ps1
+python protonet\code\cli.py train --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_openworld
 ```
 
-### 3. Verify
+### 3) Evaluate best checkpoint
 
-- Backend health: `http://127.0.0.1:8000/health`
-- API docs: `http://127.0.0.1:8000/docs`
-- Frontend: URL printed by Vite (usually `http://127.0.0.1:5173`)
+```powershell
+python protonet\code\cli.py eval --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_openworld --split test --checkpoint protonet\output\checkpoints\best.pt
+```
 
-## Performance & Scaling
+### 4) Export runtime bundle
 
-ReviewOp is designed for large-scale research trials:
+```powershell
+python protonet\code\cli.py export --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_openworld --checkpoint protonet\output\checkpoints\best.pt
+```
 
-- **Async Pipeline:** Truly parallel LLM calls in the dataset builder.
-- **Vectorized Centroids:** Faster prototypical clustering.
-- **AMP Support:** Automatic Mixed Precision for NVIDIA H100/A100.
+### 5) See generated files
 
-## Security & Ethics
+```powershell
+Get-ChildItem dataset_builder\output\benchmark\ambiguity_openworld
+Get-ChildItem protonet\output -Recurse
+```
 
-- **No Axios:** Standardized on `httpx` (Python) and `fetch` (JS) for security.
-- **Grounding-First:** Neural models are restricted to preprocessing; decision logic is symbolic and observable.
+### 6) Manually zip dataset artifacts (train/val/test + reports)
 
-## Module Docs
+```powershell
+python dataset_builder\code\build_dataset.py --zip-only --output-dir dataset_builder\output
+```
+
+This creates a zip file in `dataset_builder\output\zip\`.
+
+Module-level details:
 
 - `dataset_builder/README.md`
 - `protonet/README.md`

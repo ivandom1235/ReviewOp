@@ -101,6 +101,69 @@ class ProtonetRuntime:
             )
         return rows
 
+    def score_text_selective(self, review_text: str, evidence_text: str, domain: str | None = None) -> Dict[str, Any]:
+        rows = self.score_text(review_text=review_text, evidence_text=evidence_text, domain=domain)
+        if not rows:
+            return {
+                "decision": "abstain",
+                "confidence": 0.0,
+                "ambiguity_score": 1.0,
+                "accepted_predictions": [],
+                "novel_candidates": [],
+                "scored_rows": [],
+            }
+        p1 = float(rows[0].get("confidence", 0.0))
+        p2 = float(rows[1].get("confidence", 0.0)) if len(rows) > 1 else 0.0
+        ambiguity = max(0.0, min(1.0, 1.0 - (p1 - p2)))
+        novelty = max(0.0, min(1.0, 1.0 - p1))
+        evidence_quality = 1.0 if evidence_text.strip() else 0.0
+        selective_conf = (
+            self.cfg.selective_alpha * p1
+            + self.cfg.selective_beta * evidence_quality
+            - self.cfg.selective_gamma * ambiguity
+            - self.cfg.selective_delta * novelty
+        )
+        accepted: List[Dict[str, Any]] = []
+        novel_candidates: List[Dict[str, Any]] = []
+        decision = "single_label"
+        if selective_conf < float(self.cfg.abstain_threshold):
+            decision = "abstain"
+        else:
+            margin = float(self.cfg.multi_label_margin)
+            top = rows[0]
+            accepted.append(dict(top))
+            for row in rows[1:]:
+                if (float(top.get("confidence", 0.0)) - float(row.get("confidence", 0.0))) <= margin:
+                    accepted.append(dict(row))
+            if len(accepted) > 1:
+                decision = "multi_label"
+            else:
+                decision = "single_label"
+
+        if novelty >= float(self.cfg.novelty_threshold):
+            novel_candidates.append(
+                {
+                    "aspect": str(rows[0].get("aspect") or "novel_candidate"),
+                    "novelty_score": novelty,
+                    "confidence": float(rows[0].get("confidence", 0.0)),
+                }
+            )
+            for row in accepted:
+                row["routing"] = "novel"
+        else:
+            for row in accepted:
+                row["routing"] = "known"
+
+        return {
+            "decision": decision,
+            "confidence": float(max(0.0, min(1.0, selective_conf))),
+            "ambiguity_score": float(ambiguity),
+            "novelty_score": float(novelty),
+            "accepted_predictions": accepted,
+            "novel_candidates": novel_candidates,
+            "scored_rows": rows,
+        }
+
 
 def split_clauses(review_text: str) -> List[Dict[str, Any]]:
     text = _normalize_ws(review_text)
