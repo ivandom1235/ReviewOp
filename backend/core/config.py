@@ -63,7 +63,23 @@ class Settings(BaseSettings):
     # Output control
     max_implicit_candidates: int = 5
     max_verified_predictions: int = 8
-        
+
+    # RunPod Flash
+    flash_enabled: bool = Field(
+        default_factory=lambda: os.getenv("FLASH_ENABLED", "true").lower() in {"true", "1", "yes"}
+    )
+    flash_gpu_type: str = Field(
+        default_factory=lambda: os.getenv("FLASH_GPU_TYPE", "NVIDIA_GEFORCE_RTX_4090")
+    )
+    flash_max_workers: int = Field(
+        default_factory=lambda: int(os.getenv("FLASH_MAX_WORKERS", "2"))
+    )
+    flash_timeout_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("FLASH_TIMEOUT_SECONDS", "40"))
+    )
+    flash_idle_timeout: int = Field(
+        default_factory=lambda: int(os.getenv("FLASH_IDLE_TIMEOUT", "120"))
+    )
 
     @property
     def mysql_url(self) -> str:

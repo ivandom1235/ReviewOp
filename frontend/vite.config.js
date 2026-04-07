@@ -15,6 +15,7 @@ export default defineConfig(({ mode }) => {
         "/analytics": { target: backendTarget, changeOrigin: true },
         "/graph": { target: backendTarget, changeOrigin: true },
         "/user": { target: backendTarget, changeOrigin: true },
+        "/flash": { target: backendTarget, changeOrigin: true },
       },
     },
   };

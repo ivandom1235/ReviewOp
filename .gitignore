@@ -12,6 +12,12 @@ frontend/dist/
 __pycache__/
 */__pycache__/
 *.pdf
+**/__pycache__/
+
+# Temporary / generated
+.llm_cache.json
+__tmp_out__/
+fix_prototype.py
 
 # Data artifacts
 dataset_builder/input/

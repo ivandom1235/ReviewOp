@@ -60,7 +60,7 @@ def load_file(path: Path) -> pd.DataFrame:
 
 
 _REVIEW_COLUMN_ALIASES = [
-    "ReviewText", "review_text", "text", "Text", "text_",
+    "review", "Review", "ReviewText", "review_text", "text", "Text", "text_",
     "comment", "Comment", "body", "Body",
     "content", "Content", "review_body", "ReviewBody",
 ]
@@ -72,6 +72,8 @@ def _normalize_review_columns(frame: pd.DataFrame) -> pd.DataFrame:
     for alias in _REVIEW_COLUMN_ALIASES:
         if alias in frame.columns and "text" not in frame.columns:
             frame["text"] = frame[alias]
+            if alias != "text":
+                frame.drop(columns=[alias], inplace=True)
             break
     # Default column name for the primary review text
     if "text" not in frame.columns and not frame.empty:

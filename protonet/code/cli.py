@@ -42,6 +42,8 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         k_shot=args.k_shot,
         q_query=args.q_query,
         epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        encoder_learning_rate=args.encoder_learning_rate,
         warmup_epochs=args.warmup_epochs,
         patience=args.patience,
         max_train_episodes=args.max_train_episodes,
@@ -183,6 +185,8 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--k-shot", type=int, default=2)
     common.add_argument("--q-query", type=int, default=2)
     common.add_argument("--epochs", type=int, default=8)
+    common.add_argument("--learning-rate", type=float, default=5e-4)
+    common.add_argument("--encoder-learning-rate", type=float, default=1e-5)
     common.add_argument("--warmup-epochs", type=int, default=1)
     common.add_argument("--patience", type=int, default=3)
     common.add_argument("--max-train-episodes", type=int, default=120)

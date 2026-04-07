@@ -91,6 +91,15 @@ def _assign_ids(frame: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _get_row_domain(row: dict[str, Any]) -> str:
+    # V6 Research Spec: Prefer explicit 'domain' key over filename inference.
+    explicit_domain = row.get("domain")
+    source_file = row.get("source_file", "unknown")
+    if isinstance(explicit_domain, str) and explicit_domain and explicit_domain != "unknown":
+        return explicit_domain.strip().lower()
+    return _canonical_domain(str(source_file))
+
+
 def _canonical_domain(source_file: str | None) -> str:
     name = Path(str(source_file or "unknown")).stem.lower()
     for suffix in ("_train", "_test", "_val", "-train", "-test", "-val"):
@@ -127,7 +136,7 @@ def _benchmark_row_priority(row: dict[str, Any], *, preferred_domain: str | None
     hardness = str(implicit.get("hardness_tier") or "").strip().upper()
     review_reason = str(implicit.get("review_reason") or "").strip().lower()
     sentiment = str(implicit.get("dominant_sentiment") or row.get("sentiment") or "").strip().lower()
-    domain_family = _benchmark_domain_family(row.get("domain"))
+    domain_family = _benchmark_domain_family(str(_get_row_domain(row)))
 
     score = 0.0
     if bool(row.get("abstain_acceptable", False)):
@@ -165,7 +174,7 @@ def _select_working_rows(rows: list[dict[str, Any]], cfg: BuilderConfig) -> list
         return ordered
 
     available_core_domains = [
-        domain for domain in _CORE_BENCHMARK_DOMAINS if any(_benchmark_domain_family(row.get("domain")) == domain for row in ordered)
+        domain for domain in _CORE_BENCHMARK_DOMAINS if any(_benchmark_domain_family(str(_get_row_domain(row))) == domain for row in ordered)
     ]
     prioritized: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
@@ -173,7 +182,7 @@ def _select_working_rows(rows: list[dict[str, Any]], cfg: BuilderConfig) -> list
     # Seed the core V1 domains first so sampled runs do not collapse to one domain.
     for domain in available_core_domains:
         domain_rows = sorted(
-            [row for row in ordered if _benchmark_domain_family(row.get("domain")) == domain],
+            [row for row in ordered if _benchmark_domain_family(str(_get_row_domain(row))) == domain],
             key=lambda row: _benchmark_row_priority(row, preferred_domain=domain),
         )
         if not domain_rows:
@@ -185,7 +194,7 @@ def _select_working_rows(rows: list[dict[str, Any]], cfg: BuilderConfig) -> list
             selected_ids.add(chosen_id)
 
     remaining = [row for row in ordered if str(row.get("id") or "") not in selected_ids]
-    remaining_sorted = sorted(remaining, key=lambda row: _benchmark_row_priority(row, preferred_domain=_benchmark_domain_family(row.get("domain"))))
+    remaining_sorted = sorted(remaining, key=lambda row: _benchmark_row_priority(row, preferred_domain=_benchmark_domain_family(str(_get_row_domain(row)))))
     prioritized.extend(remaining_sorted)
 
     if cfg.sample_size is not None:
@@ -222,7 +231,7 @@ def _train_floor_row_passes(
 def _benchmark_domain_coverage(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts: Counter[str] = Counter()
     for row in rows:
-        counts[_benchmark_domain_family(row.get("domain"))] += 1
+        counts[_benchmark_domain_family(str(_get_row_domain(row)))] += 1
     return {domain: int(counts.get(domain, 0)) for domain in _CORE_BENCHMARK_DOMAINS}
     return ordered
 
@@ -366,7 +375,7 @@ def _quality_summary(
     domain_leakage_aspect_instances = 0
     domain_leakage_by_domain: dict[str, dict[str, int]] = defaultdict(lambda: {"rows": 0, "aspect_instances": 0})
     for row in rows:
-        domain = str(row.get("domain", "unknown"))
+        domain = str(_get_row_domain(row))
         grouped_by_domain[domain].append(row)
         implicit = row.get("implicit", {})
         review_reason_counts[str(implicit.get("review_reason") or "none")] += 1
@@ -1238,7 +1247,7 @@ async def _salvage_train_rows(
             idx, row = item
             source_text = str(row.get("source_text") or "")
             language = str(row.get("language", "unknown"))
-            domain = str(row.get("domain", "unknown"))
+            domain = str(_get_row_domain(row))
             coref_text = None
             if use_coref:
                 coref_result = heuristic_coref(source_text)
@@ -1331,7 +1340,7 @@ def _expand_domain_candidates_from_rows(
     updated: dict[str, list[str]] = {domain: list(values) for domain, values in candidate_aspects_by_domain.items()}
     additions: dict[str, list[str]] = defaultdict(list)
     for row in rows:
-        domain = str(row.get("domain", "unknown"))
+        domain = str(_get_row_domain(row))
         implicit = row.get("implicit", {}) or {}
         aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) != "general"]
         if not aspects:
@@ -1401,7 +1410,7 @@ async def _re_infer_recoverable_train_rows(
             idx, row = item
             source_text = str(row.get("source_text") or "")
             language = str(row.get("language", "unknown"))
-            domain = str(row.get("domain", "unknown"))
+            domain = str(_get_row_domain(row))
             coref_text = None
             if use_coref:
                 coref_result = heuristic_coref(source_text)
@@ -1744,7 +1753,7 @@ def _strict_train_domain_leakage_filter(
     removed_rows = 0
     removed_aspect_instances = 0
     for row in rows:
-        domain = str(row.get("domain", "unknown"))
+        domain = str(_get_row_domain(row))
         domain_candidates = candidate_aspects_by_domain.get(domain, [])
         allowed_latents = {
             _latent_aspect_label(candidate, str(row.get("source_text", "")))
@@ -1854,7 +1863,14 @@ def _prepare_rows(frame: pd.DataFrame, cfg: BuilderConfig, text_column: str, pro
     if progress_tracker:
         progress_tracker.step("preprocessing: schema & metadata", 0)
     
-    out["domain"] = out.get("source_file", pd.Series(["unknown"] * len(out))).map(lambda value: _canonical_domain(str(value)))
+    if "domain" not in out.columns:
+        out["domain"] = out.get("source_file", pd.Series(["unknown"] * len(out))).map(lambda value: _canonical_domain(str(value)))
+    else:
+        # Respect existing domain key from JSONL, fill missing via source_file
+        mask = (out["domain"] == "unknown") | (out["domain"].isna())
+        if mask.any():
+            source_vals = out.get("source_file", pd.Series(["unknown"] * len(out)))
+            out.loc[mask, "domain"] = source_vals[mask].map(lambda value: _canonical_domain(str(value)))
     out["language"] = out[text_column].map(detect_language)
     out["implicit_ready"] = [
         is_implicit_ready(text, language=language, min_tokens=cfg.implicit_min_tokens, supported_languages=cfg.supported_languages)
@@ -1966,7 +1982,7 @@ def _build_benchmark_instances(
     val_guard_triggered = False
     deferred_review_rows: list[dict[str, Any]] = []
     interpretation_source_counter: Counter[str] = Counter()
-    source_domain_family_counts: Counter[str] = Counter(_benchmark_domain_family(row.get("domain")) for row in selected_rows)
+    source_domain_family_counts: Counter[str] = Counter(_benchmark_domain_family(str(_get_row_domain(row))) for row in selected_rows)
     benchmark_domain_family_counts: Counter[str] = Counter()
     benchmark_hardness_counts: Counter[str] = Counter()
 
@@ -2080,7 +2096,7 @@ def _build_benchmark_instances(
             "record_id": row_id,
             "review_text": review_text,
             "domain": str(row.get("domain") or "unknown"),
-            "domain_family": _benchmark_domain_family(row.get("domain")),
+            "domain_family": _benchmark_domain_family(str(_get_row_domain(row))),
             "group_id": _group_identity(row),
             "gold_interpretations": gold_interpretations,
             "abstain_acceptable": bool(row.get("abstain_acceptable", False)),
@@ -2268,7 +2284,7 @@ async def _process_row(
         text_column=text_column,
     )
 
-    domain = _canonical_domain(str(row.get("source_file", "unknown")))
+    domain = _get_row_domain(row)
     from implicit_pipeline import build_implicit_row
     implicit = await build_implicit_row(
         {**row, "split": split_name},
@@ -2416,12 +2432,17 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         raise ValueError("No text column detected")
 
     prepared = _prepare_rows(frame, cfg, text_column, progress_tracker=progress)
+    print(f"\n[DEBUG] Text Column: {text_column}")
     if prepared.empty:
         raise ValueError("No rows available after preprocessing")
     
     gold_annotations_path = cfg.gold_annotations_path or (cfg.input_dir / "gold_annotations.jsonl")
     gold_annotations = load_gold_annotations(gold_annotations_path) if gold_annotations_path else []
     progress.step("input load/schema detect")
+    print(f"\n[DEBUG] Rows loaded: {len(frame)}")
+    print(f"[DEBUG] Rows prepared: {len(prepared)}")
+    if not prepared.empty:
+        print(f"[DEBUG] Domain distribution in prepared:\n{prepared['domain'].value_counts()}")
 
     working_rows = _select_working_rows(prepared.to_dict(orient="records"), cfg)
     if not working_rows:
@@ -2443,7 +2464,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     progress.step("split preparation")
 
     train_domain_conditioning_mode, eval_domain_conditioning_mode = _resolve_split_domain_conditioning_modes(cfg)
-    train_domain_support = Counter(str(_canonical_domain(str(row.get("source_file", "unknown")))) for row in train_rows)
+    train_domain_support = Counter(str(_get_row_domain(row)) for row in train_rows)
     
     candidate_aspects = discover_aspects(
         train_rows,
@@ -2459,7 +2480,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     progress.step("domain/language discovery (parallel)", 0)
     
     languages = sorted({str(row.get("language", "unknown")) for row in train_rows})
-    domains = sorted({str(_canonical_domain(str(row.get("source_file", "unknown")))) for row in train_rows})
+    domains = sorted({str(_get_row_domain(row)) for row in train_rows})
     
     with ThreadPoolExecutor(max_workers=min(cfg.max_workers, 16)) as executor:
         # Parallelize Aspects by Language
@@ -2470,7 +2491,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         }
         # Parallelize Aspects by Domain
         domain_tasks = {
-            dom: executor.submit(discover_aspects, [row for row in train_rows if _canonical_domain(str(row.get("source_file", "unknown"))) == dom], 
+            dom: executor.submit(discover_aspects, [row for row in train_rows if _get_row_domain(row) == dom], 
                                  text_column=text_column, max_aspects=cfg.max_aspects, implicit_mode=cfg.implicit_mode, random_seed=cfg.random_seed)
             for dom in domains
         }

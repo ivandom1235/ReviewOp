@@ -25,6 +25,7 @@ from services.seq2seq_infer import Seq2SeqEngine
 from services.review_pipeline import refresh_corpus_graph, _refresh_corpus_graph_task, split_selective_states
 from services.hybrid_pipeline import run_single_review_hybrid_pipeline
 from services.implicit_client import ImplicitClient
+from services.flash_client import FlashInferenceClient
 
 from routes.analytics import router as analytics_router
 from routes.graph import router as graph_router
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     init_db()
     _apply_schema_patches()
 
@@ -53,6 +54,33 @@ def on_startup():
 
     app.state.seq2seq_engine = Seq2SeqEngine.load()
     app.state.implicit_client = ImplicitClient()
+
+    # RunPod Flash: initialize and warmup in background
+    flash_client = FlashInferenceClient()
+    app.state.flash_client = flash_client
+    if settings.flash_enabled:
+        logger.info("Initiating RunPod Flash warmup (background)...")
+        import asyncio
+        asyncio.create_task(_flash_warmup_task(flash_client))
+    else:
+        logger.info("RunPod Flash disabled via config")
+
+
+async def _flash_warmup_task(client: FlashInferenceClient) -> None:
+    """Background task to warm up Flash endpoint without blocking startup."""
+    try:
+        await client.warmup()
+    except Exception as exc:
+        logger.warning("Flash warmup background task failed: %s", exc)
+
+
+@app.get("/flash/status")
+async def flash_status():
+    """Diagnostic endpoint for RunPod Flash health."""
+    client: FlashInferenceClient = getattr(app.state, "flash_client", None)
+    if client is None:
+        return {"ok": False, "error": "Flash client not initialized"}
+    return {"ok": True, **client.status()}
 
 
 @app.exception_handler(AppError)
