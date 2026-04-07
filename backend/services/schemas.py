@@ -26,6 +26,9 @@ class ImplicitCandidateSchema(BaseModel):
     routing: Optional[str] = None
     ambiguity_score: Optional[float] = None
     novelty_score: Optional[float] = None
+    decision_band: Optional[Literal["known", "boundary", "novel"]] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
 
 
 class SelectivePredictionSchema(BaseModel):
@@ -35,6 +38,10 @@ class SelectivePredictionSchema(BaseModel):
     routing: Literal["known", "novel"] = "known"
     evidence_text: Optional[str] = None
     evidence_span: Optional[List[int]] = None
+    decision_band: Optional[Literal["known", "boundary", "novel"]] = None
+    novelty_score: Optional[float] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
 
 
 class AbstainedPredictionSchema(BaseModel):
@@ -47,6 +54,9 @@ class NovelCandidateSchema(BaseModel):
     aspect: str
     novelty_score: float
     confidence: Optional[float] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
+    evidence_text: Optional[str] = None
 
 
 class ImplicitPredictResponse(BaseModel):

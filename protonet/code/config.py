@@ -15,11 +15,13 @@ CODE_ROOT = PROTONET_ROOT / "code"
 INPUT_ROOT = PROTONET_ROOT / "input"
 OUTPUT_ROOT = PROTONET_ROOT / "output"
 METADATA_ROOT = PROTONET_ROOT / "metadata"
-BENCHMARK_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output" / "benchmark" / "ambiguity_openworld"
+BENCHMARK_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output" / "benchmark" / "ambiguity_grounded"
 
 
 def resolve_default_input_dir(input_type: str) -> Path:
     if input_type == "benchmark":
+        if BENCHMARK_INPUT_ROOT.exists():
+            return BENCHMARK_INPUT_ROOT
         return BENCHMARK_INPUT_ROOT
     return INPUT_ROOT / input_type
 
@@ -67,7 +69,11 @@ class ProtonetConfig:
     selective_delta: float = 0.05
     abstain_threshold: float = 0.55
     multi_label_margin: float = 0.08
+    sentiment_pipeline: str = "both"
     novelty_threshold: float = 0.45
+    novelty_known_threshold: float = 0.35
+    novelty_novel_threshold: float = 0.65
+    novelty_calibration_path: Path = METADATA_ROOT / "novelty_calibration_v2.json"
 
     seed: int = 42
     no_progress: bool = False

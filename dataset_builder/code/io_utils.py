@@ -10,6 +10,7 @@ import multiprocessing
 
 
 SUPPORTED_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl", ".xlsx", ".xls", ".xml"}
+ANNOTATION_ID_KEYS = ("instance_id", "record_id", "review_id", "parent_review_id", "id")
 
 
 def flatten_dict(payload: dict) -> dict:
@@ -145,16 +146,40 @@ def load_gold_annotations(path: Path) -> list[dict]:
         if not isinstance(row, dict):
             continue
         labels = row.get("gold_labels")
+        interpretations = row.get("gold_interpretations")
+        annotation_source = str(
+            row.get("annotation_source")
+            or row.get("review_status")
+            or row.get("source")
+            or "imported"
+        ).strip() or "imported"
+        normalized_interpretations: list[dict] = []
+        if isinstance(interpretations, list):
+            for item in interpretations:
+                if not isinstance(item, dict):
+                    continue
+                payload = dict(item)
+                payload.setdefault("source", annotation_source)
+                payload.setdefault("annotation_source", annotation_source)
+                normalized_interpretations.append(payload)
         cleaned.append({
+            "instance_id": row.get("instance_id"),
             "record_id": row.get("record_id"),
+            "review_id": row.get("review_id"),
+            "parent_review_id": row.get("parent_review_id"),
             "domain": row.get("domain"),
-            "text": row.get("text"),
+            "text": row.get("text") or row.get("review_text"),
+            "review_text": row.get("review_text") or row.get("text"),
             "gold_labels": labels if isinstance(labels, list) else [],
-            "gold_interpretations": row.get("gold_interpretations") if isinstance(row.get("gold_interpretations"), list) else [],
+            "gold_interpretations": normalized_interpretations,
             "abstain_acceptable": bool(row.get("abstain_acceptable", False)),
-            "novel_aspect_acceptable": bool(row.get("novel_aspect_acceptable", False)),
+            "novel_acceptable": bool(row.get("novel_acceptable", False)),
+            "novel_cluster_id": row.get("novel_cluster_id"),
+            "novel_alias": row.get("novel_alias"),
+            "novel_evidence_text": row.get("novel_evidence_text"),
             "annotator_id": row.get("annotator_id"),
             "annotator_support": row.get("annotator_support"),
             "review_status": row.get("review_status", "pending"),
+            "annotation_source": annotation_source,
         })
     return cleaned

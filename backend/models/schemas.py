@@ -28,6 +28,9 @@ class PredictionOut(BaseModel):
     routing: Optional[str] = None
     ambiguity_score: Optional[float] = None
     novelty_score: Optional[float] = None
+    decision_band: Optional[Literal["known", "boundary", "novel"]] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
 
 
 class SelectivePredictionOut(BaseModel):
@@ -38,6 +41,10 @@ class SelectivePredictionOut(BaseModel):
     evidence: Optional[str] = None
     evidence_start: Optional[int] = None
     evidence_end: Optional[int] = None
+    decision_band: Optional[Literal["known", "boundary", "novel"]] = None
+    novelty_score: Optional[float] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
 
 
 class AbstainedPredictionOut(BaseModel):
@@ -50,6 +57,9 @@ class NovelCandidateOut(BaseModel):
     aspect: str
     novelty_score: float
     confidence: Optional[float] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
+    evidence_text: Optional[str] = None
 
 
 class InferReviewIn(BaseModel):

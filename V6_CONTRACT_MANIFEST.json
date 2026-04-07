@@ -3,10 +3,10 @@
   "runtime_contracts": {
     "dataset_builder": {
       "primary_artifacts": [
-        "dataset_builder/output/benchmark/ambiguity_openworld/train.jsonl",
-        "dataset_builder/output/benchmark/ambiguity_openworld/val.jsonl",
-        "dataset_builder/output/benchmark/ambiguity_openworld/test.jsonl",
-        "dataset_builder/output/benchmark/ambiguity_openworld/metadata.json"
+        "dataset_builder/output/benchmark/ambiguity_grounded/train.jsonl",
+        "dataset_builder/output/benchmark/ambiguity_grounded/val.jsonl",
+        "dataset_builder/output/benchmark/ambiguity_grounded/test.jsonl",
+        "dataset_builder/output/benchmark/ambiguity_grounded/metadata.json"
       ],
       "required_fields": [
         "instance_id",
@@ -14,7 +14,7 @@
         "domain",
         "gold_interpretations",
         "abstain_acceptable",
-        "novel_aspect_acceptable",
+        "novel_acceptable",
         "ambiguity_score",
         "split_protocol"
       ]
@@ -39,12 +39,11 @@
     }
   },
   "deprecated_signals": {
-    "blocked_tokens": [
-      "v5",
-      "5.5-production",
-      "reviewlevel",
-      "episodic",
-      "compat/protonet"
-    ]
-  }
+      "blocked_tokens": [
+        "5.5-production",
+        "reviewlevel",
+        "episodic",
+        "compat/protonet"
+      ]
+    }
 }

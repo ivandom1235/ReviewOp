@@ -1,0 +1,1040 @@
+{
+  "pipeline_version": "6.0-v6-only",
+  "output_version": "v4",
+  "generated_at": "2026-04-07T06:22:52Z",
+  "run_profile": "debug",
+  "artifact_mode": "debug_artifacts",
+  "config": {
+    "input_dir": "dataset_builder\\input",
+    "output_dir": "__tmp_out__\\v6_impl_check",
+    "reports_subdir": "reports",
+    "random_seed": 42,
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15,
+    "text_column_override": null,
+    "sample_size": 120,
+    "chunk_size": 60,
+    "chunk_offset": 0,
+    "dry_run": false,
+    "preview_only": false,
+    "run_profile": "debug",
+    "artifact_mode": "debug_artifacts",
+    "debug_benchmark_max_rows": 180,
+    "confidence_threshold": 0.6,
+    "max_aspects": 20,
+    "min_text_tokens": 4,
+    "implicit_min_tokens": 8,
+    "implicit_mode": "zeroshot",
+    "multilingual_mode": "shared_vocab",
+    "use_coref": false,
+    "language_detection_mode": "heuristic",
+    "supported_languages": [
+      "en",
+      "es",
+      "fr",
+      "de",
+      "pt",
+      "it",
+      "nl",
+      "hi",
+      "zh",
+      "ar",
+      "ru"
+    ],
+    "no_drop": false,
+    "enable_llm_fallback": true,
+    "llm_fallback_threshold": 0.65,
+    "enable_reasoned_recovery": true,
+    "llm_provider": "mock",
+    "llm_model_name": "gpt-4o-mini",
+    "llm_api_key": null,
+    "llm_base_url": null,
+    "llm_max_retries": 3,
+    "benchmark_key": null,
+    "model_family": "heuristic_latent",
+    "augmentation_mode": "none",
+    "prompt_mode": "constrained",
+    "output_version": "v4",
+    "reset_output": true,
+    "high_difficulty": false,
+    "adversarial_refine": false,
+    "multi_aspect_ratio": 0.0,
+    "gold_annotations_path": null,
+    "emit_review_set": false,
+    "review_set_size": 300,
+    "evaluation_protocol": "random",
+    "domain_holdout": null,
+    "enforce_grounding": true,
+    "use_domain_conditioning": true,
+    "strict_domain_conditioning": false,
+    "domain_conditioning_mode": "adaptive_soft",
+    "train_domain_conditioning_mode": "strict_hard",
+    "eval_domain_conditioning_mode": "adaptive_soft",
+    "domain_prior_boost": 0.05,
+    "domain_prior_penalty": 0.08,
+    "weak_domain_support_row_threshold": 80,
+    "progress": true,
+    "unseen_non_general_coverage_min": 0.55,
+    "unseen_implicit_not_ready_rate_max": 0.35,
+    "unseen_domain_leakage_row_rate_max": 0.02,
+    "train_fallback_general_policy": "cap",
+    "train_fallback_general_cap_ratio": 0.15,
+    "train_review_filter_mode": "reasoned_strict",
+    "train_salvage_mode": "recover_non_general",
+    "train_salvage_confidence_threshold": 0.56,
+    "train_salvage_accepted_support_types": [
+      "exact",
+      "near_exact",
+      "gold"
+    ],
+    "train_sentiment_balance_mode": "cap_neutral_with_dual_floor",
+    "train_neutral_cap_ratio": 0.5,
+    "train_min_negative_ratio": 0.12,
+    "train_min_positive_ratio": 0.12,
+    "train_max_positive_ratio": 0.5,
+    "train_neutral_max_ratio": 0.58,
+    "train_topup_recovery_mode": "strict_topup",
+    "train_topup_confidence_threshold": 0.58,
+    "train_topup_staged_recovery": true,
+    "train_topup_stage_b_confidence_threshold": 0.54,
+    "train_topup_allow_weak_support_in_stage_c": true,
+    "train_topup_stage_c_confidence_threshold": 0.52,
+    "train_topup_allowed_support_types": [
+      "exact",
+      "near_exact",
+      "gold"
+    ],
+    "train_target_min_rows": 1600,
+    "train_target_max_rows": 2000,
+    "strict_implicit_enabled": true,
+    "strict_review_sample_size": 200,
+    "strict_explicit_in_implicit_rate_max": 0.0,
+    "strict_boundary_fp_max": 0,
+    "strict_h2_h3_ratio_min": 0.35,
+    "strict_multi_aspect_ratio_min": 0.12,
+    "strict_challenge_macro_f1_min": 0.5,
+    "max_workers": 10,
+    "no_llm_cache": true
+  },
+  "schema": {
+    "numeric_columns": [
+      "id",
+      "from",
+      "to"
+    ],
+    "categorical_columns": [
+      "aspect",
+      "polarity",
+      "domain",
+      "group_id"
+    ],
+    "datetime_columns": [],
+    "text_columns": [
+      "review",
+      "text",
+      "source_text",
+      "gold_interpretations"
+    ],
+    "implicit_ready_columns": [
+      "review",
+      "text",
+      "source_text",
+      "gold_interpretations"
+    ],
+    "primary_text_column": "review",
+    "target_column": null,
+    "column_types": {
+      "id": "numeric",
+      "review": "text",
+      "aspect": "categorical",
+      "polarity": "categorical",
+      "from": "numeric",
+      "to": "numeric",
+      "text": "text",
+      "source_text": "text",
+      "domain": "categorical",
+      "gold_interpretations": "text",
+      "group_id": "categorical"
+    },
+    "text_scores": {
+      "review": 18.31151875723021,
+      "text": 18.21367939928175,
+      "source_text": 18.21367939928175,
+      "gold_interpretations": 9.533333333333333
+    },
+    "schema_fingerprint": "96bd503774848d57"
+  },
+  "implicit_mode": "zeroshot",
+  "multilingual_mode": "shared_vocab",
+  "domain_conditioning_mode": "strict_hard",
+  "train_domain_conditioning_mode": "strict_hard",
+  "eval_domain_conditioning_mode": "adaptive_soft",
+  "coreference_enabled": false,
+  "language_distribution": {
+    "en": 5368,
+    "mixed": 429,
+    "pt": 189,
+    "fr": 13
+  },
+  "research": {
+    "benchmark": "semeval_english_core",
+    "benchmark_family": "english_core",
+    "model_family": "heuristic_latent",
+    "model_kind": "baseline",
+    "prompt_mode": "constrained",
+    "augmentation_mode": "none",
+    "implicit_mode": "zeroshot",
+    "multilingual_strategy": "shared_vocab",
+    "coreference_enabled": false,
+    "no_drop": false
+  },
+  "stratification_choice": "group_id",
+  "candidate_aspects": [
+    "sensory quality",
+    "service quality",
+    "value",
+    "performance",
+    "timeliness",
+    "comfort",
+    "build quality",
+    "power",
+    "connectivity",
+    "thermal",
+    "reliability"
+  ],
+  "candidate_aspects_by_language": {
+    "en": [
+      "sensory quality",
+      "value",
+      "service quality",
+      "performance",
+      "timeliness",
+      "comfort",
+      "build quality",
+      "power",
+      "connectivity",
+      "thermal",
+      "reliability"
+    ],
+    "mixed": [
+      "service quality",
+      "sensory quality"
+    ],
+    "pt": [
+      "sensory quality",
+      "service quality",
+      "value"
+    ]
+  },
+  "candidate_aspects_by_domain": {
+    "laptop": [
+      "value",
+      "build quality",
+      "performance",
+      "power",
+      "connectivity",
+      "timeliness",
+      "reliability",
+      "service quality"
+    ],
+    "restaurant": [
+      "sensory quality",
+      "service quality",
+      "value",
+      "comfort",
+      "performance",
+      "timeliness",
+      "thermal"
+    ]
+  },
+  "chunk_preview_size": 42,
+  "chunk_sampling_strategy": "seeded_shuffle_then_slice",
+  "row_counts": {
+    "input": 6126,
+    "preprocessed": 5999,
+    "selected": 60,
+    "train": 42,
+    "val": 6,
+    "test": 4,
+    "train_export": 1
+  },
+  "split_ratios": {
+    "train": 0.8077,
+    "val": 0.1154,
+    "test": 0.0769
+  },
+  "split_sizes": {
+    "train": 42,
+    "val": 6,
+    "test": 4
+  },
+  "implicit_diagnostics": {
+    "candidate_aspects": [
+      "sensory quality",
+      "service quality",
+      "value",
+      "performance",
+      "timeliness",
+      "comfort",
+      "build quality",
+      "power",
+      "connectivity",
+      "thermal",
+      "reliability"
+    ],
+    "top_implicit_aspects": [
+      [
+        "sensory quality",
+        21
+      ],
+      [
+        "service quality",
+        14
+      ],
+      [
+        "value",
+        12
+      ],
+      [
+        "performance",
+        6
+      ],
+      [
+        "timeliness",
+        5
+      ],
+      [
+        "power",
+        4
+      ],
+      [
+        "reliability",
+        4
+      ],
+      [
+        "thermal",
+        2
+      ],
+      [
+        "comfort",
+        1
+      ],
+      [
+        "build quality",
+        1
+      ]
+    ],
+    "meaningful_candidate_aspects": [
+      "sensory quality",
+      "service quality",
+      "value",
+      "performance",
+      "timeliness",
+      "comfort",
+      "build quality",
+      "power",
+      "connectivity",
+      "thermal",
+      "reliability"
+    ],
+    "generic_candidate_aspects": [],
+    "clause_count": 60,
+    "span_support": {
+      "exact": 78,
+      "near_exact": 3,
+      "reasoned_recovery": 0
+    },
+    "reasoned_recovery_count": 0,
+    "reasoned_recovery_hit_rate": 0.0,
+    "fallback_only_count": 16,
+    "needs_review_count": 35,
+    "rejected_aspect_count": 0,
+    "domain_agnostic_skew": {
+      "unique_aspects": 12,
+      "top_share": 0.2917,
+      "entropy": 2.9244
+    },
+    "language_distribution": {
+      "en": 51,
+      "mixed": 6,
+      "pt": 3
+    },
+    "track_distribution": {
+      "zeroshot": 60
+    },
+    "llm_fallback_count": 37,
+    "llm_parse_error_count": 63,
+    "review_reason_counts": {
+      "none": 25,
+      "fallback_general": 16,
+      "low_confidence": 19
+    },
+    "fallback_branch_counts": {
+      "llm_parse": 37,
+      "none": 23
+    }
+  },
+  "benchmark_summary": {
+    "artifact_mode": "debug_artifacts",
+    "source_rows": 60,
+    "selected_rows": 60,
+    "export_row_limit": 180,
+    "rows": 44,
+    "deferred_review_rows": 16,
+    "split_counts": {
+      "train": 32,
+      "val": 7,
+      "test": 5
+    },
+    "multi_gold_label_rate": 0.5,
+    "average_gold_interpretations": 1.8409,
+    "abstain_acceptable_rate": 0.0,
+    "grouped_split_leakage": {
+      "group_key": "group_id",
+      "train_groups": 32,
+      "val_groups": 7,
+      "test_groups": 5,
+      "overlap_counts": {
+        "train_val": 0,
+        "train_test": 0,
+        "val_test": 0
+      },
+      "overlap_samples": {
+        "train_val": [],
+        "train_test": [],
+        "val_test": []
+      }
+    },
+    "grounded_evidence_rate": 1.0,
+    "duplicate_interpretations_removed": 0,
+    "duplicate_interpretation_rate": 0.0,
+    "validation_empty_guard_triggered": false,
+    "thermal_share": 0.0247,
+    "ambiguity_type_distribution": {
+      "none": 22,
+      "multi_aspect_implication": 53,
+      "granularity_overlap": 6
+    }
+  },
+  "benchmark_gold_eval": {
+    "has_gold_interpretations": true,
+    "num_rows_with_gold_interpretations": 44,
+    "total_interpretations": 81,
+    "average_gold_interpretations": 1.8409,
+    "multi_gold_label_rate": 0.5,
+    "grounded_evidence_rate": 1.0,
+    "duplicate_interpretation_rate": 0.0,
+    "abstain_acceptable_rate": 0.0,
+    "ambiguity_type_distribution": {
+      "none": 22,
+      "multi_aspect_implication": 53,
+      "granularity_overlap": 6
+    },
+    "by_domain": {
+      "restaurant": {
+        "rows": 34,
+        "interpretations": 57,
+        "grounded": 57
+      },
+      "laptop": {
+        "rows": 10,
+        "interpretations": 24,
+        "grounded": 24
+      }
+    }
+  },
+  "benchmark_artifact_counts": {
+    "train": 32,
+    "val": 7,
+    "test": 5,
+    "total": 44
+  },
+  "benchmark_review_queue_rows": 16,
+  "output_quality": {
+    "canonical_domains": [
+      "laptop",
+      "restaurant"
+    ],
+    "fallback_only_rows": 16,
+    "fallback_only_rate": 0.2667,
+    "needs_review_rows": 35,
+    "generic_implicit_aspects": 0,
+    "rejected_implicit_aspects": 0,
+    "span_support": {
+      "exact": 78,
+      "near_exact": 3
+    },
+    "top_implicit_aspects": [
+      [
+        "sensory quality",
+        21
+      ],
+      [
+        "service quality",
+        14
+      ],
+      [
+        "value",
+        12
+      ],
+      [
+        "performance",
+        6
+      ],
+      [
+        "timeliness",
+        5
+      ],
+      [
+        "power",
+        4
+      ],
+      [
+        "reliability",
+        4
+      ],
+      [
+        "thermal",
+        2
+      ],
+      [
+        "comfort",
+        1
+      ],
+      [
+        "build quality",
+        1
+      ]
+    ],
+    "top_implicit_aspects_by_split": {
+      "train": [
+        [
+          "sensory quality",
+          17
+        ],
+        [
+          "service quality",
+          9
+        ],
+        [
+          "value",
+          8
+        ],
+        [
+          "performance",
+          2
+        ],
+        [
+          "timeliness",
+          2
+        ],
+        [
+          "comfort",
+          1
+        ],
+        [
+          "build quality",
+          1
+        ],
+        [
+          "connectivity",
+          1
+        ],
+        [
+          "power",
+          1
+        ],
+        [
+          "thermal",
+          1
+        ]
+      ],
+      "val": [
+        [
+          "value",
+          3
+        ],
+        [
+          "service quality",
+          3
+        ],
+        [
+          "sensory quality",
+          2
+        ],
+        [
+          "timeliness",
+          2
+        ],
+        [
+          "reliability",
+          1
+        ],
+        [
+          "performance",
+          1
+        ],
+        [
+          "thermal",
+          1
+        ]
+      ],
+      "test": [
+        [
+          "power",
+          3
+        ],
+        [
+          "performance",
+          3
+        ],
+        [
+          "sensory quality",
+          2
+        ],
+        [
+          "reliability",
+          2
+        ],
+        [
+          "service quality",
+          2
+        ],
+        [
+          "value",
+          1
+        ],
+        [
+          "display quality",
+          1
+        ],
+        [
+          "timeliness",
+          1
+        ]
+      ]
+    },
+    "top_implicit_aspects_by_domain": {
+      "restaurant": [
+        [
+          "sensory quality",
+          21
+        ],
+        [
+          "service quality",
+          11
+        ],
+        [
+          "value",
+          7
+        ],
+        [
+          "timeliness",
+          4
+        ],
+        [
+          "performance",
+          3
+        ],
+        [
+          "thermal",
+          2
+        ],
+        [
+          "comfort",
+          1
+        ],
+        [
+          "display quality",
+          1
+        ]
+      ],
+      "laptop": [
+        [
+          "value",
+          5
+        ],
+        [
+          "power",
+          4
+        ],
+        [
+          "reliability",
+          4
+        ],
+        [
+          "performance",
+          3
+        ],
+        [
+          "service quality",
+          3
+        ],
+        [
+          "build quality",
+          1
+        ],
+        [
+          "connectivity",
+          1
+        ],
+        [
+          "timeliness",
+          1
+        ]
+      ]
+    },
+    "fallback_only_rate_by_split": {
+      "train": 0.3095,
+      "val": 0.2222,
+      "test": 0.1111
+    },
+    "fallback_only_rate_by_domain": {
+      "restaurant": 0.2609,
+      "laptop": 0.2857
+    },
+    "review_reason_counts": {
+      "none": 25,
+      "fallback_general": 16,
+      "implicit_not_ready": 0,
+      "weak_support": 0,
+      "low_confidence": 19,
+      "llm_parse_error": 0
+    },
+    "fallback_branch_counts": {
+      "none": 23,
+      "fallback_general": 0,
+      "implicit_not_ready": 0,
+      "rule_fallback": 0,
+      "llm_parse": 37
+    },
+    "domain_leakage_rows": 19,
+    "domain_leakage_row_rate": 0.3167,
+    "domain_leakage_aspect_instances": 28,
+    "domain_leakage_by_domain": {
+      "restaurant": {
+        "rows": 10,
+        "aspect_instances": 16
+      },
+      "laptop": {
+        "rows": 9,
+        "aspect_instances": 12
+      }
+    },
+    "strict_quality": {
+      "explicit_in_implicit_rate": 0.6049,
+      "explicit_in_implicit_count": 49,
+      "total_implicit_spans": 81,
+      "boundary_false_positive_count": 54,
+      "hardness_distribution": {
+        "H0": 40,
+        "H1": 20
+      },
+      "h2_h3_ratio": 0.0,
+      "multi_aspect_ratio": 0.3167,
+      "strict_pass_rows": 44,
+      "review_queue_rows": 16,
+      "challenge_macro_f1": 0.0
+    },
+    "explicit_in_implicit_rate": 0.6049,
+    "boundary_false_positive_count": 54,
+    "hardness_distribution": {
+      "H0": 40,
+      "H1": 20
+    },
+    "h2_h3_ratio": 0.0,
+    "multi_aspect_ratio": 0.3167,
+    "challenge_macro_f1": 0.0
+  },
+  "strict_quality": {
+    "explicit_in_implicit_rate": 0.6049,
+    "explicit_in_implicit_count": 49,
+    "total_implicit_spans": 81,
+    "boundary_false_positive_count": 54,
+    "hardness_distribution": {
+      "H0": 40,
+      "H1": 20
+    },
+    "h2_h3_ratio": 0.0,
+    "multi_aspect_ratio": 0.3167,
+    "strict_pass_rows": 44,
+    "review_queue_rows": 16,
+    "challenge_macro_f1": 0.0
+  },
+  "strict_artifacts": {
+    "strict_train_rows": 1,
+    "strict_val_rows": 2,
+    "strict_test_rows": 1,
+    "strict_review_queue_rows": 16,
+    "strict_challenge_rows": 0
+  },
+  "grounded_prediction_rate": 1.0,
+  "ungrounded_non_general_count": 0,
+  "train_general_rows_before_policy": 13,
+  "train_general_rows_after_policy": 5,
+  "train_general_policy_applied": {
+    "policy": "cap",
+    "cap_ratio": 0.15,
+    "dropped_rows": 8
+  },
+  "train_review_rows_before_filter": 34,
+  "train_review_rows_after_filter": 18,
+  "train_review_filter_applied": {
+    "mode": "reasoned_strict",
+    "dropped_rows": 16,
+    "dropped_soft_rows": 16,
+    "dropped_hard_rows": 0
+  },
+  "train_review_dropped_soft_rows": 16,
+  "train_review_dropped_hard_rows": 0,
+  "train_reinference_stats": {
+    "rows_recovered_non_general": 11
+  },
+  "train_salvage_stats": {
+    "salvage_mode": "recover_non_general",
+    "salvage_sent_rows": 5,
+    "salvage_recovered_rows": 0,
+    "salvage_recovery_rate": 0.0,
+    "salvage_recovered_by_reason": {},
+    "salvage_recovered_span_support": {},
+    "salvage_accepted_support_types": [
+      "exact",
+      "gold",
+      "near_exact"
+    ]
+  },
+  "train_leakage_filter_stats_before_salvage": {
+    "train_domain_leakage_filter_removed_rows": 0,
+    "train_domain_leakage_filter_removed_aspect_instances": 0
+  },
+  "train_leakage_filter_stats_after_salvage": {
+    "train_domain_leakage_filter_removed_rows": 0,
+    "train_domain_leakage_filter_removed_aspect_instances": 0
+  },
+  "train_leakage_filter_stats_after_topup": {
+    "train_domain_leakage_filter_removed_rows": 0,
+    "train_domain_leakage_filter_removed_aspect_instances": 0
+  },
+  "train_leakage_filter_stats_after_targeting": {
+    "train_domain_leakage_filter_removed_rows": 0,
+    "train_domain_leakage_filter_removed_aspect_instances": 0
+  },
+  "train_sentiment_before_balance": {
+    "positive": 7,
+    "neutral": 10,
+    "negative": 1
+  },
+  "train_sentiment_after_balance": {
+    "positive": 3,
+    "neutral": 4,
+    "negative": 1
+  },
+  "train_sentiment_constraints": {
+    "min_negative_ratio": 0.12,
+    "min_positive_ratio": 0.12,
+    "max_positive_ratio": 0.5,
+    "max_neutral_ratio": 0.58,
+    "achieved": {
+      "negative_ratio": 0.125,
+      "positive_ratio": 0.375,
+      "neutral_ratio": 0.5
+    }
+  },
+  "train_topup_stats": {
+    "topup_mode": "strict_topup",
+    "topup_sent_rows": 24,
+    "topup_accepted_rows": 0,
+    "topup_rows_added": 0,
+    "topup_needed_rows": 1592,
+    "size_recovery_stage": "none",
+    "size_recovery_shortfall_remaining": 1592,
+    "topup_recovered_by_reason": {},
+    "topup_recovered_span_support": {},
+    "train_topup_rejection_breakdown": {
+      "rejected_general": 13,
+      "rejected_ungrounded": 0,
+      "rejected_domain_invalid": 11,
+      "rejected_low_confidence": 0,
+      "rejected_support_type": 0,
+      "rejected_duplicate": 0,
+      "rejected_weak_support_stage_policy": 0
+    },
+    "topup_effectiveness": {
+      "needed": 1592,
+      "sent": 24,
+      "accepted": 0,
+      "added": 0,
+      "coverage_of_shortfall": 0.0
+    },
+    "topup_applied": false,
+    "topup_accepted_support_types": [
+      "exact",
+      "gold",
+      "near_exact"
+    ]
+  },
+  "train_topup_rejection_breakdown": {
+    "rejected_general": 13,
+    "rejected_ungrounded": 0,
+    "rejected_domain_invalid": 11,
+    "rejected_low_confidence": 0,
+    "rejected_support_type": 0,
+    "rejected_duplicate": 0,
+    "rejected_weak_support_stage_policy": 0
+  },
+  "topup_effectiveness": {
+    "needed": 1592,
+    "sent": 24,
+    "accepted": 0,
+    "added": 0,
+    "coverage_of_shortfall": 0.0
+  },
+  "size_recovery_stage": "none",
+  "size_recovery_shortfall_remaining": 1592,
+  "train_general_dominance_rate": 0.0,
+  "train_domain_leakage_rows": 0,
+  "train_domain_leakage_row_rate": 0.0,
+  "train_domain_leakage_aspect_instances": 0,
+  "eval_domain_leakage_rows": 8,
+  "eval_domain_leakage_row_rate": 0.4444,
+  "eval_domain_leakage_aspect_instances": 13,
+  "eval_leakage_filter_stats_val": {
+    "train_domain_leakage_filter_removed_rows": 3,
+    "train_domain_leakage_filter_removed_aspect_instances": 6
+  },
+  "eval_leakage_filter_stats_test": {
+    "train_domain_leakage_filter_removed_rows": 5,
+    "train_domain_leakage_filter_removed_aspect_instances": 7
+  },
+  "train_negative_ratio": 0.0,
+  "train_positive_ratio": 0.0,
+  "train_target_stats": {
+    "target_min_rows": 1600,
+    "target_max_rows": 2000,
+    "rows_before_targeting": 8,
+    "rows_after_targeting": 8,
+    "targeted_downsample_applied": false,
+    "size_shortfall_rows": 1592,
+    "size_within_target_range": false
+  },
+  "gold_eval": {
+    "has_gold_labels": false,
+    "num_rows_with_gold": 0,
+    "aspect_f1": 0.0,
+    "sentiment_f1": 0.0,
+    "span_overlap_f1": 0.0,
+    "by_domain": {}
+  },
+  "domain_generalization": {
+    "evaluation_protocol": "random",
+    "domains_seen": [
+      "laptop",
+      "restaurant"
+    ],
+    "by_domain": {
+      "laptop": {
+        "rows": 14,
+        "fallback_only_rate": 0.2857,
+        "needs_review_rows": 13,
+        "grounded_prediction_rate": 1.0,
+        "domain_leakage_row_rate": 0.0
+      },
+      "restaurant": {
+        "rows": 46,
+        "fallback_only_rate": 0.2609,
+        "needs_review_rows": 22,
+        "grounded_prediction_rate": 1.0,
+        "domain_leakage_row_rate": 0.0
+      }
+    },
+    "leave_one_domain_out": {},
+    "heldout_domain_metrics": null
+  },
+  "unseen_domain_metrics": {
+    "domains": [
+      "laptop",
+      "restaurant"
+    ],
+    "rows": 60,
+    "unseen_non_general_coverage": 0.7333,
+    "unseen_implicit_not_ready_rate": 0.0,
+    "unseen_domain_leakage_row_rate": 0.0
+  },
+  "domain_prior_boost_count": 0,
+  "domain_prior_penalty_count": 0,
+  "explicit_metrics": {
+    "num_rows": 1,
+    "aspect_counts": {
+      "sensory quality": 1
+    },
+    "sentiment_counts": {
+      "neutral": 1
+    }
+  },
+  "validation": {
+    "counts_match": true,
+    "has_language_distribution": true,
+    "has_candidate_aspects_by_language": true,
+    "no_generic_aspects": true,
+    "no_rejected_aspects": true,
+    "has_gold_eval": true,
+    "has_benchmark_gold_eval": true,
+    "train_general_excluded": true,
+    "train_domain_leakage_ok": true,
+    "train_target_size_within_range": false,
+    "train_positive_ratio_within_max": true,
+    "train_neutral_ratio_within_max": false,
+    "train_target_blocking_failure": false,
+    "sampled_run_blocked_or_debug": true,
+    "unseen_non_general_coverage_ok": true,
+    "unseen_not_ready_rate_ok": true,
+    "unseen_domain_leakage_ok": true,
+    "strict_explicit_contamination_ok": false,
+    "strict_boundary_fp_ok": false,
+    "strict_h2_h3_ok": false,
+    "strict_multi_aspect_ok": true,
+    "strict_challenge_ok": false,
+    "grouped_split_leakage_ok": true,
+    "benchmark_val_non_empty": true,
+    "benchmark_grounded_evidence_ok": true,
+    "benchmark_duplicate_rate_ok": true,
+    "benchmark_thermal_share_ok": true,
+    "benchmark_artifact_counts_match": true
+  },
+  "blocking_reasons": [
+    {
+      "code": "DEBUG_OR_SAMPLED_RUN",
+      "message": "Run used debug profile and is not promotable."
+    },
+    {
+      "code": "TRAIN_NEUTRAL_RATIO_TOO_HIGH",
+      "message": "Neutral sentiment exceeds configured maximum ratio."
+    },
+    {
+      "code": "STRICT_EXPLICIT_CONTAMINATION",
+      "message": "Strict implicit set contains explicit span contamination."
+    },
+    {
+      "code": "STRICT_BOUNDARY_FALSE_POSITIVES",
+      "message": "Strict implicit set still includes boundary false positives."
+    },
+    {
+      "code": "STRICT_HARDNESS_TOO_LOW",
+      "message": "Strict implicit set does not meet H2/H3 minimum ratio."
+    },
+    {
+      "code": "STRICT_CHALLENGE_TOO_LOW",
+      "message": "Strict challenge metric is below configured floor."
+    }
+  ],
+  "promotion_eligibility": "blocked_debug",
+  "novelty_identity": {
+    "hybrid_explicit_implicit_pipeline": true,
+    "evidence_grounding_checks_enabled": true,
+    "structured_fallback_taxonomy_present": true,
+    "single_domain_conditioned_pipeline": true,
+    "borrowed_ideas_scope": "evaluation_protocol_only",
+    "core_method_scope": "dagr_pipe_original"
+  }
+}

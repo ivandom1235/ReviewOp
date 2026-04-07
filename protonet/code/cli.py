@@ -6,20 +6,22 @@ import sys
 
 try:
     from .config import METADATA_ROOT, OUTPUT_ROOT, ProtonetConfig, resolve_default_input_dir, seed_everything
-    from .dataset_reader import load_input_dataset, write_jsonl
+    from .dataset_reader import load_input_dataset, write_json, write_jsonl
     from .episode_builder import build_or_load_episode_sets
     from .evaluator import evaluate_episodes
     from .export_bundle import export_model_bundle, export_report
     from .model import ProtoNetModel
     from .trainer import load_checkpoint, train_model
+    from .calibrate_novelty import calibrate_thresholds
 except ImportError:
     from config import METADATA_ROOT, OUTPUT_ROOT, ProtonetConfig, resolve_default_input_dir, seed_everything
-    from dataset_reader import load_input_dataset, write_jsonl
+    from dataset_reader import load_input_dataset, write_json, write_jsonl
     from episode_builder import build_or_load_episode_sets
     from evaluator import evaluate_episodes
     from export_bundle import export_model_bundle, export_report
     from model import ProtoNetModel
     from trainer import load_checkpoint, train_model
+    from calibrate_novelty import calibrate_thresholds
 
 
 def _build_config(args: argparse.Namespace) -> ProtonetConfig:
@@ -53,7 +55,11 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         selective_delta=args.selective_delta,
         abstain_threshold=args.abstain_threshold,
         multi_label_margin=args.multi_label_margin,
+        sentiment_pipeline=args.sentiment_pipeline,
         novelty_threshold=args.novelty_threshold,
+        novelty_known_threshold=args.novelty_known_threshold,
+        novelty_novel_threshold=args.novelty_novel_threshold,
+        novelty_calibration_path=Path(args.novelty_calibration_path) if args.novelty_calibration_path else (metadata_dir / "novelty_calibration_v2.json"),
         seed=args.seed,
         no_progress=args.no_progress,
         force_rebuild_episodes=args.force_rebuild_episodes,
@@ -78,6 +84,11 @@ def run_train(args: argparse.Namespace) -> int:
     result = train_model(cfg, episodes_by_split)
 
     if cfg.save_predictions:
+        _, val_predictions = evaluate_episodes(result.model, episodes_by_split["val"], cfg, "val")
+        novelty_calibration = calibrate_thresholds(val_predictions)
+        cfg.novelty_known_threshold = float(novelty_calibration.get("thresholds", {}).get("T_known", cfg.novelty_known_threshold))
+        cfg.novelty_novel_threshold = float(novelty_calibration.get("thresholds", {}).get("T_novel", cfg.novelty_novel_threshold))
+        write_json(cfg.novelty_calibration_path, novelty_calibration)
         val_metrics, val_predictions = evaluate_episodes(result.model, episodes_by_split["val"], cfg, "val")
         test_metrics, test_predictions = evaluate_episodes(result.model, episodes_by_split["test"], cfg, "test")
         write_jsonl(cfg.predictions_dir / "val_predictions.jsonl", val_predictions)
@@ -85,6 +96,7 @@ def run_train(args: argparse.Namespace) -> int:
     else:
         val_metrics = result.val_metrics
         test_metrics = result.test_metrics
+        novelty_calibration = {}
 
     bundle_path = export_model_bundle(
         cfg=cfg,
@@ -93,6 +105,7 @@ def run_train(args: argparse.Namespace) -> int:
         checkpoint_path=result.checkpoint_path,
         metrics={"val": val_metrics, "test": test_metrics},
         history=result.history,
+        novelty_calibration=novelty_calibration,
     )
     report_path = export_report(
         cfg=cfg,
@@ -108,6 +121,7 @@ def run_train(args: argparse.Namespace) -> int:
         bundle_path=bundle_path,
         checkpoint_path=result.checkpoint_path,
         history=result.history,
+        novelty_calibration=novelty_calibration,
     )
     print(f"Training complete. Report: {report_path}")
     return 0
@@ -182,7 +196,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--selective-delta", type=float, default=0.05)
     common.add_argument("--abstain-threshold", type=float, default=0.55)
     common.add_argument("--multi-label-margin", type=float, default=0.08)
+    common.add_argument("--sentiment-pipeline", type=str, default="both", choices=["joint", "post_aspect", "both"])
     common.add_argument("--novelty-threshold", type=float, default=0.45)
+    common.add_argument("--novelty-known-threshold", type=float, default=0.35)
+    common.add_argument("--novelty-novel-threshold", type=float, default=0.65)
+    common.add_argument("--novelty-calibration-path", type=str, default=None)
     common.add_argument("--seed", type=int, default=42)
     common.add_argument("--no-progress", action="store_true")
     common.add_argument("--force-rebuild-episodes", action="store_true")

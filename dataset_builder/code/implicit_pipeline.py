@@ -678,7 +678,7 @@ def flush_llm_cache() -> None:
 
 
 class MultiAspectSynthesis:
-    """v5.5 Hybrid Synthesis: Combines multiple implicit signals into a cohesive aspect set."""
+    """V6 Hybrid Synthesis: Combines multiple implicit signals into a cohesive aspect set."""
     def __init__(self, llm_provider: Any = None) -> None:
         self.llm_provider = llm_provider
 

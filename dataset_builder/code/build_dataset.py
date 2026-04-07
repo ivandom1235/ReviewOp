@@ -109,14 +109,121 @@ def _chunk_rows(rows: list[dict[str, Any]], cfg: BuilderConfig) -> list[dict[str
     return ordered
 
 
+_CORE_BENCHMARK_DOMAINS = ("electronics", "restaurant", "telecom")
+
+
+def _benchmark_domain_family(domain: str | None) -> str:
+    normalized = str(domain or "unknown").strip().lower()
+    if normalized in {"laptop", "electronics"}:
+        return "electronics"
+    if normalized in {"restaurant", "telecom"}:
+        return normalized
+    return normalized or "unknown"
+
+
+def _benchmark_row_priority(row: dict[str, Any], *, preferred_domain: str | None = None) -> tuple[float, str]:
+    implicit = row.get("implicit", {}) or {}
+    aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) != "general"]
+    hardness = str(implicit.get("hardness_tier") or "").strip().upper()
+    review_reason = str(implicit.get("review_reason") or "").strip().lower()
+    sentiment = str(implicit.get("dominant_sentiment") or row.get("sentiment") or "").strip().lower()
+    domain_family = _benchmark_domain_family(row.get("domain"))
+
+    score = 0.0
+    if bool(row.get("abstain_acceptable", False)):
+        score += 30.0
+    if bool(implicit.get("needs_review")):
+        score += 18.0
+    if review_reason in {"weak_support", "low_confidence"}:
+        score += 10.0
+    if hardness == "H3":
+        score += 20.0
+    elif hardness == "H2":
+        score += 14.0
+    if len(aspects) > 1:
+        score += 12.0
+    if sentiment == "negative":
+        score += 6.0
+    elif sentiment == "positive":
+        score += 2.0
+    if domain_family in _CORE_BENCHMARK_DOMAINS:
+        score += 4.0
+    if preferred_domain and domain_family == preferred_domain:
+        score += 6.0
+    stable = stable_id(
+        "benchmark-selection",
+        row.get("id") or row.get("source_text") or "",
+        row.get("domain") or "unknown",
+        row.get("split") or "train",
+    )
+    return (-score, stable)
+
+
 def _select_working_rows(rows: list[dict[str, Any]], cfg: BuilderConfig) -> list[dict[str, Any]]:
     ordered = _chunk_rows(rows, cfg)
+    if cfg.sample_size is None and cfg.chunk_size is None:
+        return ordered
+
+    available_core_domains = [
+        domain for domain in _CORE_BENCHMARK_DOMAINS if any(_benchmark_domain_family(row.get("domain")) == domain for row in ordered)
+    ]
+    prioritized: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+
+    # Seed the core V1 domains first so sampled runs do not collapse to one domain.
+    for domain in available_core_domains:
+        domain_rows = sorted(
+            [row for row in ordered if _benchmark_domain_family(row.get("domain")) == domain],
+            key=lambda row: _benchmark_row_priority(row, preferred_domain=domain),
+        )
+        if not domain_rows:
+            continue
+        chosen = domain_rows[0]
+        chosen_id = str(chosen.get("id") or "")
+        if chosen_id and chosen_id not in selected_ids:
+            prioritized.append(chosen)
+            selected_ids.add(chosen_id)
+
+    remaining = [row for row in ordered if str(row.get("id") or "") not in selected_ids]
+    remaining_sorted = sorted(remaining, key=lambda row: _benchmark_row_priority(row, preferred_domain=_benchmark_domain_family(row.get("domain"))))
+    prioritized.extend(remaining_sorted)
+
     if cfg.sample_size is not None:
-        ordered = ordered[: max(0, cfg.sample_size)]
+        prioritized = prioritized[: max(0, cfg.sample_size)]
     if cfg.chunk_size is not None:
         start = max(0, cfg.chunk_offset)
         end = start + max(0, cfg.chunk_size)
-        ordered = ordered[start:end]
+        prioritized = prioritized[start:end]
+    return prioritized
+
+
+def _train_floor_row_passes(
+    row: dict[str, Any],
+    *,
+    candidate_aspects_by_domain: dict[str, list[str]],
+    accepted_support_types: set[str],
+) -> bool:
+    if not _row_domain_valid_for_train(row=row, candidate_aspects_by_domain=candidate_aspects_by_domain):
+        return False
+    implicit = row.get("implicit", {}) or {}
+    aspects = [str(aspect) for aspect in implicit.get("aspects", [])]
+    if not aspects or aspects == ["general"]:
+        return False
+    if str(implicit.get("review_reason") or "") == "boundary_false_positive":
+        return False
+    spans = list(implicit.get("spans") or [])
+    if not spans:
+        return False
+    if any(str(span.get("support_type") or "") not in accepted_support_types for span in spans):
+        return False
+    return True
+
+
+def _benchmark_domain_coverage(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for row in rows:
+        counts[_benchmark_domain_family(row.get("domain"))] += 1
+    return {domain: int(counts.get(domain, 0)) for domain in _CORE_BENCHMARK_DOMAINS}
     return ordered
 
 
@@ -152,6 +259,82 @@ def _aspect_counts(rows: list[dict[str, Any]]) -> Counter[str]:
 
 def _fallback_rate(rows: list[dict[str, Any]]) -> float:
     return round(sum(1 for row in rows if row.get("implicit", {}).get("aspects") == ["general"]) / len(rows), 4) if rows else 0.0
+
+
+def _stable_keep(
+    rows: list[dict[str, Any]],
+    *,
+    seed: int,
+    token: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if limit <= 0 or not rows:
+        return []
+    if limit >= len(rows):
+        return list(rows)
+    decorated: list[tuple[str, int, dict[str, Any]]] = []
+    for index, row in enumerate(rows):
+        row_key = str(
+            row.get("id")
+            or row.get("instance_id")
+            or row.get("record_id")
+            or row.get("parent_review_id")
+            or row.get("review_text")
+            or index
+        )
+        decorated.append((stable_id("stable_keep", seed, token, index, row_key), index, row))
+    selected = sorted(decorated, key=lambda item: (item[0], item[1]))[:limit]
+    return [row for _, _, row in sorted(selected, key=lambda item: item[1])]
+
+
+def _stable_stratified_keep(
+    rows: list[dict[str, Any]],
+    *,
+    seed: int,
+    token: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    return _stable_keep(rows, seed=seed, token=token, limit=limit)
+
+
+def _train_sentiment_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"negative": 0, "positive": 0, "neutral": 0}
+    for row in rows:
+        sentiment = str(
+            row.get("implicit", {}).get("dominant_sentiment")
+            or row.get("sentiment")
+            or "neutral"
+        ).strip().lower()
+        if sentiment not in counts:
+            sentiment = "neutral"
+        counts[sentiment] += 1
+    return counts
+
+
+def _sentiment_ratio(rows: list[dict[str, Any]], *, label: str) -> float:
+    counts = _train_sentiment_counts(rows)
+    total = sum(counts.values())
+    if total <= 0:
+        return 0.0
+    return round(counts.get(str(label).strip().lower(), 0) / total, 4)
+
+
+def _ambiguity_score(row: dict[str, Any], gold_interpretations: list[dict[str, Any]]) -> float:
+    if not gold_interpretations:
+        return float(row.get("implicit", {}).get("ambiguity_score", 0.0) or 0.0)
+    supports = [
+        max(1, int(item.get("annotator_support", 1) or 1))
+        for item in gold_interpretations
+        if isinstance(item, dict)
+    ]
+    if not supports:
+        base = float(row.get("implicit", {}).get("ambiguity_score", 0.0) or 0.0)
+        return round(max(0.0, min(1.0, base)), 4)
+    support_total = sum(supports)
+    max_share = max(supports) / max(1, support_total)
+    base_score = 1.0 - max_share
+    row_score = float(row.get("implicit", {}).get("ambiguity_score", 0.0) or 0.0)
+    return round(max(0.0, min(1.0, max(base_score, row_score))), 4)
 
 
 def _quality_summary(
@@ -246,63 +429,244 @@ def _quality_summary(
     }
 
 
+def _grounding_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    total_rows = len(rows)
+    non_general_rows = 0
+    grounded_rows = 0
+    ungrounded_non_general_count = 0
+    for row in rows:
+        implicit = row.get("implicit", {}) or {}
+        aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) != "general"]
+        spans = list(implicit.get("spans") or [])
+        if aspects:
+            non_general_rows += 1
+            has_grounding = bool(spans) and any(str(span.get("evidence_text") or span.get("clause") or "").strip() for span in spans)
+            if has_grounding:
+                grounded_rows += 1
+            else:
+                ungrounded_non_general_count += 1
+    grounded_prediction_rate = round(grounded_rows / max(1, total_rows), 4)
+    non_general_grounding_rate = round(grounded_rows / max(1, non_general_rows), 4) if non_general_rows else 0.0
+    return {
+        "total_rows": total_rows,
+        "non_general_rows": non_general_rows,
+        "grounded_rows": grounded_rows,
+        "grounded_prediction_rate": grounded_prediction_rate,
+        "non_general_grounding_rate": non_general_grounding_rate,
+        "ungrounded_non_general_count": ungrounded_non_general_count,
+    }
+
+
+def _strict_quality_metrics(rows: list[dict[str, Any]], *, challenge_macro_f1: float = 0.0) -> dict[str, Any]:
+    total_rows = len(rows)
+    hardness_distribution: Counter[str] = Counter()
+    explicit_contamination = 0
+    boundary_false_positive_count = 0
+    multi_aspect_count = 0
+    h1_count = 0
+    h2_count = 0
+    h3_count = 0
+    for row in rows:
+        implicit = row.get("implicit", {}) or {}
+        aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) != "general"]
+        if len(aspects) > 1:
+            multi_aspect_count += 1
+        hardness = str(implicit.get("hardness_tier") or "H1").strip().upper()
+        hardness_distribution[hardness] += 1
+        if hardness == "H1":
+            h1_count += 1
+        elif hardness == "H2":
+            h2_count += 1
+        elif hardness == "H3":
+            h3_count += 1
+        explicit = row.get("explicit", {}) or {}
+        explicit_aspects = {
+            str(aspect).strip().lower()
+            for aspect in list(explicit.get("aspects") or [])
+            if str(aspect).strip()
+        }
+        if explicit_aspects and any(str(aspect).strip().lower() in explicit_aspects for aspect in aspects):
+            explicit_contamination += 1
+        if str(implicit.get("review_reason") or "") == "boundary_false_positive":
+            boundary_false_positive_count += 1
+    explicit_in_implicit_rate = round(explicit_contamination / max(1, total_rows), 4)
+    h2_h3_ratio = round((h2_count + h3_count) / max(1, h1_count), 4) if total_rows else 0.0
+    multi_aspect_ratio = round(multi_aspect_count / max(1, total_rows), 4)
+    return {
+        "explicit_in_implicit_rate": explicit_in_implicit_rate,
+        "boundary_false_positive_count": boundary_false_positive_count,
+        "hardness_distribution": {key: int(value) for key, value in hardness_distribution.items()},
+        "h2_h3_ratio": h2_h3_ratio,
+        "multi_aspect_ratio": multi_aspect_ratio,
+        "challenge_macro_f1": round(float(challenge_macro_f1), 4),
+    }
+
+
+def _strict_row_passes(row: dict[str, Any]) -> bool:
+    implicit = row.get("implicit", {}) or {}
+    aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) != "general"]
+    if not aspects:
+        return False
+    spans = list(implicit.get("spans") or [])
+    if not spans:
+        return False
+    if str(implicit.get("review_reason") or "") == "boundary_false_positive":
+        return False
+    explicit = row.get("explicit", {}) or {}
+    explicit_aspects = {
+        str(aspect).strip().lower()
+        for aspect in list(explicit.get("aspects") or [])
+        if str(aspect).strip()
+    }
+    if explicit_aspects and any(str(aspect).strip().lower() in explicit_aspects for aspect in aspects):
+        return False
+    return True
+
+
 def _merge_gold_labels(rows: list[dict[str, Any]], annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not annotations:
         return rows
     by_record_id: dict[str, dict[str, Any]] = {}
+    by_instance_id: dict[str, dict[str, Any]] = {}
+    by_review_id: dict[str, dict[str, Any]] = {}
+    by_parent_review_id: dict[str, dict[str, Any]] = {}
     by_domain_text: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def _merge_unique_interpretations(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for item in existing + incoming:
+            if not isinstance(item, dict):
+                continue
+            payload = dict(item)
+            source_value = str(
+                payload.get("source")
+                or payload.get("annotation_source")
+                or payload.get("label_source")
+                or "imported"
+            ).strip() or "imported"
+            payload.setdefault("source", source_value)
+            payload.setdefault("annotation_source", source_value)
+            key = (
+                str(payload.get("aspect_label") or payload.get("aspect") or "").strip().lower(),
+                str(payload.get("sentiment") or "neutral").strip().lower(),
+                normalize_whitespace(payload.get("evidence_text") or payload.get("evidence") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(payload)
+        return merged
+
     for item in annotations:
         labels = item.get("gold_labels") if isinstance(item.get("gold_labels"), list) else []
         gold_interpretations = item.get("gold_interpretations") if isinstance(item.get("gold_interpretations"), list) else []
+        annotation_source = str(
+            item.get("annotation_source")
+            or item.get("review_status")
+            or item.get("source")
+            or "imported"
+        ).strip() or "imported"
         payload = {
             "gold_labels": labels,
-            "gold_interpretations": gold_interpretations,
+            "gold_interpretations": [
+                {
+                    **dict(interp),
+                    "source": str(
+                        interp.get("source")
+                        or interp.get("annotation_source")
+                        or interp.get("label_source")
+                        or annotation_source
+                    ).strip() or annotation_source,
+                    "annotation_source": str(
+                        interp.get("annotation_source")
+                        or interp.get("source")
+                        or annotation_source
+                    ).strip() or annotation_source,
+                }
+                for interp in gold_interpretations
+                if isinstance(interp, dict)
+            ],
             "abstain_acceptable": bool(item.get("abstain_acceptable", False)),
-            "novel_aspect_acceptable": bool(item.get("novel_aspect_acceptable", False)),
+            "novel_acceptable": bool(item.get("novel_acceptable", False)),
+            "novel_cluster_id": item.get("novel_cluster_id"),
+            "novel_alias": item.get("novel_alias"),
+            "novel_evidence_text": item.get("novel_evidence_text"),
+            "annotation_source": annotation_source,
         }
-        record_id = item.get("record_id")
-        if isinstance(record_id, str) and record_id.strip():
-            by_record_id[record_id.strip()] = payload
+        for key in ("instance_id", "record_id", "review_id", "parent_review_id"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                normalized = value.strip()
+                if key == "instance_id":
+                    by_instance_id[normalized] = payload
+                elif key == "review_id":
+                    by_review_id[normalized] = payload
+                elif key == "parent_review_id":
+                    by_parent_review_id[normalized] = payload
+                else:
+                    by_record_id[normalized] = payload
         domain = str(item.get("domain") or "unknown")
-        text = normalize_whitespace(item.get("text") or "")
+        text = normalize_whitespace(item.get("text") or item.get("review_text") or "")
         if text:
             by_domain_text[(domain, text)] = payload
 
     merged: list[dict[str, Any]] = []
     for row in rows:
         out = dict(row)
-        existing = out.get("gold_labels")
-        existing_interpretations = out.get("gold_interpretations")
-        if (isinstance(existing, list) and existing) or (isinstance(existing_interpretations, list) and existing_interpretations):
-            merged.append(out)
-            continue
+        existing = out.get("gold_labels") if isinstance(out.get("gold_labels"), list) else []
+        existing_interpretations = out.get("gold_interpretations") if isinstance(out.get("gold_interpretations"), list) else []
         record_id = str(out.get("id") or "")
-        payload = by_record_id.get(record_id)
+        payload = (
+            by_instance_id.get(record_id)
+            or by_record_id.get(record_id)
+            or by_review_id.get(record_id)
+            or by_parent_review_id.get(record_id)
+        )
+        if payload is None:
+            payload = by_record_id.get(str(out.get("record_id") or ""))
+        if payload is None:
+            payload = by_instance_id.get(str(out.get("instance_id") or ""))
+        if payload is None:
+            payload = by_review_id.get(str(out.get("review_id") or ""))
+        if payload is None:
+            payload = by_parent_review_id.get(str(out.get("parent_review_id") or ""))
         if payload is None:
             domain = str(out.get("domain") or "unknown")
-            text = normalize_whitespace(out.get("source_text") or "")
+            text = normalize_whitespace(out.get("source_text") or out.get("review_text") or "")
             payload = by_domain_text.get((domain, text))
         if payload is not None:
-            out["gold_labels"] = payload.get("gold_labels", [])
-            out["gold_interpretations"] = payload.get("gold_interpretations", [])
+            out["gold_labels"] = _merge_unique_interpretations(existing, payload.get("gold_labels", []))
+            out["gold_interpretations"] = _merge_unique_interpretations(existing_interpretations, payload.get("gold_interpretations", []))
             out["abstain_acceptable"] = bool(payload.get("abstain_acceptable", False))
-            out["novel_aspect_acceptable"] = bool(payload.get("novel_aspect_acceptable", False))
+            out["novel_acceptable"] = bool(payload.get("novel_acceptable", False))
+            out["novel_cluster_id"] = payload.get("novel_cluster_id")
+            out["novel_alias"] = payload.get("novel_alias")
+            out["novel_evidence_text"] = payload.get("novel_evidence_text")
+            out["annotation_source"] = payload.get("annotation_source", "imported")
         merged.append(out)
     return merged
 
 
 def _group_identity(row: dict[str, Any]) -> str:
-    # Prefer stable row/review identity to avoid collapsing whole domains into one group.
-    for key in ("review_id", "record_id", "parent_review_id", "product_id", "business_id", "entity_id", "group_id", "id"):
+    # V1 grouped split identity: strongly prefer product/business-level identity to avoid leakage.
+    # We prioritize product-level keys first, then review-level keys.
+    for key in ("product_id", "business_id", "entity_id", "group_id"):
         value = row.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip().lower()
+
+    for key in ("parent_review_id", "review_id", "record_id", "id"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+
     source = str(row.get("source_file") or "unknown").strip().lower()
     domain = str(row.get("domain") or "unknown").strip().lower()
     text = normalize_whitespace(str(row.get("source_text") or row.get("review_text") or ""))
     if text:
         return stable_id("group-fallback", source, domain, text[:200])
-    return f"{source}:{domain}"
+    return f"fallback:{source}:{domain}"
 
 
 def _build_gold_interpretations(row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -315,13 +679,15 @@ def _build_gold_interpretations(row: dict[str, Any]) -> list[dict[str, Any]]:
             aspect = str(item.get("aspect") or item.get("aspect_label") or "").strip()
             if not aspect: continue
             out.append({
-                "aspect": aspect,
+                "aspect_label": aspect,
                 "sentiment": str(item.get("sentiment") or "neutral").lower(),
-                "evidence": str(item.get("evidence") or item.get("evidence_text") or "").strip(),
+                "evidence_text": str(item.get("evidence_text") or item.get("evidence") or "").strip(),
+                "evidence_span": item.get("evidence_span", [-1, -1]),
                 "annotator_support": int(item.get("annotator_support", 1) or 1),
                 "source": str(item.get("source") or "synthetic"),
                 "label_type": str(item.get("label_type") or "implicit"),
                 "conformal_set": item.get("conformal_set", [aspect]),
+                "ambiguity_type": str(item.get("ambiguity_type") or "").strip() or None,
             })
         if out: return out
 
@@ -337,12 +703,14 @@ def _build_gold_interpretations(row: dict[str, Any]) -> list[dict[str, Any]]:
             key = (aspect.lower(), sentiment)
             if key not in collapsed:
                 collapsed[key] = {
-                    "aspect": aspect,
+                    "aspect_label": aspect,
                     "sentiment": sentiment,
-                    "evidence": str(label.get("evidence_text") or label.get("evidence") or "").strip(),
+                    "evidence_text": str(label.get("evidence_text") or label.get("evidence") or "").strip(),
+                    "evidence_span": [-1, -1],
                     "annotator_support": 0,
                     "source": "gold",
                     "label_type": "implicit",
+                    "ambiguity_type": None,
                 }
             collapsed[key]["annotator_support"] += int(label.get("annotator_support", 1) or 1)
         return list(collapsed.values())
@@ -374,161 +742,57 @@ def _dedupe_gold_interpretations(items: list[dict[str, Any]]) -> list[dict[str, 
     for item in items:
         if not isinstance(item, dict):
             continue
-        aspect = str(item.get("aspect") or item.get("aspect_label") or "").strip()
+        aspect = str(item.get("aspect_label") or item.get("aspect") or "").strip()
         if not aspect:
             continue
         sentiment = str(item.get("sentiment") or "neutral").strip().lower()
-        evidence_text = str(item.get("evidence") or item.get("evidence_text") or "").strip()
+        evidence_text = str(item.get("evidence_text") or item.get("evidence") or "").strip()
         key = (aspect.lower(), sentiment, _normalize_evidence_text(evidence_text))
         if key not in deduped:
             deduped[key] = dict(item)
-            deduped[key]["aspect"] = aspect
+            deduped[key]["aspect_label"] = aspect
             deduped[key]["sentiment"] = sentiment
-            deduped[key]["evidence"] = evidence_text
+            deduped[key]["evidence_text"] = evidence_text
             deduped[key]["annotator_support"] = int(item.get("annotator_support", 1) or 1)
+            deduped[key]["ambiguity_type"] = item.get("ambiguity_type")
         else:
             deduped[key]["annotator_support"] = int(deduped[key].get("annotator_support", 1) or 1) + int(item.get("annotator_support", 1) or 1)
     return list(deduped.values())
 
 
-def _ambiguity_score(row: dict[str, Any], gold_interpretations: list[dict[str, Any]]) -> float:
-    if len(gold_interpretations) > 1:
-        return round(min(1.0, 0.5 + (0.1 * (len(gold_interpretations) - 2))), 4)
-    implicit = row.get("implicit", {}) or {}
-    conf = implicit.get("aspect_confidence") or {}
-    if isinstance(conf, dict) and len(conf) >= 2:
-        ordered = sorted((float(v) for v in conf.values()), reverse=True)
-        return round(1.0 - max(0.0, ordered[0] - ordered[1]), 4)
-    return 0.0
+def _infer_ambiguity_type(row: dict[str, Any], gold_interpretations: list[dict[str, Any]]) -> str | None:
+    if len(gold_interpretations) <= 1:
+        return None
+    support_values = [int(item.get("annotator_support", 1) or 1) for item in gold_interpretations if isinstance(item, dict)]
+    if support_values and len(set(support_values)) > 1:
+        return "annotator_disagreement"
+    aspects = [str(item.get("aspect_label") or item.get("aspect") or "").strip().lower() for item in gold_interpretations if isinstance(item, dict)]
+    unique_aspects = [aspect for aspect in aspects if aspect]
+    if len(set(unique_aspects)) > 1:
+        return "multi_aspect_implication"
+    if len(set(unique_aspects)) == 1:
+        return "granularity_overlap"
+    return "semantic_ambiguity"
 
 
-def _grounding_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    non_general = [
-        row for row in rows if row.get("implicit", {}).get("aspects") and row.get("implicit", {}).get("aspects") != ["general"]
-    ]
-    grounded = [row for row in non_general if bool(row.get("implicit", {}).get("spans"))]
-    return {
-        "grounded_prediction_rate": round(len(grounded) / len(non_general), 4) if non_general else 0.0,
-        "ungrounded_non_general_count": len(non_general) - len(grounded),
-        "non_general_count": len(non_general),
-    }
+def _stable_novel_cluster_id(*, row: dict[str, Any], novel_evidence_text: str) -> str:
+    domain = str(row.get("domain") or "unknown").strip().lower()
+    hint = normalize_whitespace(
+        str(
+            novel_evidence_text
+            or row.get("source_text")
+            or row.get("review_text")
+            or ""
+        )
+    ).lower()
+    return f"novel_{stable_id('v2-novel-cluster', domain, hint)[:12]}"
 
 
-def _train_sentiment_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
-    counts: Counter[str] = Counter()
-    for row in rows:
-        sentiment = str(row.get("implicit", {}).get("dominant_sentiment") or "unknown")
-        counts[sentiment] += 1
-    return dict(counts)
-
-
-def _sentiment_ratio(rows: list[dict[str, Any]], *, label: str) -> float:
-    if not rows:
-        return 0.0
-    hit = sum(1 for row in rows if str(row.get("implicit", {}).get("dominant_sentiment") or "unknown") == label)
-    return round(hit / len(rows), 4)
-
-
-def _strict_row_passes(row: dict[str, Any]) -> bool:
-    implicit = row.get("implicit", {}) or {}
-    if str(implicit.get("implicit_quality_tier") or "needs_review") != "strict_pass":
-        return False
-    if bool(implicit.get("needs_review")):
-        return False
-    aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) != "general"]
-    if not aspects:
-        return False
-    spans = list(implicit.get("spans") or [])
-    if not spans:
-        return False
-    if any(str(span.get("label_type") or "").strip().lower() == "explicit" for span in spans):
-        return False
-    return True
-
-
-def _strict_quality_metrics(rows: list[dict[str, Any]], *, challenge_macro_f1: float = 0.0) -> dict[str, Any]:
-    total_spans = 0
-    explicit_spans = 0
-    boundary_fp_count = 0
-    h_tier_counts: Counter[str] = Counter()
-    non_general_rows = 0
-    h2_h3_rows = 0
-    multi_aspect_rows = 0
-    strict_pass_rows = 0
-    review_queue_rows = 0
-    for row in rows:
-        implicit = row.get("implicit", {}) or {}
-        tier = str(implicit.get("hardness_tier") or "H0")
-        h_tier_counts[tier] += 1
-        aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) != "general"]
-        if aspects:
-            non_general_rows += 1
-            if len(aspects) > 1:
-                multi_aspect_rows += 1
-        if tier in {"H2", "H3"} and aspects:
-            h2_h3_rows += 1
-        if str(implicit.get("implicit_quality_tier") or "needs_review") == "strict_pass":
-            strict_pass_rows += 1
-        else:
-            review_queue_rows += 1
-        for span in implicit.get("spans", []) or []:
-            total_spans += 1
-            if str(span.get("label_type") or "").strip().lower() == "explicit":
-                explicit_spans += 1
-            for flag in span.get("leakage_flags", []) or []:
-                if str(flag) in {"explicit_keyword_surface_leakage", "latent_name_surface_leakage", "surface_equals_latent"}:
-                    boundary_fp_count += 1
-                    break
-    return {
-        "explicit_in_implicit_rate": round(explicit_spans / max(1, total_spans), 4),
-        "explicit_in_implicit_count": explicit_spans,
-        "total_implicit_spans": total_spans,
-        "boundary_false_positive_count": int(boundary_fp_count),
-        "hardness_distribution": dict(h_tier_counts),
-        "h2_h3_ratio": round(h2_h3_rows / max(1, non_general_rows), 4),
-        "multi_aspect_ratio": round(multi_aspect_rows / max(1, len(rows)), 4),
-        "strict_pass_rows": int(strict_pass_rows),
-        "review_queue_rows": int(review_queue_rows),
-        "challenge_macro_f1": float(challenge_macro_f1),
-    }
-
-
-def _stable_keep(rows: list[dict[str, Any]], *, seed: int, token: str, limit: int) -> list[dict[str, Any]]:
-    if limit <= 0:
-        return []
-    ordered = sorted(
-        rows,
-        key=lambda row: stable_id(seed, token, row.get("id") or row.get("source_text") or ""),
-    )
-    return ordered[:limit]
-
-
-def _stable_stratified_keep(rows: list[dict[str, Any]], *, seed: int, token: str, limit: int) -> list[dict[str, Any]]:
-    if limit <= 0:
-        return []
-    if limit >= len(rows):
-        return sorted(rows, key=lambda row: stable_id(seed, token, row.get("id") or row.get("source_text") or ""))
-    buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        buckets[(
-            str(row.get("domain", "unknown")),
-            str(row.get("language", "unknown")),
-            _primary_non_general_aspect(row),
-        )].append(row)
-    retained: list[dict[str, Any]] = []
-    total_rows = len(rows)
-    for key, bucket_rows in buckets.items():
-        provisional = int(round((len(bucket_rows) / total_rows) * limit))
-        if provisional <= 0 and bucket_rows:
-            provisional = 1
-        retained.extend(_stable_keep(bucket_rows, seed=seed, token=f"{token}:{':'.join(key)}", limit=min(len(bucket_rows), provisional)))
-    if len(retained) > limit:
-        retained = _stable_keep(retained, seed=seed, token=f"{token}:trim", limit=limit)
-    elif len(retained) < limit:
-        retained_ids = {str(row.get("id") or "") for row in retained}
-        extras = [row for row in rows if str(row.get("id") or "") not in retained_ids]
-        retained.extend(_stable_keep(extras, seed=seed, token=f"{token}:topup", limit=limit - len(retained)))
-    return sorted(retained, key=lambda row: stable_id(seed, token, row.get("id") or row.get("source_text") or ""))
+def _novel_alias_from_text(text: str) -> str | None:
+    tokens = [token for token in normalize_whitespace(text).split(" ") if token]
+    if not tokens:
+        return None
+    return " ".join(tokens[:4])
 
 
 def _allowed_latents_for_domain(
@@ -536,18 +800,25 @@ def _allowed_latents_for_domain(
     row: dict[str, Any],
     candidate_aspects_by_domain: dict[str, list[str]],
 ) -> set[str]:
-    domain = str(row.get("domain", "unknown"))
-    domain_candidates = candidate_aspects_by_domain.get(domain, [])
+    domain = str(row.get("domain") or "unknown")
+    candidates = list(candidate_aspects_by_domain.get(domain, [])) if candidate_aspects_by_domain else []
+    if not candidates:
+        return set()
+    source_text = str(row.get("source_text") or row.get("review_text") or "")
     allowed_latents = {
-        _latent_aspect_label(candidate, str(row.get("source_text", "")))
-        for candidate in domain_candidates
+        _latent_aspect_label(candidate, source_text)
+        for candidate in candidates
     }
-    return {aspect for aspect in allowed_latents if aspect != "general" and _is_valid_latent_aspect(aspect)}
+    return {
+        aspect
+        for aspect in allowed_latents
+        if aspect != "general" and _is_valid_latent_aspect(aspect)
+    }
 
 
 def _row_domain_valid_for_train(
-    *,
     row: dict[str, Any],
+    *,
     candidate_aspects_by_domain: dict[str, list[str]],
 ) -> bool:
     allowed_latents = _allowed_latents_for_domain(row=row, candidate_aspects_by_domain=candidate_aspects_by_domain)
@@ -1648,18 +1919,17 @@ def _benchmark_protocol_assignments(rows: list[dict[str, Any]], seed: int) -> di
         for row in split_rows:
             assignments.setdefault(str(row.get("id") or ""), {})["random"] = split_name
 
-    by_source = [dict(row, source_group=str(row.get("source_file") or "unknown")) for row in normalized]
-    src_train, src_val, src_test = grouped_split(
-        by_source,
-        group_key="source_group",
+    grouped_train, grouped_val, grouped_test = grouped_split(
+        normalized,
+        group_key="group_id",
         train_ratio=0.7,
         val_ratio=0.15,
         test_ratio=0.15,
         random_seed=seed + 11,
     )
-    for split_name, split_rows in (("train", src_train), ("val", src_val), ("test", src_test)):
+    for split_name, split_rows in (("train", grouped_train), ("val", grouped_val), ("test", grouped_test)):
         for row in split_rows:
-            assignments.setdefault(str(row.get("id") or ""), {})["source_holdout"] = split_name
+            assignments.setdefault(str(row.get("id") or ""), {})["grouped"] = split_name
 
     by_domain = [dict(row, domain_group=str(row.get("domain") or "unknown")) for row in normalized]
     dom_train, dom_val, dom_test = grouped_split(
@@ -1683,7 +1953,7 @@ def _build_benchmark_instances(
     artifact_mode: str = "research_release",
     debug_row_limit: int | None = None,
     seed: int = 42,
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[dict[str, Any]]]:
     benchmark_rows_by_split: dict[str, list[dict[str, Any]]] = {"train": [], "val": [], "test": []}
     selected_rows = list(rows)
     if artifact_mode == "debug_artifacts" and debug_row_limit is not None and debug_row_limit > 0 and len(selected_rows) > debug_row_limit:
@@ -1694,6 +1964,11 @@ def _build_benchmark_instances(
     duplicate_interpretations_removed = 0
     thermal_interpretations = 0
     val_guard_triggered = False
+    deferred_review_rows: list[dict[str, Any]] = []
+    interpretation_source_counter: Counter[str] = Counter()
+    source_domain_family_counts: Counter[str] = Counter(_benchmark_domain_family(row.get("domain")) for row in selected_rows)
+    benchmark_domain_family_counts: Counter[str] = Counter()
+    benchmark_hardness_counts: Counter[str] = Counter()
 
     for row in selected_rows:
         row_id = str(row.get("id") or "")
@@ -1714,14 +1989,15 @@ def _build_benchmark_instances(
                 if not evidence_text:
                     continue
                 gold_interpretations.append({
-                    "aspect": latent,
+                    "aspect_label": latent,
                     "sentiment": str(span.get("sentiment") or "neutral"),
-                    "evidence": evidence_text,
+                    "evidence_text": evidence_text,
                     "evidence_span": [int(span.get("start_char", -1) or -1), int(span.get("end_char", -1) or -1)],
                     "annotator_support": 1,
                     "source": str(span.get("source") or "rule"),
                     "label_type": str(span.get("label_type") or "implicit"),
                     "conformal_set": implicit.get("conformal_set", [str(span.get("aspect") or "")]),
+                    "ambiguity_type": None,
                 })
 
         before_dedupe = len(gold_interpretations)
@@ -1733,31 +2009,97 @@ def _build_benchmark_instances(
         filtered_interpretations: list[dict[str, Any]] = []
         for interp in gold_interpretations:
             total_interpretations += 1
-            aspect_value = str(interp.get("aspect") or interp.get("aspect_label") or "").strip().lower()
+            source_label = str(
+                interp.get("source")
+                or interp.get("annotation_source")
+                or interp.get("label_source")
+                or "unknown"
+            ).strip() or "unknown"
+            interpretation_source_counter[source_label] += 1
+            aspect_value = str(interp.get("aspect_label") or interp.get("aspect") or "").strip().lower()
             if aspect_value == "thermal":
                 thermal_interpretations += 1
-            evidence = str(interp.get("evidence") or interp.get("evidence_text") or "").strip()
+            evidence = str(interp.get("evidence_text") or interp.get("evidence") or "").strip()
             if evidence and _normalize_evidence_text(evidence) and _normalize_evidence_text(evidence) in review_text_norm:
                 grounded_interpretations += 1
+                ambiguity_type = str(interp.get("ambiguity_type") or "").strip() or _infer_ambiguity_type(row, gold_interpretations)
+                evidence_span = interp.get("evidence_span")
+                if not (isinstance(evidence_span, list) and len(evidence_span) == 2):
+                    evidence_span = [-1, -1]
                 filtered_interpretations.append(interp)
+                filtered_interpretations[-1]["ambiguity_type"] = ambiguity_type
+                filtered_interpretations[-1]["evidence_span"] = evidence_span
 
         gold_interpretations = filtered_interpretations
+        if not gold_interpretations:
+            deferred_review_rows.append(
+                {
+                    "instance_id": row_id,
+                    "record_id": row_id,
+                    "review_text": review_text,
+                    "domain": str(row.get("domain") or "unknown"),
+                    "group_id": _group_identity(row),
+                    "reason": "missing_grounded_gold_interpretations",
+                    "annotation_source": "draft_queue",
+                    "review_status": "pending",
+                    "split_protocol": {
+                        "random": random_split,
+                        "grouped": str(split_protocol.get("grouped") or random_split),
+                        "domain_holdout": str(split_protocol.get("domain_holdout") or random_split),
+                    },
+                    "novel_acceptable": bool(row.get("novel_acceptable", False)),
+                    "novel_cluster_id": row.get("novel_cluster_id"),
+                    "novel_alias": row.get("novel_alias"),
+                    "novel_evidence_text": row.get("novel_evidence_text"),
+                }
+            )
+            continue
+
+        novel_acceptable = bool(row.get("novel_acceptable", False))
+        novel_evidence_text = str(row.get("novel_evidence_text") or "").strip()
+        if not novel_evidence_text and novel_acceptable:
+            novel_evidence_text = str(
+                next(
+                    (
+                        item.get("evidence_text")
+                        for item in gold_interpretations
+                        if isinstance(item, dict) and str(item.get("evidence_text") or "").strip()
+                    ),
+                    "",
+                )
+            ).strip()
+        novel_cluster_id = str(row.get("novel_cluster_id") or "").strip() or None
+        if novel_acceptable and not novel_cluster_id:
+            novel_cluster_id = _stable_novel_cluster_id(row=row, novel_evidence_text=novel_evidence_text)
+        novel_alias = str(row.get("novel_alias") or "").strip() or None
+        if novel_acceptable and not novel_alias:
+            novel_alias = _novel_alias_from_text(novel_evidence_text or review_text)
+
         benchmark_row = {
             "instance_id": row_id,
+            "record_id": row_id,
             "review_text": review_text,
             "domain": str(row.get("domain") or "unknown"),
+            "domain_family": _benchmark_domain_family(row.get("domain")),
             "group_id": _group_identity(row),
             "gold_interpretations": gold_interpretations,
             "abstain_acceptable": bool(row.get("abstain_acceptable", False)),
-            "novel_aspect_acceptable": bool(row.get("novel_aspect_acceptable", False)),
+            "novel_acceptable": novel_acceptable,
+            "novel_cluster_id": novel_cluster_id,
+            "novel_alias": novel_alias,
+            "novel_evidence_text": novel_evidence_text or None,
             "ambiguity_score": _ambiguity_score(row, gold_interpretations),
+            "hardness_tier": str(row.get("implicit", {}).get("hardness_tier") or "unknown"),
+            "annotation_source": "benchmark_generated" if any(str(item.get("source") or item.get("annotation_source") or "").strip() in {"rule", "synthetic"} for item in gold_interpretations) else "imported",
             "split_protocol": {
                 "random": random_split,
-                "source_holdout": str(split_protocol.get("source_holdout") or random_split),
+                "grouped": str(split_protocol.get("grouped") or random_split),
                 "domain_holdout": str(split_protocol.get("domain_holdout") or random_split),
             },
         }
         benchmark_rows_by_split.setdefault(random_split, []).append(benchmark_row)
+        benchmark_domain_family_counts[benchmark_row["domain_family"]] += 1
+        benchmark_hardness_counts[str(benchmark_row["hardness_tier"] or "unknown")] += 1
 
     all_bench = [r for s in benchmark_rows_by_split.values() for r in s]
     if all_bench and not benchmark_rows_by_split.get("val"):
@@ -1778,17 +2120,36 @@ def _build_benchmark_instances(
         "selected_rows": len(selected_rows),
         "export_row_limit": debug_row_limit if artifact_mode == "debug_artifacts" else None,
         "rows": len(all_bench),
+        "deferred_review_rows": len(deferred_review_rows),
+        "novel_rows": int(sum(1 for row in all_bench if bool(row.get("novel_acceptable", False)))),
+        "known_rows": int(sum(1 for row in all_bench if not bool(row.get("novel_acceptable", False)))),
         "split_counts": split_counts,
+        "source_domain_family_counts": {domain: int(source_domain_family_counts.get(domain, 0)) for domain in _CORE_BENCHMARK_DOMAINS},
+        "benchmark_domain_family_counts": {domain: int(benchmark_domain_family_counts.get(domain, 0)) for domain in _CORE_BENCHMARK_DOMAINS},
+        "benchmark_domain_coverage_ok": all(
+            source_domain_family_counts.get(domain, 0) == 0 or benchmark_domain_family_counts.get(domain, 0) > 0
+            for domain in _CORE_BENCHMARK_DOMAINS
+        ),
         "multi_gold_label_rate": round(sum(1 for r in all_bench if len(r["gold_interpretations"]) > 1) / max(1, len(all_bench)), 4),
         "average_gold_interpretations": round(sum(len(r["gold_interpretations"]) for r in all_bench) / max(1, len(all_bench)), 4),
+        "abstain_acceptable_rate": round(sum(1 for r in all_bench if bool(r.get("abstain_acceptable", False))) / max(1, len(all_bench)), 4),
+        "hardness_distribution": {tier: int(count) for tier, count in benchmark_hardness_counts.items()},
         "grouped_split_leakage": grouped_leakage_report(leakage_rows, group_key="group_id"),
         "grounded_evidence_rate": round(grounded_interpretations / max(1, total_interpretations), 4),
         "duplicate_interpretations_removed": int(duplicate_interpretations_removed),
         "duplicate_interpretation_rate": round(duplicate_interpretations_removed / max(1, total_interpretations), 4),
         "validation_empty_guard_triggered": bool(val_guard_triggered),
         "thermal_share": round(thermal_interpretations / max(1, total_interpretations), 4),
+        "interpretation_source_distribution": dict(interpretation_source_counter),
+        "ambiguity_type_distribution": dict(
+            Counter(
+                str(item.get("ambiguity_type") or "none")
+                for row_item in all_bench
+                for item in list(row_item.get("gold_interpretations") or [])
+            )
+        ),
     }
-    return benchmark_rows_by_split, metadata
+    return benchmark_rows_by_split, metadata, deferred_review_rows
 
 
 def _benchmark_artifact_counts(base_dir: Path) -> dict[str, int]:
@@ -1798,6 +2159,78 @@ def _benchmark_artifact_counts(base_dir: Path) -> dict[str, int]:
         counts[split] = len(read_jsonl(path)) if path.exists() else 0
     counts["total"] = sum(counts[split] for split in ("train", "val", "test"))
     return counts
+
+
+def _benchmark_v2_novelty_sidecar(
+    rows_by_split: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    all_rows = [row for split_rows in rows_by_split.values() for row in split_rows]
+    known_rows = [row for row in all_rows if not bool(row.get("novel_acceptable", False))]
+    novel_rows = [row for row in all_rows if bool(row.get("novel_acceptable", False))]
+    cluster_counter: Counter[str] = Counter(
+        str(row.get("novel_cluster_id") or "none")
+        for row in novel_rows
+        if str(row.get("novel_cluster_id") or "").strip()
+    )
+    long_tail_clusters = sum(1 for _, count in cluster_counter.items() if count <= 2)
+
+    split_coverage: dict[str, dict[str, float]] = {}
+    for split_name in ("train", "val", "test"):
+        split_rows = rows_by_split.get(split_name, [])
+        split_novel = [row for row in split_rows if bool(row.get("novel_acceptable", False))]
+        domain_counter = Counter(str(row.get("domain") or "unknown") for row in split_rows)
+        domain_novel_counter = Counter(str(row.get("domain") or "unknown") for row in split_novel)
+        split_coverage[split_name] = {
+            "rows": int(len(split_rows)),
+            "novel_rows": int(len(split_novel)),
+            "novel_rate": round(len(split_novel) / max(1, len(split_rows)), 4),
+            "novel_by_domain": {
+                domain: {
+                    "rows": int(domain_counter.get(domain, 0)),
+                    "novel_rows": int(domain_novel_counter.get(domain, 0)),
+                    "novel_rate": round(domain_novel_counter.get(domain, 0) / max(1, domain_counter.get(domain, 0)), 4),
+                }
+                for domain in sorted(domain_counter.keys())
+            },
+        }
+
+    cluster_split_presence: dict[str, set[str]] = defaultdict(set)
+    cluster_group_presence: dict[str, set[str]] = defaultdict(set)
+    cluster_domain_presence: dict[str, set[str]] = defaultdict(set)
+    for split_name, split_rows in rows_by_split.items():
+        for row in split_rows:
+            if not bool(row.get("novel_acceptable", False)):
+                continue
+            cluster_id = str(row.get("novel_cluster_id") or "").strip()
+            if not cluster_id:
+                continue
+            cluster_split_presence[cluster_id].add(split_name)
+            cluster_group_presence[cluster_id].add(str(row.get("group_id") or "unknown"))
+            cluster_domain_presence[cluster_id].add(str(row.get("domain") or "unknown"))
+
+    leakage_clusters = sorted(
+        [
+            cluster_id
+            for cluster_id, splits in cluster_split_presence.items()
+            if len(splits) > 1
+        ]
+    )
+    return {
+        "rows": int(len(all_rows)),
+        "known_rows": int(len(known_rows)),
+        "novel_rows": int(len(novel_rows)),
+        "novel_rate": round(len(novel_rows) / max(1, len(all_rows)), 4),
+        "novel_cluster_count": int(len(cluster_counter)),
+        "novel_cluster_frequency": dict(cluster_counter.most_common()),
+        "novel_cluster_long_tail_count": int(long_tail_clusters),
+        "split_coverage": split_coverage,
+        "cluster_leakage": {
+            "cross_split_cluster_count": int(len(leakage_clusters)),
+            "cross_split_clusters": leakage_clusters[:50],
+            "cluster_group_presence": {k: sorted(v) for k, v in cluster_group_presence.items()},
+            "cluster_domain_presence": {k: sorted(v) for k, v in cluster_domain_presence.items()},
+        },
+    }
 
 
 async def _process_row(
@@ -2248,6 +2681,29 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     )
     train_export_rows = _strict_train_non_general(train_export_rows)
     strict_train_export_rows = [row for row in train_export_rows if _strict_row_passes(row)] if cfg.strict_implicit_enabled else list(train_export_rows)
+    train_export_floor_rows: list[dict[str, Any]] = []
+    if cfg.strict_implicit_enabled and not strict_train_export_rows and (artifact_mode == "debug_artifacts" or sampled_run):
+        accepted_support = {str(value).strip() for value in cfg.train_topup_allowed_support_types if str(value).strip()}
+        if not accepted_support:
+            accepted_support = {"exact", "near_exact", "gold"}
+        train_export_floor_rows = [
+            row for row in train_export_rows
+            if _train_floor_row_passes(
+                row,
+                candidate_aspects_by_domain=candidate_aspects_by_domain_train,
+                accepted_support_types=accepted_support,
+            )
+        ]
+        if train_export_floor_rows:
+            strict_train_export_rows = _stable_keep(
+                train_export_floor_rows,
+                seed=cfg.random_seed,
+                token="debug-train-floor",
+                limit=min(
+                    len(train_export_floor_rows),
+                    max(1, int(cfg.debug_benchmark_max_rows)) if artifact_mode == "debug_artifacts" else len(train_export_floor_rows),
+                ),
+            )
     strict_val_export_rows = [row for row in val_built if _strict_row_passes(row)] if cfg.strict_implicit_enabled else list(val_built)
     strict_test_export_rows = [row for row in test_built if _strict_row_passes(row)] if cfg.strict_implicit_enabled else list(test_built)
     strict_review_candidates = [
@@ -2348,7 +2804,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     grounding = _grounding_metrics(finalized_rows)
     gold_metrics = gold_eval(finalized_rows)
     benchmark_assignments = _benchmark_protocol_assignments(finalized_rows, seed=cfg.random_seed)
-    benchmark_rows_by_split, benchmark_metadata = _build_benchmark_instances(
+    benchmark_rows_by_split, benchmark_metadata, benchmark_review_queue_rows = _build_benchmark_instances(
         finalized_rows,
         benchmark_assignments,
         artifact_mode=artifact_mode,
@@ -2356,6 +2812,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         seed=cfg.random_seed,
     )
     benchmark_gold_metrics = benchmark_gold_eval([row for split_rows in benchmark_rows_by_split.values() for row in split_rows])
+    benchmark_v2_novelty = _benchmark_v2_novelty_sidecar(benchmark_rows_by_split)
     domain_generalization = _domain_generalization(
         finalized_rows,
         evaluation_protocol=cfg.evaluation_protocol,
@@ -2417,7 +2874,9 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         "implicit_diagnostics": diagnostics,
         "benchmark_summary": benchmark_metadata,
         "benchmark_gold_eval": benchmark_gold_metrics,
+        "benchmark_v2_novelty": benchmark_v2_novelty,
         "benchmark_artifact_counts": benchmark_metadata.get("split_counts", {}),
+        "benchmark_review_queue_rows": len(benchmark_review_queue_rows),
         "output_quality": quality_summary,
         "strict_quality": quality_summary.get("strict_quality", {}),
         "strict_artifacts": {
@@ -2427,6 +2886,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             "strict_review_queue_rows": len(strict_review_queue_rows),
             "strict_challenge_rows": len(strict_challenge_rows),
         },
+        "train_export_floor_rows": len(train_export_floor_rows),
         "grounded_prediction_rate": grounding["grounded_prediction_rate"],
         "ungrounded_non_general_count": grounding["ungrounded_non_general_count"],
         "train_general_rows_before_policy": train_general_policy_stats["train_general_rows_before_policy"],
@@ -2473,7 +2933,8 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             "has_candidate_aspects_by_language": bool(candidate_aspects_by_language),
             "no_generic_aspects": quality_summary["generic_implicit_aspects"] == 0,
             "no_rejected_aspects": quality_summary["rejected_implicit_aspects"] == 0,
-            "has_gold_eval": bool(gold_metrics.get("has_gold_labels")),
+            "has_gold_eval": bool(gold_metrics.get("has_gold_labels")) or bool(benchmark_gold_metrics.get("has_gold_interpretations")),
+            "has_benchmark_gold_eval": bool(benchmark_gold_metrics.get("has_gold_interpretations")),
             "train_general_excluded": train_general_dominance_rate == 0.0,
             "train_domain_leakage_ok": float(train_domain_leakage_metrics.get("train_domain_leakage_row_rate", 1.0)) == 0.0,
             "train_target_size_within_range": bool(train_target_stats.get("size_within_target_range")),
@@ -2499,6 +2960,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             "benchmark_grounded_evidence_ok": float(benchmark_metadata.get("grounded_evidence_rate", 0.0)) >= 0.98,
             "benchmark_duplicate_rate_ok": float(benchmark_metadata.get("duplicate_interpretation_rate", 1.0)) <= 0.01,
             "benchmark_thermal_share_ok": float(benchmark_metadata.get("thermal_share", 1.0)) <= 0.35,
+            "benchmark_domain_coverage_ok": bool(benchmark_metadata.get("benchmark_domain_coverage_ok", True)),
             "benchmark_artifact_counts_match": True,
         },
     }
@@ -2544,6 +3006,8 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         blocking_reasons.append({"code": "BENCHMARK_DUPLICATE_INTERPRETATIONS", "message": "Benchmark still contains duplicate interpretations."})
     if not bool(report["validation"].get("benchmark_thermal_share_ok")):
         blocking_reasons.append({"code": "BENCHMARK_THERMAL_OVERCONCENTRATION", "message": "Thermal aspect share remains over concentrated."})
+    if not bool(report["validation"].get("benchmark_domain_coverage_ok")):
+        blocking_reasons.append({"code": "BENCHMARK_DOMAIN_COVERAGE", "message": "Benchmark is missing a core V1 domain family present in the source pool."})
     report["blocking_reasons"] = blocking_reasons
     report["promotion_eligibility"] = _resolve_promotion_eligibility(
         run_profile=run_profile,
@@ -2571,6 +3035,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     progress.step("report assembly")
     if not cfg.dry_run:
         write_benchmark_outputs(cfg.benchmark_dir, benchmark_rows_by_split, benchmark_metadata)
+        write_jsonl(cfg.benchmark_dir / "review_queue.jsonl", benchmark_review_queue_rows)
         benchmark_artifact_counts = _benchmark_artifact_counts(cfg.benchmark_dir)
         benchmark_report_counts = dict(benchmark_metadata.get("split_counts", {}))
         benchmark_report_counts["total"] = int(benchmark_metadata.get("rows", 0))
@@ -2589,6 +3054,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             validation=report["validation"],
         )
         write_json(cfg.reports_dir / "build_report.json", report)
+        write_json(cfg.reports_dir / "benchmark_v2_novelty_report.json", benchmark_v2_novelty)
         write_json(cfg.reports_dir / "data_quality_report.json", {
             "run_profile": run_profile,
             "artifact_mode": artifact_mode,
@@ -2607,6 +3073,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             "research": report["research"],
             "output_quality": quality_summary,
             "benchmark_summary": benchmark_metadata,
+            "benchmark_v2_novelty": benchmark_v2_novelty,
             "benchmark_artifact_counts": benchmark_artifact_counts,
             "benchmark_report_counts": benchmark_report_counts,
             "benchmark_artifact_counts_match": benchmark_artifact_counts_match,
@@ -2658,7 +3125,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     runtime_defaults = _load_runtime_defaults()
-    parser = argparse.ArgumentParser(description="DAGR-PIPE v4 dataset builder")
+    parser = argparse.ArgumentParser(description="ReviewOp V6 dataset builder")
     parser.add_argument("--input-dir", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=42)

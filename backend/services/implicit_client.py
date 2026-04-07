@@ -85,6 +85,9 @@ class ImplicitClient:
                     "ambiguity_score": float(row.get("ambiguity_score", 0.0)),
                     "novelty_score": float(row.get("novelty_score", 0.0)),
                     "routing": row.get("routing") or "known",
+                    "decision_band": row.get("decision_band") or "known",
+                    "novel_cluster_id": row.get("novel_cluster_id"),
+                    "novel_alias": row.get("novel_alias"),
                     "novel_candidates": row.get("novel_candidates") or [],
                     "abstained_predictions": row.get("abstained_predictions") or [],
                 }

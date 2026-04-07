@@ -16,7 +16,7 @@ def _benchmark_artifact_summary(build: dict[str, Any]) -> dict[str, Any]:
     output_dir = build.get("config", {}).get("output_dir")
     if not output_dir:
         return {"available": False}
-    benchmark_dir = Path(str(output_dir)) / "benchmark" / "ambiguity_openworld"
+    benchmark_dir = Path(str(output_dir)) / "benchmark" / "ambiguity_grounded"
     file_counts = {}
     for split in ("train", "val", "test"):
         path = benchmark_dir / f"{split}.jsonl"
@@ -201,6 +201,7 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
                 "multi_gold_label_rate": float(benchmark_gold_eval.get("multi_gold_label_rate", 0.0)),
                 "grounded_evidence_rate": float(benchmark_gold_eval.get("grounded_evidence_rate", 0.0)),
                 "duplicate_interpretation_rate": float(benchmark_gold_eval.get("duplicate_interpretation_rate", 0.0)),
+                "interpretation_source_distribution": benchmark_gold_eval.get("interpretation_source_distribution", {}),
             },
         },
         "core_quality_metrics": {

@@ -1,0 +1,390 @@
+{
+  "generated_at": "2026-04-07T06:24:13Z",
+  "dataset": {
+    "input_dir": "dataset_builder\\input",
+    "output_dir": "__tmp_out__\\v6_impl_check_large",
+    "rows_in": 6126,
+    "rows_out": 5999,
+    "text_column": "review",
+    "schema_fingerprint": "96bd503774848d57",
+    "language_distribution": {
+      "en": 5368,
+      "mixed": 429,
+      "pt": 189,
+      "fr": 13
+    }
+  },
+  "benchmark": {
+    "key": "semeval_english_core",
+    "name": "SemEval English Core",
+    "family": "english_core",
+    "task_types": [
+      "explicit_aspect",
+      "polarity",
+      "implicit_aspect"
+    ],
+    "domains": [
+      "laptop",
+      "restaurant"
+    ],
+    "languages": [
+      "en"
+    ],
+    "primary_metric": "macro_f1",
+    "auxiliary": false,
+    "source": "benchmark",
+    "source_url": "https://aclanthology.org/",
+    "notes": "Primary English ABSA baseline for laptop and restaurant domains."
+  },
+  "model_family": {
+    "key": "heuristic_latent",
+    "name": "Heuristic Latent Facet Baseline",
+    "kind": "baseline",
+    "supported_tasks": [
+      "implicit_aspect",
+      "span_grounding"
+    ],
+    "prompt_mode": "constrained",
+    "augmentation_mode": "none",
+    "requires_training": false,
+    "supports_multilingual": false,
+    "supports_implicit": true,
+    "supports_span_extraction": true,
+    "source": "internal",
+    "notes": "Current clean-room latent-facet pipeline used as a diagnostic baseline."
+  },
+  "prompt_mode": "constrained",
+  "augmentation_mode": "none",
+  "metrics": {
+    "canonical_domains": [
+      "laptop",
+      "restaurant"
+    ],
+    "fallback_only_rows": 94,
+    "fallback_only_rate": 0.3133,
+    "needs_review_rows": 192,
+    "generic_implicit_aspects": 0,
+    "rejected_implicit_aspects": 0,
+    "span_support": {
+      "exact": 360,
+      "near_exact": 7
+    },
+    "top_implicit_aspects": [
+      [
+        "sensory quality",
+        85
+      ],
+      [
+        "service quality",
+        61
+      ],
+      [
+        "value",
+        44
+      ],
+      [
+        "timeliness",
+        31
+      ],
+      [
+        "performance",
+        31
+      ],
+      [
+        "reliability",
+        20
+      ],
+      [
+        "power",
+        14
+      ],
+      [
+        "display quality",
+        14
+      ],
+      [
+        "accessibility",
+        10
+      ],
+      [
+        "comfort",
+        9
+      ]
+    ],
+    "top_implicit_aspects_by_split": {
+      "train": [
+        [
+          "sensory quality",
+          66
+        ],
+        [
+          "service quality",
+          41
+        ],
+        [
+          "value",
+          29
+        ],
+        [
+          "timeliness",
+          26
+        ],
+        [
+          "performance",
+          24
+        ],
+        [
+          "reliability",
+          11
+        ],
+        [
+          "display quality",
+          11
+        ],
+        [
+          "power",
+          10
+        ],
+        [
+          "accessibility",
+          8
+        ],
+        [
+          "connectivity",
+          8
+        ]
+      ],
+      "val": [
+        [
+          "service quality",
+          10
+        ],
+        [
+          "value",
+          7
+        ],
+        [
+          "sensory quality",
+          5
+        ],
+        [
+          "reliability",
+          5
+        ],
+        [
+          "performance",
+          5
+        ],
+        [
+          "power",
+          2
+        ],
+        [
+          "thermal",
+          1
+        ],
+        [
+          "display quality",
+          1
+        ],
+        [
+          "accessibility",
+          1
+        ],
+        [
+          "comfort",
+          1
+        ]
+      ],
+      "test": [
+        [
+          "sensory quality",
+          14
+        ],
+        [
+          "service quality",
+          10
+        ],
+        [
+          "value",
+          8
+        ],
+        [
+          "timeliness",
+          4
+        ],
+        [
+          "reliability",
+          4
+        ],
+        [
+          "performance",
+          2
+        ],
+        [
+          "power",
+          2
+        ],
+        [
+          "display quality",
+          2
+        ],
+        [
+          "thermal",
+          1
+        ],
+        [
+          "comfort",
+          1
+        ]
+      ]
+    },
+    "top_implicit_aspects_by_domain": {
+      "restaurant": [
+        [
+          "sensory quality",
+          80
+        ],
+        [
+          "service quality",
+          49
+        ],
+        [
+          "value",
+          29
+        ],
+        [
+          "timeliness",
+          19
+        ],
+        [
+          "performance",
+          11
+        ],
+        [
+          "comfort",
+          8
+        ],
+        [
+          "display quality",
+          8
+        ],
+        [
+          "thermal",
+          7
+        ],
+        [
+          "accessibility",
+          2
+        ],
+        [
+          "reliability",
+          2
+        ]
+      ],
+      "laptop": [
+        [
+          "performance",
+          20
+        ],
+        [
+          "reliability",
+          18
+        ],
+        [
+          "value",
+          15
+        ],
+        [
+          "power",
+          13
+        ],
+        [
+          "service quality",
+          12
+        ],
+        [
+          "timeliness",
+          12
+        ],
+        [
+          "connectivity",
+          9
+        ],
+        [
+          "accessibility",
+          8
+        ],
+        [
+          "display quality",
+          6
+        ],
+        [
+          "sensory quality",
+          5
+        ]
+      ]
+    },
+    "fallback_only_rate_by_split": {
+      "train": 0.2762,
+      "val": 0.4667,
+      "test": 0.3333
+    },
+    "fallback_only_rate_by_domain": {
+      "restaurant": 0.2781,
+      "laptop": 0.3717
+    },
+    "review_reason_counts": {
+      "none": 108,
+      "fallback_general": 94,
+      "implicit_not_ready": 0,
+      "weak_support": 0,
+      "low_confidence": 98,
+      "llm_parse_error": 0
+    },
+    "fallback_branch_counts": {
+      "none": 93,
+      "fallback_general": 0,
+      "implicit_not_ready": 0,
+      "rule_fallback": 0,
+      "llm_parse": 207
+    },
+    "domain_leakage_rows": 98,
+    "domain_leakage_row_rate": 0.3267,
+    "domain_leakage_aspect_instances": 132,
+    "domain_leakage_by_domain": {
+      "restaurant": {
+        "rows": 59,
+        "aspect_instances": 82
+      },
+      "laptop": {
+        "rows": 39,
+        "aspect_instances": 50
+      }
+    },
+    "strict_quality": {
+      "explicit_in_implicit_rate": 0.6267,
+      "explicit_in_implicit_count": 230,
+      "total_implicit_spans": 367,
+      "boundary_false_positive_count": 242,
+      "hardness_distribution": {
+        "H0": 207,
+        "H1": 93
+      },
+      "h2_h3_ratio": 0.0,
+      "multi_aspect_ratio": 0.3267,
+      "strict_pass_rows": 206,
+      "review_queue_rows": 94,
+      "challenge_macro_f1": 0.0
+    },
+    "explicit_in_implicit_rate": 0.6267,
+    "boundary_false_positive_count": 242,
+    "hardness_distribution": {
+      "H0": 207,
+      "H1": 93
+    },
+    "h2_h3_ratio": 0.0,
+    "multi_aspect_ratio": 0.3267,
+    "challenge_macro_f1": 0.0
+  }
+}

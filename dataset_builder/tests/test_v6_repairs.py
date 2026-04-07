@@ -11,18 +11,24 @@ ROOT = Path(__file__).resolve().parents[2]
 CODE_DIR = ROOT / "dataset_builder" / "code"
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
+PROTONET_CODE_DIR = ROOT / "protonet" / "code"
+if str(PROTONET_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(PROTONET_CODE_DIR))
 
 from implicit_pipeline import build_implicit_row  # noqa: E402
 from implicit_pipeline import discover_aspects  # noqa: E402
-from build_dataset import _build_benchmark_instances, _group_identity  # noqa: E402
+from build_dataset import _benchmark_v2_novelty_sidecar, _build_benchmark_instances, _group_identity  # noqa: E402
+from build_dataset import _merge_gold_labels  # noqa: E402
+from build_dataset import _select_working_rows, _train_floor_row_passes  # noqa: E402
 from build_dataset import run_pipeline  # noqa: E402
 from contracts import BuilderConfig  # noqa: E402
 from evaluation import benchmark_gold_eval, gold_eval  # noqa: E402
-from io_utils import load_inputs  # noqa: E402
+from io_utils import load_gold_annotations, load_inputs  # noqa: E402
 from llm_utils import AsyncRunPodProvider  # noqa: E402
 from run_experiment import _resolve_artifact_mode, _resolve_llm_provider  # noqa: E402
 from splitter import grouped_leakage_report, grouped_split  # noqa: E402
 from utils import write_jsonl  # noqa: E402
+from evaluator import _project_prediction_rows  # noqa: E402
 
 
 class V6RepairTests(unittest.TestCase):
@@ -83,20 +89,20 @@ class V6RepairTests(unittest.TestCase):
             "source_text": "Battery dies before evening and gets very hot.",
             "domain": "laptop",
             "gold_interpretations": [
-                {"aspect": "power", "sentiment": "negative", "evidence": "Battery dies before evening", "annotator_support": 1},
-                {"aspect": "power", "sentiment": "negative", "evidence": "Battery dies before evening", "annotator_support": 1},
-                {"aspect": "thermal", "sentiment": "negative", "evidence": "hot", "annotator_support": 1},
-                {"aspect": "thermal", "sentiment": "negative", "evidence": "ice", "annotator_support": 1},
+                {"aspect_label": "power", "sentiment": "negative", "evidence_text": "Battery dies before evening", "annotator_support": 1},
+                {"aspect_label": "power", "sentiment": "negative", "evidence_text": "Battery dies before evening", "annotator_support": 1},
+                {"aspect_label": "thermal", "sentiment": "negative", "evidence_text": "hot", "annotator_support": 1},
+                {"aspect_label": "thermal", "sentiment": "negative", "evidence_text": "ice", "annotator_support": 1},
             ],
             "implicit": {"aspects": ["power", "thermal"], "aspect_confidence": {"power": 0.9, "thermal": 0.8}, "spans": []},
         }
-        rows_by_split, metadata = _build_benchmark_instances([row], {"r3": {"random": "train", "source_holdout": "train", "domain_holdout": "train"}})
+        rows_by_split, metadata, _ = _build_benchmark_instances([row], {"r3": {"random": "train", "grouped": "train", "domain_holdout": "train"}})
         populated_split = next(split for split in ("train", "val", "test") if rows_by_split.get(split))
         out = rows_by_split[populated_split][0]
         interpretations = out["gold_interpretations"]
         # Duplicate power interpretation is collapsed and ungrounded "ice" is removed.
         self.assertEqual(len(interpretations), 2)
-        power = next(item for item in interpretations if item["aspect"] == "power")
+        power = next(item for item in interpretations if item["aspect_label"] == "power")
         self.assertEqual(int(power["annotator_support"]), 2)
         self.assertGreaterEqual(float(metadata["grounded_evidence_rate"]), 0.6)
 
@@ -107,8 +113,8 @@ class V6RepairTests(unittest.TestCase):
                 "domain": "laptop",
                 "review_text": "Battery dies before evening.",
                 "gold_interpretations": [
-                    {"aspect": "battery", "sentiment": "negative", "evidence": "Battery dies"},
-                    {"aspect": "battery", "sentiment": "negative", "evidence": "Battery dies"},
+                    {"aspect_label": "battery", "sentiment": "negative", "evidence_text": "Battery dies"},
+                    {"aspect_label": "battery", "sentiment": "negative", "evidence_text": "Battery dies"},
                 ],
                 "gold_labels": [],
             }
@@ -121,6 +127,121 @@ class V6RepairTests(unittest.TestCase):
         self.assertAlmostEqual(float(bench["average_gold_interpretations"]), 2.0)
         self.assertAlmostEqual(float(bench["grounded_evidence_rate"]), 1.0)
         self.assertGreater(float(bench["duplicate_interpretation_rate"]), 0.0)
+
+    def test_review_queue_annotation_import_round_trips_instance_id(self) -> None:
+        temp_dir = ROOT / "dataset_builder" / "tests" / "__tmp_annotation_import__"
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            annotations_path = temp_dir / "gold_annotations.jsonl"
+            write_jsonl(
+                annotations_path,
+                [
+                    {
+                        "instance_id": "bench-queue-1",
+                        "record_id": "bench-queue-1",
+                        "review_text": "Battery dies before evening.",
+                        "domain": "laptop",
+                        "review_status": "completed",
+                        "gold_interpretations": [
+                            {
+                                "aspect_label": "battery",
+                                "sentiment": "negative",
+                                "evidence_text": "Battery dies",
+                            }
+                        ],
+                        "abstain_acceptable": True,
+                    }
+                ],
+            )
+            annotations = load_gold_annotations(annotations_path)
+            merged = _merge_gold_labels(
+                [
+                    {
+                        "id": "bench-queue-1",
+                        "domain": "laptop",
+                        "source_text": "Battery dies before evening.",
+                        "gold_interpretations": [],
+                    }
+                ],
+                annotations,
+            )
+            self.assertEqual(len(merged), 1)
+            row = merged[0]
+            self.assertEqual(row["annotation_source"], "completed")
+            self.assertEqual(len(row["gold_interpretations"]), 1)
+            self.assertEqual(row["gold_interpretations"][0]["aspect_label"], "battery")
+            self.assertEqual(row["gold_interpretations"][0]["source"], "completed")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_post_aspect_projection_uses_separate_predictions(self) -> None:
+        rows = [
+            {
+                "pred_label": "battery__negative",
+                "post_aspect_pred_label": "screen__positive",
+                "post_aspect_pred_labels": ["screen__positive"],
+                "confidence": 0.91,
+                "post_aspect_confidence": 0.77,
+                "correct": False,
+                "post_aspect_correct": True,
+                "flex_correct": False,
+                "post_aspect_flex_correct": True,
+                "multi_label_overlap": 0.0,
+                "post_aspect_multi_label_overlap": 1.0,
+                "abstained": False,
+                "post_aspect_abstained": False,
+                "low_confidence": False,
+                "post_aspect_low_confidence": False,
+            }
+        ]
+        projected = _project_prediction_rows(rows, "post_aspect")
+        self.assertEqual(projected[0]["pred_label"], "screen__positive")
+        self.assertTrue(projected[0]["correct"])
+        self.assertTrue(projected[0]["flex_correct"])
+
+    def test_v2_novelty_sidecar_counts_and_leakage(self) -> None:
+        rows_by_split = {
+            "train": [
+                {
+                    "instance_id": "a1",
+                    "domain": "laptop",
+                    "group_id": "prod-a",
+                    "novel_acceptable": True,
+                    "novel_cluster_id": "novel_001",
+                },
+                {
+                    "instance_id": "a2",
+                    "domain": "laptop",
+                    "group_id": "prod-b",
+                    "novel_acceptable": False,
+                },
+            ],
+            "val": [
+                {
+                    "instance_id": "b1",
+                    "domain": "tablet",
+                    "group_id": "prod-c",
+                    "novel_acceptable": True,
+                    "novel_cluster_id": "novel_002",
+                }
+            ],
+            "test": [
+                {
+                    "instance_id": "c1",
+                    "domain": "tablet",
+                    "group_id": "prod-d",
+                    "novel_acceptable": True,
+                    "novel_cluster_id": "novel_001",
+                }
+            ],
+        }
+        sidecar = _benchmark_v2_novelty_sidecar(rows_by_split)
+        self.assertEqual(sidecar["known_rows"], 1)
+        self.assertEqual(sidecar["novel_rows"], 3)
+        self.assertEqual(sidecar["novel_cluster_count"], 2)
+        self.assertEqual(sidecar["cluster_leakage"]["cross_split_cluster_count"], 1)
 
     def test_debug_artifact_mode_caps_benchmark_rows(self) -> None:
         rows = []
@@ -146,8 +267,8 @@ class V6RepairTests(unittest.TestCase):
                     },
                 }
             )
-            assignments[row_id] = {"random": "train", "source_holdout": "train", "domain_holdout": "train"}
-        benchmark_rows_by_split, metadata = _build_benchmark_instances(
+            assignments[row_id] = {"random": "train", "grouped": "train", "domain_holdout": "train"}
+        benchmark_rows_by_split, metadata, _ = _build_benchmark_instances(
             rows,
             assignments,
             artifact_mode="debug_artifacts",
@@ -160,32 +281,172 @@ class V6RepairTests(unittest.TestCase):
         self.assertEqual(metadata["rows"], total_rows)
         self.assertGreaterEqual(len(benchmark_rows_by_split["val"]), 1)
 
+    def test_sampled_selection_preserves_core_domain_coverage(self) -> None:
+        rows = [
+            {
+                "id": "elec-1",
+                "split": "train",
+                "source_text": "The laptop battery lasts all day.",
+                "domain": "laptop",
+                "abstain_acceptable": True,
+                "implicit": {
+                    "aspects": ["battery"],
+                    "hardness_tier": "H3",
+                    "dominant_sentiment": "negative",
+                    "needs_review": True,
+                    "review_reason": "weak_support",
+                    "spans": [{"support_type": "exact"}],
+                },
+            },
+            {
+                "id": "rest-1",
+                "split": "train",
+                "source_text": "The pasta was excellent.",
+                "domain": "restaurant",
+                "implicit": {
+                    "aspects": ["food"],
+                    "hardness_tier": "H2",
+                    "dominant_sentiment": "positive",
+                    "needs_review": True,
+                    "review_reason": "low_confidence",
+                    "spans": [{"support_type": "exact"}],
+                },
+            },
+            {
+                "id": "tel-1",
+                "split": "train",
+                "source_text": "The signal drops indoors.",
+                "domain": "telecom",
+                "implicit": {
+                    "aspects": ["signal"],
+                    "hardness_tier": "H2",
+                    "dominant_sentiment": "negative",
+                    "needs_review": True,
+                    "review_reason": "weak_support",
+                    "spans": [{"support_type": "exact"}],
+                },
+            },
+        ]
+        for i in range(24):
+            rows.append(
+                {
+                    "id": f"rest-fill-{i}",
+                    "split": "train",
+                    "source_text": f"The service was fine {i}.",
+                    "domain": "restaurant",
+                    "implicit": {
+                        "aspects": ["service"],
+                        "hardness_tier": "H0",
+                        "dominant_sentiment": "neutral",
+                        "spans": [{"support_type": "exact"}],
+                    },
+                }
+            )
+
+        cfg = BuilderConfig(sample_size=3, chunk_size=None, chunk_offset=0, random_seed=7)
+        selected = _select_working_rows(rows, cfg)
+        self.assertEqual(len(selected), 3)
+        self.assertEqual({row["domain"] for row in selected}, {"laptop", "restaurant", "telecom"})
+        self.assertTrue(any(row.get("abstain_acceptable") for row in selected))
+
+    def test_benchmark_metadata_records_core_domain_coverage_and_hardness(self) -> None:
+        rows = [
+            {
+                "id": "bench-elec",
+                "split": "train",
+                "source_text": "Battery dies before evening.",
+                "domain": "laptop",
+                "abstain_acceptable": True,
+                "implicit": {
+                    "aspects": ["battery"],
+                    "hardness_tier": "H3",
+                    "dominant_sentiment": "negative",
+                    "spans": [{"latent_label": "battery", "support_type": "exact", "evidence_text": "Battery dies before evening"}],
+                },
+            },
+            {
+                "id": "bench-rest",
+                "split": "train",
+                "source_text": "The staff were friendly.",
+                "domain": "restaurant",
+                "implicit": {
+                    "aspects": ["service"],
+                    "hardness_tier": "H2",
+                    "dominant_sentiment": "positive",
+                    "spans": [{"latent_label": "service", "support_type": "exact", "evidence_text": "staff were friendly"}],
+                },
+            },
+            {
+                "id": "bench-tel",
+                "split": "train",
+                "source_text": "Signal drops indoors.",
+                "domain": "telecom",
+                "implicit": {
+                    "aspects": ["signal"],
+                    "hardness_tier": "H2",
+                    "dominant_sentiment": "negative",
+                    "spans": [{"latent_label": "signal", "support_type": "exact", "evidence_text": "Signal drops indoors"}],
+                },
+            },
+        ]
+        assignments = {
+            "bench-elec": {"random": "train", "grouped": "train", "domain_holdout": "train"},
+            "bench-rest": {"random": "val", "grouped": "val", "domain_holdout": "val"},
+            "bench-tel": {"random": "test", "grouped": "test", "domain_holdout": "test"},
+        }
+        benchmark_rows_by_split, metadata, _ = _build_benchmark_instances(rows, assignments)
+        flat_rows = [row for split_rows in benchmark_rows_by_split.values() for row in split_rows]
+        self.assertEqual(metadata["benchmark_domain_family_counts"], {"electronics": 1, "restaurant": 1, "telecom": 1})
+        self.assertTrue(metadata["benchmark_domain_coverage_ok"])
+        self.assertEqual(metadata["hardness_distribution"]["H3"], 1)
+        self.assertEqual(metadata["hardness_distribution"]["H2"], 2)
+        self.assertGreater(metadata["abstain_acceptable_rate"], 0.0)
+        self.assertEqual(len(flat_rows), 3)
+
+    def test_train_floor_row_passes_for_grounded_non_general_row(self) -> None:
+        row = {
+            "domain": "laptop",
+            "source_text": "Battery dies before evening.",
+            "implicit": {
+                "aspects": ["battery"],
+                "review_reason": "weak_support",
+                "spans": [{"support_type": "exact"}],
+            },
+        }
+        self.assertTrue(
+            _train_floor_row_passes(
+                row,
+                candidate_aspects_by_domain={},
+                accepted_support_types={"exact", "near_exact", "gold"},
+            )
+        )
+
     def test_analyze_reports_reads_actual_benchmark_artifacts(self) -> None:
         from analyze_reports import _build_scorecard  # noqa: E402
 
         output_dir = ROOT / "__tmp_out__" / "analyze_reports_test"
         if output_dir.exists():
             shutil.rmtree(output_dir, ignore_errors=True)
-        benchmark_dir = output_dir / "benchmark" / "ambiguity_openworld"
+        benchmark_dir = output_dir / "benchmark" / "ambiguity_grounded"
         benchmark_dir.mkdir(parents=True, exist_ok=True)
         try:
             write_jsonl(
                 benchmark_dir / "train.jsonl",
                 [
-                    {"instance_id": "a", "gold_interpretations": [{"aspect": "battery", "sentiment": "negative", "evidence": "dies"}]},
-                    {"instance_id": "b", "gold_interpretations": [{"aspect": "screen", "sentiment": "positive", "evidence": "bright"}]},
+                    {"instance_id": "a", "gold_interpretations": [{"aspect_label": "battery", "sentiment": "negative", "evidence_text": "dies"}]},
+                    {"instance_id": "b", "gold_interpretations": [{"aspect_label": "screen", "sentiment": "positive", "evidence_text": "bright"}]},
                 ],
             )
             write_jsonl(
                 benchmark_dir / "val.jsonl",
                 [
-                    {"instance_id": "c", "gold_interpretations": [{"aspect": "sound", "sentiment": "positive", "evidence": "loud"}]},
+                    {"instance_id": "c", "gold_interpretations": [{"aspect_label": "sound", "sentiment": "positive", "evidence_text": "loud"}]},
                 ],
             )
             write_jsonl(
                 benchmark_dir / "test.jsonl",
                 [
-                    {"instance_id": "d", "gold_interpretations": [{"aspect": "keyboard", "sentiment": "negative", "evidence": "stiff"}]},
+                    {"instance_id": "d", "gold_interpretations": [{"aspect_label": "keyboard", "sentiment": "negative", "evidence_text": "stiff"}]},
                 ],
             )
 

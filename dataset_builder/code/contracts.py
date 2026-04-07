@@ -46,7 +46,7 @@ class BuilderConfig:
     model_family: str = "heuristic_latent"
     augmentation_mode: str = "none"
     prompt_mode: str = "constrained"
-    output_version: str = "v4"
+    output_version: str = "v6"
     reset_output: bool = True
     high_difficulty: bool = False
     adversarial_refine: bool = False
@@ -118,7 +118,7 @@ class BuilderConfig:
 
     @property
     def benchmark_dir(self) -> Path:
-        return self.output_dir / "benchmark" / "ambiguity_openworld"
+        return self.output_dir / "benchmark" / "ambiguity_grounded"
 
     def ensure_dirs(self, *, reset_output: bool | None = None) -> None:
         should_reset = self.reset_output if reset_output is None else reset_output
@@ -146,19 +146,20 @@ class ReviewRecord:
 
 @dataclass
 class GoldInterpretation:
-    aspect: str
+    aspect_label: str
     sentiment: str
-    evidence: str
+    evidence_text: str
     annotator_support: int = 1
     evidence_span: tuple[int, int] | None = None
     conformal_set: list[str] = field(default_factory=list)
     label_source: str = "hybrid"
+    ambiguity_type: str | None = None
 
 
 @dataclass
 class SplitProtocolAssignment:
     random: str
-    source_holdout: str
+    grouped: str
     domain_holdout: str
 
 
@@ -169,7 +170,10 @@ class BenchmarkInstance:
     domain: str
     gold_interpretations: list[GoldInterpretation] = field(default_factory=list)
     abstain_acceptable: bool = False
-    novel_aspect_acceptable: bool = False
+    novel_acceptable: bool = False
+    novel_cluster_id: str | None = None
+    novel_alias: str | None = None
+    novel_evidence_text: str | None = None
     ambiguity_score: float = 0.0
     split_protocol: SplitProtocolAssignment | None = None
     group_id: str = "unknown"

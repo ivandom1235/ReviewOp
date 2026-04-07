@@ -1,6 +1,6 @@
 # ProtoNet (V6)
 
-ProtoNet consumes V6 benchmark artifacts from `dataset_builder/output/benchmark/ambiguity_openworld`.
+ProtoNet consumes V6 benchmark artifacts from `dataset_builder/output/benchmark/ambiguity_grounded`.
 
 ## Required Input Files
 
@@ -11,19 +11,19 @@ ProtoNet consumes V6 benchmark artifacts from `dataset_builder/output/benchmark/
 ## Train
 
 ```powershell
-python protonet\code\cli.py train --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_openworld
+python protonet\code\cli.py train --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded
 ```
 
 ## Evaluate
 
 ```powershell
-python protonet\code\cli.py eval --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_openworld --split test --checkpoint protonet\output\checkpoints\best.pt
+python protonet\code\cli.py eval --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded --split test --checkpoint protonet\output\checkpoints\best.pt
 ```
 
 ## Export
 
 ```powershell
-python protonet\code\cli.py export --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_openworld --checkpoint protonet\output\checkpoints\best.pt
+python protonet\code\cli.py export --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded --checkpoint protonet\output\checkpoints\best.pt
 ```
 
 ## See Training/Eval Artifacts

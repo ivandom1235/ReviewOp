@@ -101,7 +101,7 @@ def compress_dataset_artifacts(output_dir: Path) -> Path | None:
     Compress train/val/test benchmark files + reports into output/zip.
     Returns the generated zip path, or None when no expected files exist.
     """
-    benchmark_dir = output_dir / "benchmark" / "ambiguity_openworld"
+    benchmark_dir = output_dir / "benchmark" / "ambiguity_grounded"
     reports_dir = output_dir / "reports"
     zip_root = output_dir / "zip"
 
@@ -109,8 +109,11 @@ def compress_dataset_artifacts(output_dir: Path) -> Path | None:
         benchmark_dir / "train.jsonl",
         benchmark_dir / "val.jsonl",
         benchmark_dir / "test.jsonl",
+        benchmark_dir / "metadata.json",
+        benchmark_dir / "review_queue.jsonl",
         reports_dir / "build_report.json",
         reports_dir / "data_quality_report.json",
+        reports_dir / "benchmark_v2_novelty_report.json",
         reports_dir / "research_manifest.json",
     ]
     existing_files = [path for path in files_to_pack if path.exists()]

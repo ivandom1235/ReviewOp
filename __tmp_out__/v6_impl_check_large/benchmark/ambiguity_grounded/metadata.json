@@ -1,0 +1,42 @@
+{
+  "artifact_mode": "debug_artifacts",
+  "source_rows": 300,
+  "selected_rows": 180,
+  "export_row_limit": 180,
+  "rows": 124,
+  "deferred_review_rows": 56,
+  "split_counts": {
+    "train": 82,
+    "val": 25,
+    "test": 17
+  },
+  "multi_gold_label_rate": 0.4919,
+  "average_gold_interpretations": 1.6935,
+  "abstain_acceptable_rate": 0.0,
+  "grouped_split_leakage": {
+    "group_key": "group_id",
+    "train_groups": 82,
+    "val_groups": 25,
+    "test_groups": 17,
+    "overlap_counts": {
+      "train_val": 0,
+      "train_test": 0,
+      "val_test": 0
+    },
+    "overlap_samples": {
+      "train_val": [],
+      "train_test": [],
+      "val_test": []
+    }
+  },
+  "grounded_evidence_rate": 1.0,
+  "duplicate_interpretations_removed": 0,
+  "duplicate_interpretation_rate": 0.0,
+  "validation_empty_guard_triggered": false,
+  "thermal_share": 0.0143,
+  "ambiguity_type_distribution": {
+    "multi_aspect_implication": 133,
+    "none": 63,
+    "granularity_overlap": 14
+  }
+}

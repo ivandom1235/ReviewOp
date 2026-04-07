@@ -174,9 +174,9 @@ def _norm_text(value: Any) -> str:
 
 def _interpretation_signature(item: dict[str, Any]) -> tuple[str, str, str]:
     return (
-        _norm_aspect(item.get("aspect")),
+        _norm_aspect(item.get("aspect_label") or item.get("aspect")),
         str(item.get("sentiment") or "neutral").strip().lower(),
-        _norm_text(item.get("evidence") or item.get("evidence_text")),
+        _norm_text(item.get("evidence_text") or item.get("evidence")),
     )
 
 
@@ -200,23 +200,38 @@ def benchmark_gold_eval(rows: Iterable[dict[str, Any]]) -> Dict[str, Any]:
     duplicate_interpretations = 0
     seen: set[tuple[str, str, str, str]] = set()
     by_domain: dict[str, dict[str, int]] = {}
+    ambiguity_type_counts: Counter[str] = Counter()
+    source_counts: Counter[str] = Counter()
+    abstain_acceptable_rows = 0
+    novel_acceptable_rows = 0
+    novel_cluster_counts: Counter[str] = Counter()
 
     for row in eligible:
         domain = str(row.get("domain", "unknown"))
         domain_stats = by_domain.setdefault(domain, {"rows": 0, "interpretations": 0, "grounded": 0})
         domain_stats["rows"] += 1
+        if bool(row.get("abstain_acceptable", False)):
+            abstain_acceptable_rows += 1
+        if bool(row.get("novel_acceptable", False)):
+            novel_acceptable_rows += 1
+            cluster_id = str(row.get("novel_cluster_id") or "").strip()
+            if cluster_id:
+                novel_cluster_counts[cluster_id] += 1
         review_text = _norm_text(row.get("review_text") or row.get("source_text"))
         for item in row.get("gold_interpretations", []):
             if not isinstance(item, dict):
                 continue
             total_interpretations += 1
             domain_stats["interpretations"] += 1
+            source_counts[str(item.get("source") or item.get("annotation_source") or item.get("label_source") or "unknown").strip() or "unknown"] += 1
             signature = (domain, *_interpretation_signature(item))
             if signature in seen:
                 duplicate_interpretations += 1
             else:
                 seen.add(signature)
-            evidence = _norm_text(item.get("evidence") or item.get("evidence_text"))
+            ambiguity_type = str(item.get("ambiguity_type") or "none").strip().lower() or "none"
+            ambiguity_type_counts[ambiguity_type] += 1
+            evidence = _norm_text(item.get("evidence_text") or item.get("evidence"))
             if evidence and evidence in review_text:
                 grounded_interpretations += 1
                 domain_stats["grounded"] += 1
@@ -229,5 +244,11 @@ def benchmark_gold_eval(rows: Iterable[dict[str, Any]]) -> Dict[str, Any]:
         "multi_gold_label_rate": round(sum(1 for row in eligible if len(row.get("gold_interpretations", [])) > 1) / max(1, len(eligible)), 4),
         "grounded_evidence_rate": round(grounded_interpretations / max(1, total_interpretations), 4),
         "duplicate_interpretation_rate": round(duplicate_interpretations / max(1, total_interpretations), 4),
+        "abstain_acceptable_rate": round(abstain_acceptable_rows / max(1, len(eligible)), 4),
+        "novel_acceptable_rate": round(novel_acceptable_rows / max(1, len(eligible)), 4),
+        "novel_cluster_count": int(len(novel_cluster_counts)),
+        "novel_cluster_frequency": dict(novel_cluster_counts.most_common()),
+        "interpretation_source_distribution": dict(source_counts.most_common()),
+        "ambiguity_type_distribution": dict(ambiguity_type_counts),
         "by_domain": by_domain,
     }

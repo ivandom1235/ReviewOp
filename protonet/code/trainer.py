@@ -41,8 +41,8 @@ def _composite_selection_score(metrics: Dict[str, Any]) -> float:
         + 0.20 * float(metrics.get("flexible_match_score", metrics.get("accuracy", 0.0)))
         + 0.15 * float(1.0 - metrics.get("calibration_ece", 1.0))
         + 0.15 * float(metrics.get("coverage", 0.0))
-        + 0.10 * float(metrics.get("known_vs_novel_quality", 0.0))
-        + 0.10 * float(metrics.get("protocol_breakdown", {}).get("domain_holdout", {}).get("accuracy", metrics.get("accuracy", 0.0)))
+        + 0.10 * float(metrics.get("known_vs_novel_f1_macro", metrics.get("abstention_f1", 0.0)))
+        + 0.10 * float(metrics.get("protocol_breakdown", {}).get("grouped", {}).get("accuracy", metrics.get("accuracy", 0.0)))
     )
 
 

@@ -79,7 +79,11 @@ def _label_from_interpretation(
     split_protocol: Dict[str, Any],
     ambiguity_score: float,
     abstain_acceptable: bool,
-    novel_aspect_acceptable: bool,
+    ambiguity_type: str | None,
+    novel_acceptable: bool,
+    novel_cluster_id: str | None,
+    novel_alias: str | None,
+    novel_evidence_text: str | None,
 ) -> Dict[str, Any]:
     sentiment = _normalize_sentiment(interp.get("sentiment"))
     evidence_text = str(interp.get("evidence_text") or "").strip()
@@ -97,14 +101,18 @@ def _label_from_interpretation(
         "evidence_span": evidence_span,
         "evidence_fallback_used": evidence_span == [-1, -1],
         "domain": domain,
-        "aspect": str(interp.get("aspect_label") or "unknown").strip(),
-        "implicit_aspect": str(interp.get("aspect_label") or "unknown").strip(),
+        "aspect": str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip(),
+        "implicit_aspect": str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip(),
         "sentiment": sentiment,
         "label_type": "implicit",
         "confidence": float(interp.get("annotator_support", 1)),
         "split": split,
         "abstain_acceptable": bool(abstain_acceptable),
-        "novel_aspect_acceptable": bool(novel_aspect_acceptable),
+        "ambiguity_type": str(ambiguity_type or "").strip() or None,
+        "novel_acceptable": bool(novel_acceptable),
+        "novel_cluster_id": str(novel_cluster_id or "").strip() or None,
+        "novel_alias": str(novel_alias or "").strip() or None,
+        "novel_evidence_text": str(novel_evidence_text or "").strip() or None,
         "gold_joint_labels": gold_joint_labels,
         "split_protocol": split_protocol,
         "benchmark_ambiguity_score": float(ambiguity_score),
@@ -125,14 +133,19 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> str:
         if not isinstance(interpretations, list) or not interpretations:
             raise ValueError(f"benchmark row {index} in split {split} has no gold_interpretations")
         split_protocol = row.get("split_protocol") if isinstance(row.get("split_protocol"), dict) else {}
+        if "grouped" not in split_protocol and "source_holdout" in split_protocol:
+            split_protocol["grouped"] = split_protocol.get("source_holdout")
         ambiguity_score = float(row.get("ambiguity_score", 0.0))
         abstain_acceptable = bool(row.get("abstain_acceptable", False))
-        novel_aspect_acceptable = bool(row.get("novel_aspect_acceptable", False))
+        novel_acceptable = bool(row.get("novel_acceptable", False))
+        novel_cluster_id = str(row.get("novel_cluster_id") or "").strip() or None
+        novel_alias = str(row.get("novel_alias") or "").strip() or None
+        novel_evidence_text = str(row.get("novel_evidence_text") or "").strip() or None
         gold_joint_labels = []
         for interp in interpretations:
             if not isinstance(interp, dict):
                 continue
-            aspect = str(interp.get("aspect_label") or "unknown").strip()
+            aspect = str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip()
             sentiment = _normalize_sentiment(interp.get("sentiment"))
             gold_joint_labels.append(f"{aspect}__{sentiment}")
         for interp_idx, interp in enumerate(interpretations, start=1):
@@ -150,7 +163,11 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> str:
                     split_protocol,
                     ambiguity_score,
                     abstain_acceptable,
-                    novel_aspect_acceptable,
+                    str(interp.get("ambiguity_type") or "").strip() or None,
+                    novel_acceptable,
+                    novel_cluster_id,
+                    novel_alias,
+                    novel_evidence_text,
                 )
             )
     rows[:] = expanded

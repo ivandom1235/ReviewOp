@@ -75,9 +75,11 @@ def _predict_with_runtime(
                 {
                     "abstain": True,
                     "decision": "abstain",
+                    "decision_band": str(selective.get("decision_band") or "boundary"),
                     "reason": "low_selective_confidence",
                     "confidence": float(selective.get("confidence", 0.0)),
                     "ambiguity_score": float(selective.get("ambiguity_score", 0.0)),
+                    "novelty_score": float(selective.get("novelty_score", 0.0)),
                     "evidence_spans": [dict(clause)],
                     "source": "implicit",
                 }
@@ -107,10 +109,13 @@ def _predict_with_runtime(
                 "model_family": "protonet",
                 "source": "implicit",
                 "decision": str(selective.get("decision") or "single_label"),
+                "decision_band": str(selective.get("decision_band") or "known"),
                 "abstain": False,
                 "ambiguity_score": float(selective.get("ambiguity_score", 0.0)),
                 "novelty_score": float(selective.get("novelty_score", 0.0)),
                 "routing": str(candidate.get("routing") or "known"),
+                "novel_cluster_id": str(candidate.get("novel_cluster_id") or "").strip() or None,
+                "novel_alias": str(candidate.get("novel_alias") or "").strip() or None,
                 "novel_candidates": list(selective.get("novel_candidates", [])),
             }
             existing = best_by_aspect.get(aspect)

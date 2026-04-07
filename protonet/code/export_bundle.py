@@ -22,6 +22,7 @@ def export_model_bundle(
     checkpoint_path: Path,
     metrics: Dict[str, Any],
     history: List[Dict[str, Any]],
+    novelty_calibration: Dict[str, Any] | None = None,
 ) -> Path:
     bundle_path = cfg.metadata_dir / "model_bundle.pt"
     payload = {
@@ -36,6 +37,7 @@ def export_model_bundle(
         "checkpoint_path": str(checkpoint_path),
         "metrics": metrics,
         "history": history,
+        "novelty_calibration": novelty_calibration or {},
     }
     torch.save(payload, bundle_path)
     return bundle_path
@@ -51,6 +53,7 @@ def export_report(
     bundle_path: Path,
     checkpoint_path: Path,
     history: List[Dict[str, Any]],
+    novelty_calibration: Dict[str, Any] | None = None,
 ) -> Path:
     report_path = cfg.metadata_dir / "report.json"
     payload = {
@@ -59,12 +62,15 @@ def export_report(
         "runtime": {
             "production_require_transformer": cfg.production_require_transformer,
             "low_confidence_threshold": cfg.low_confidence_threshold,
+            "novelty_known_threshold": cfg.novelty_known_threshold,
+            "novelty_novel_threshold": cfg.novelty_novel_threshold,
         },
         "artifacts": {
             "checkpoint_path": str(checkpoint_path),
             "bundle_path": str(bundle_path),
             "history_path": str(cfg.output_dir / "training_history.json"),
             "episode_cache_dir": str(cfg.episode_cache_dir),
+            "novelty_calibration_path": str(cfg.novelty_calibration_path),
         },
         "metrics": {
             "train": train_metrics,
@@ -72,6 +78,7 @@ def export_report(
             "test": test_metrics,
         },
         "history": history,
+        "novelty_calibration": novelty_calibration or {},
     }
     write_json(report_path, payload)
     return report_path
