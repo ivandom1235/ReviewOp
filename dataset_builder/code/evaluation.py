@@ -166,3 +166,68 @@ def gold_eval(rows: Iterable[dict[str, Any]]) -> Dict[str, Any]:
         "span_overlap_f1": overall["span_overlap_f1"],
         "by_domain": by_domain,
     }
+
+
+def _norm_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).lower()
+
+
+def _interpretation_signature(item: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        _norm_aspect(item.get("aspect")),
+        str(item.get("sentiment") or "neutral").strip().lower(),
+        _norm_text(item.get("evidence") or item.get("evidence_text")),
+    )
+
+
+def benchmark_gold_eval(rows: Iterable[dict[str, Any]]) -> Dict[str, Any]:
+    records = list(rows)
+    eligible = [row for row in records if isinstance(row.get("gold_interpretations"), list) and row.get("gold_interpretations")]
+    if not eligible:
+        return {
+            "has_gold_interpretations": False,
+            "num_rows_with_gold_interpretations": 0,
+            "total_interpretations": 0,
+            "average_gold_interpretations": 0.0,
+            "multi_gold_label_rate": 0.0,
+            "grounded_evidence_rate": 0.0,
+            "duplicate_interpretation_rate": 0.0,
+            "by_domain": {},
+        }
+
+    total_interpretations = 0
+    grounded_interpretations = 0
+    duplicate_interpretations = 0
+    seen: set[tuple[str, str, str, str]] = set()
+    by_domain: dict[str, dict[str, int]] = {}
+
+    for row in eligible:
+        domain = str(row.get("domain", "unknown"))
+        domain_stats = by_domain.setdefault(domain, {"rows": 0, "interpretations": 0, "grounded": 0})
+        domain_stats["rows"] += 1
+        review_text = _norm_text(row.get("review_text") or row.get("source_text"))
+        for item in row.get("gold_interpretations", []):
+            if not isinstance(item, dict):
+                continue
+            total_interpretations += 1
+            domain_stats["interpretations"] += 1
+            signature = (domain, *_interpretation_signature(item))
+            if signature in seen:
+                duplicate_interpretations += 1
+            else:
+                seen.add(signature)
+            evidence = _norm_text(item.get("evidence") or item.get("evidence_text"))
+            if evidence and evidence in review_text:
+                grounded_interpretations += 1
+                domain_stats["grounded"] += 1
+
+    return {
+        "has_gold_interpretations": True,
+        "num_rows_with_gold_interpretations": len(eligible),
+        "total_interpretations": total_interpretations,
+        "average_gold_interpretations": round(total_interpretations / max(1, len(eligible)), 4),
+        "multi_gold_label_rate": round(sum(1 for row in eligible if len(row.get("gold_interpretations", [])) > 1) / max(1, len(eligible)), 4),
+        "grounded_evidence_rate": round(grounded_interpretations / max(1, total_interpretations), 4),
+        "duplicate_interpretation_rate": round(duplicate_interpretations / max(1, total_interpretations), 4),
+        "by_domain": by_domain,
+    }

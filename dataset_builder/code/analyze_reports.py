@@ -5,11 +5,32 @@ import json
 from pathlib import Path
 from typing import Any
 
-from utils import utc_now_iso, write_json
+from utils import read_jsonl, utc_now_iso, write_json
 
 
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _benchmark_artifact_summary(build: dict[str, Any]) -> dict[str, Any]:
+    output_dir = build.get("config", {}).get("output_dir")
+    if not output_dir:
+        return {"available": False}
+    benchmark_dir = Path(str(output_dir)) / "benchmark" / "ambiguity_openworld"
+    file_counts = {}
+    for split in ("train", "val", "test"):
+        path = benchmark_dir / f"{split}.jsonl"
+        file_counts[split] = len(read_jsonl(path)) if path.exists() else 0
+    file_counts["total"] = sum(file_counts[split] for split in ("train", "val", "test"))
+    report_counts = dict(build.get("benchmark_artifact_counts") or build.get("benchmark_summary", {}).get("split_counts", {}))
+    report_counts["total"] = int(build.get("benchmark_summary", {}).get("rows", 0))
+    return {
+        "available": True,
+        "benchmark_dir": str(benchmark_dir),
+        "file_counts": file_counts,
+        "report_counts": report_counts,
+        "counts_match": file_counts == report_counts,
+    }
 
 
 def _delta(current: float | int, previous: float | int | None) -> float | None:
@@ -40,6 +61,8 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
     prev_build = previous or {}
     prev_quality = prev_build.get("output_quality", {})
     prev_rows = prev_build.get("row_counts", {})
+    artifact_summary = _benchmark_artifact_summary(build)
+    benchmark_gold_eval = build.get("benchmark_gold_eval", {})
 
     train_export = int(row_counts.get("train_export", 0))
     train_target_min = int(target.get("target_min_rows", 0))
@@ -64,6 +87,8 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
         and not bool(validation.get("sampled_run_blocked_or_debug"))
     )
     publication_ready = bool(research_ready and build.get("gold_eval", {}).get("has_gold_labels", False))
+    if bool(benchmark_gold_eval.get("has_gold_interpretations", False)) and artifact_summary.get("counts_match", False):
+        publication_ready = bool(research_ready and artifact_summary.get("counts_match", False))
     score, status = _score_from_verdict(
         usable_for_training=usable_for_training,
         research_ready=research_ready,
@@ -93,6 +118,8 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
         failures.append("Strict implicit export has boundary false positives.")
     if float(build.get("train_positive_ratio", 0.0)) > float(build.get("config", {}).get("train_max_positive_ratio", 0.5)):
         failures.append("Positive sentiment remains above configured maximum in train export.")
+    if artifact_summary.get("available") and not artifact_summary.get("counts_match", True):
+        failures.append("Benchmark artifact file counts do not match report metadata.")
 
     root_causes: list[str] = []
     sampled = bool(build.get("config", {}).get("sample_size") is not None or build.get("config", {}).get("chunk_size") is not None)
@@ -147,6 +174,7 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
                 "target_train_max_rows": train_target_max,
                 "size_shortfall_rows": size_shortfall,
             },
+            "benchmark_artifact_rows": int(artifact_summary.get("file_counts", {}).get("total", 0)),
             "domain_distribution": quality.get("output_quality", {}).get("top_implicit_aspects_by_domain", {}),
             "language_distribution": build.get("language_distribution", {}),
         },
@@ -165,6 +193,14 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
                 "grounded_prediction_rate": float(build.get("grounded_prediction_rate", 0.0)),
                 "span_support": output_quality.get("span_support", {}),
                 "ungrounded_non_general_count": int(build.get("ungrounded_non_general_count", 0)),
+            },
+            "benchmark_gold_interpretations": {
+                "has_gold_interpretations": bool(benchmark_gold_eval.get("has_gold_interpretations", False)),
+                "num_rows_with_gold_interpretations": int(benchmark_gold_eval.get("num_rows_with_gold_interpretations", 0)),
+                "average_gold_interpretations": float(benchmark_gold_eval.get("average_gold_interpretations", 0.0)),
+                "multi_gold_label_rate": float(benchmark_gold_eval.get("multi_gold_label_rate", 0.0)),
+                "grounded_evidence_rate": float(benchmark_gold_eval.get("grounded_evidence_rate", 0.0)),
+                "duplicate_interpretation_rate": float(benchmark_gold_eval.get("duplicate_interpretation_rate", 0.0)),
             },
         },
         "core_quality_metrics": {
@@ -221,7 +257,9 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
                 "sample_size": build.get("config", {}).get("sample_size"),
                 "chunk_size": build.get("config", {}).get("chunk_size"),
                 "run_profile": build.get("run_profile"),
+                "artifact_mode": build.get("artifact_mode"),
             },
+            "artifact_parity": artifact_summary,
         },
         "verdict": {
             "usable_for_training": usable_for_training,

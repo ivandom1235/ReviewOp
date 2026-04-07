@@ -121,6 +121,19 @@ def grouped_split(
     train_groups = rand[:n_train]
     val_groups = rand[n_train:n_train + n_val]
     test_groups = rand[n_train + n_val:]
+
+    # Guardrails for benchmark construction: keep val/test non-empty when group count permits.
+    if total_groups >= 3 and val_ratio > 0 and not val_groups:
+        if len(train_groups) > 1:
+            val_groups = [train_groups.pop()]
+        elif test_groups:
+            val_groups = [test_groups.pop(0)]
+    if total_groups >= 3 and test_ratio > 0 and not test_groups:
+        if len(train_groups) > 1:
+            test_groups = [train_groups.pop()]
+        elif val_groups:
+            test_groups = [val_groups.pop(0)]
+
     train = [row for group in train_groups for row in by_group[group]]
     val = [row for group in val_groups for row in by_group[group]]
     test = [row for group in test_groups for row in by_group[group]]

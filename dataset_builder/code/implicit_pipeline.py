@@ -38,6 +38,15 @@ STOP_TOKENS = {
     "were", "what", "when", "where", "which", "while", "with", "you", "your",
 }
 
+PIVOT_TEMPLATES = {
+    "battery": "The device's power duration was {sentiment} during usage, evidenced by '{evidence}'",
+    "price": "The value-for-money proposition of this item is {sentiment} because '{evidence}'",
+    "quality": "The build integrity and manufacturing standard is {sentiment} as shown in '{evidence}'",
+    "service": "The customer interaction experience was {sentiment} due to '{evidence}'",
+    "speed": "The performance and response time was {sentiment} based on '{evidence}'",
+    "network": "The connectivity and signal stability was {sentiment} during '{evidence}'",
+}
+
 # Expanded research-grade latent aspect rules with explicit/implicit separation.
 # Format: (label, explicit_keywords, implicit_signals)
 LATENT_ASPECT_RULES = [
@@ -48,7 +57,7 @@ LATENT_ASPECT_RULES = [
     ("connectivity", {"network", "signal", "wifi", "bluetooth", "connection", "data", "internet", "wireless", "pairing"},
                      {"drops", "searching", "disconnected", "spotty", "unstable", "cut out", "no service", "cannot connect", "no bars", "lost connection"}),
     ("thermal", {"temperature", "heat", "thermal", "cooling", "fan", "vent", "airflow"},
-                {"hot", "warm", "cool", "burning", "heats up", "overheating", "ice", "stove", "fire", "toasty"}),
+                {"hot", "warm", "cool", "burning", "heats up", "overheating"}),
     ("performance", {"performance", "speed", "software", "app", "operating system", "os", "hardware", "processor", "engine", "motor"},
                    {"fast", "slow", "lag", "laggy", "responsive", "smooth", "efficient", "powerful", "snappy", "clunky", "freezes", "wait", "stalling"}),
     ("display quality", {"screen", "display", "brightness", "resolution", "monitor", "pixel", "panel", "visuals", "interface"},
@@ -397,34 +406,28 @@ def _parse_structured_prediction(raw: Any) -> tuple[list[dict[str, Any]], list[s
     return parsed, errors
 
 
-def _build_span(aspect: str, clause: str, *, sentiment: str, confidence: float, source: str) -> dict[str, Any]:
-    latent = _latent_aspect_label(aspect, clause)
-    matched_surface, support = _match_aspect_surface(clause, aspect)
-    matched_surface = matched_surface or aspect
-    
-    # Fix 2: Evidence span expansion (clause-level if keyword is too short)
-    token_count = len(tokenize(matched_surface))
-    evidence = clause if token_count < 3 else matched_surface
-    
-    start = clause.lower().find(matched_surface.lower()) if matched_surface else -1
-    return {
-        "aspect": aspect, # Hard cut-over Fix 1
-        "latent_label": latent,
-        "evidence": evidence, # Hard cut-over Fix 1
-        "support_type": support or source,
-        "sentiment": sentiment,
-        "confidence": round(confidence, 4),
-        "start_char": max(start, -1),
-        "end_char": max(start + len(matched_surface), -1) if matched_surface and start >= 0 else -1,
-        "clause": clause,
-        "source": source,
-    }
+def discover_aspects(
+    rows: List[Dict[str, Any]],
+    *,
+    text_column: str,
+    max_aspects: int,
+    implicit_mode: str = "zeroshot",
+    sample_rate: float = 0.2,
+    random_seed: int | None = None,
+) -> list[str]:
+    # Lazy Discovery: Sample the dataset to speed up aspect discovery (Step 3/4)
+    # Statically sufficient for large research benchmarks
+    if len(rows) > 500:
+        import random
+        sample_n = max(1, int(len(rows) * sample_rate))
+        rng = random.Random(random_seed) if random_seed is not None else random
+        sampled_rows = rng.sample(rows, sample_n)
+    else:
+        sampled_rows = rows
 
-
-def discover_aspects(rows: List[Dict[str, Any]], *, text_column: str, max_aspects: int, implicit_mode: str = "zeroshot") -> list[str]:
     mode = _canonical_mode(implicit_mode)
     counts: Counter[str] = Counter()
-    for row in rows:
+    for row in sampled_rows:
         text = normalize_whitespace(row.get(text_column, ""))
         if not text:
             continue
@@ -472,6 +475,7 @@ async def build_implicit_row(
     llm_model_name: str = "llama3",
     high_difficulty: bool = False,
     adversarial_refine: bool = False,
+    bypass_cache: bool = False,
 ) -> Dict[str, Any]:
     from llm_utils import AsyncLlmProvider, reason_implicit_signal_async
 
@@ -527,11 +531,13 @@ async def build_implicit_row(
         # 2. LLM Fallback (Stage C - only if no lexical matches)
         if not clause_matches and enable_llm_fallback and llm_provider:
             llm_fallback_used = True
-            paraphrases = await reason_implicit_signal_async(clause, candidate_aspects, llm_provider, llm_model_name)
+            paraphrases = await reason_implicit_signal_async(clause, candidate_aspects, llm_provider, llm_model_name, bypass_cache=bypass_cache)
+            fallback_branch = "llm_parse"
             for para in paraphrases:
                 for label, e_kws, i_sigs in LATENT_ASPECT_RULES:
                     for kw in sorted(e_kws | i_sigs, key=len, reverse=True):
-                        if kw.lower() in para.lower():
+                        # Require keyword boundaries in paraphrase and grounded support in source clause.
+                        if _keyword_in_text(para, kw) and _keyword_in_text(clause, kw):
                             clause_matches.append({
                                 "latent": label,
                                 "aspect": kw,
@@ -545,6 +551,8 @@ async def build_implicit_row(
                             break
                     if clause_matches: break
                 if clause_matches: break
+            if not clause_matches:
+                llm_parse_errors.append("ungrounded_llm_match")
 
         # Stage D: Validation & Grounding
         for match in clause_matches:
@@ -562,12 +570,14 @@ async def build_implicit_row(
             matched_surface = match["aspect"]
             start = clause.lower().find(matched_surface.lower())
             
-            if start == -1 and match["source"] != "llm":
+            if start == -1:
                 continue 
 
             spans.append({
                 "aspect": matched_surface,
                 "latent_label": latent,
+                "evidence_text": clause,
+                "evidence_span": [int(start), int(start + len(matched_surface))],
                 "sentiment": clause_sentiment,
                 "confidence": match["confidence"],
                 "support_type": match["support_type"],
@@ -592,15 +602,19 @@ async def build_implicit_row(
     max_hardness = max([s["hardness"] for s in spans]) if spans else 0
     final_label_type = "explicit" if any(s["label_type"] == "explicit" for s in spans) else "implicit"
 
-    # Conformal Set Logic (Unconventional)
-    # If top confidence and second confidence are close, both go into the conformal set
+    # Conformal Set Logic (Research-Grade)
+    # Include all aspects whose confidence is within 0.15 of the top candidate
     sorted_conf = sorted(aspect_confidence.items(), key=lambda x: x[1], reverse=True)
-    conformal_set = [it[0] for it in sorted_conf[:3]] if sorted_conf else [] # Top 3 candidates
+    conformal_set = []
+    if sorted_conf:
+        top_val = sorted_conf[0][1]
+        conformal_set = [it[0] for it in sorted_conf if (top_val - it[1]) <= 0.15]
     
-    # Ambiguity Score (Unconventionally continuous)
+    # Ambiguity Score (Continuous entropy-based signal)
     ambiguity_score = 0.0
     if len(sorted_conf) > 1:
-        ambiguity_score = 1.0 - (sorted_conf[0][1] - sorted_conf[1][1])
+        # High ambiguity if the gap between top two is small
+        ambiguity_score = max(0.0, 1.0 - (sorted_conf[0][1] - sorted_conf[1][1]))
     
     # Explicit Pivoting (Unconventional cross-check)
     pivot_confirmed = False
@@ -614,6 +628,14 @@ async def build_implicit_row(
         if any(kw in pivot_text.lower() for kw in explicit_kws):
             pivot_confirmed = True
 
+    review_reason = "none"
+    if not spans or inferred_aspects == ["general"]:
+        review_reason = "fallback_general"
+        if fallback_branch == "none":
+            fallback_branch = "fallback_general"
+    elif ambiguity_score > 0.8:
+        review_reason = "low_confidence"
+
     return {
         "id": row.get("id"),
         "split": row.get("split"),
@@ -623,6 +645,7 @@ async def build_implicit_row(
         "implicit": {
             "mode": mode,
             "processed_text": processed_text,
+            "aspects": inferred_aspects,
             "aspect": inferred_aspects[0] if inferred_aspects else "general", # Canonical aspect
             "conformal_set": conformal_set,
             "ambiguity_score": round(ambiguity_score, 4),
@@ -631,10 +654,13 @@ async def build_implicit_row(
             "aspect_sentiments": {a: Counter(s).most_common(1)[0][0] for a, s in aspect_sentiments.items()},
             "aspect_confidence": aspect_confidence,
             "spans": spans,
-            "needs_review": not spans or inferred_aspects == ["general"] or ambiguity_score > 0.8,
+            "needs_review": review_reason != "none",
             "implicit_ready": True,
             "llm_fallback_used": llm_fallback_used,
             "reasoned_recovery_used": reasoned_recovery_used,
+            "llm_parse_errors": llm_parse_errors,
+            "review_reason": review_reason,
+            "fallback_branch": fallback_branch,
             "label_type": final_label_type,
             "hardness_score": max_hardness,
             "hardness_tier": f"H{max_hardness}",

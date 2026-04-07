@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from contracts import BuilderConfig
 from coref import heuristic_coref
-from evaluation import aspect_metrics, gold_eval
+from evaluation import aspect_metrics, benchmark_gold_eval, gold_eval
 from exporters import write_benchmark_outputs
 from explicit_features import build_explicit_row, fit_explicit_artifacts
 from implicit_pipeline import (
@@ -43,6 +43,7 @@ from utils import (
     write_json,
     write_jsonl,
     compress_dataset_artifacts,
+    read_jsonl,
 )
 
 load_dotenv()
@@ -291,12 +292,16 @@ def _merge_gold_labels(rows: list[dict[str, Any]], annotations: list[dict[str, A
 
 
 def _group_identity(row: dict[str, Any]) -> str:
-    for key in ("product_id", "business_id", "entity_id", "group_id"):
+    # Prefer stable row/review identity to avoid collapsing whole domains into one group.
+    for key in ("review_id", "record_id", "parent_review_id", "product_id", "business_id", "entity_id", "group_id", "id"):
         value = row.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip().lower()
     source = str(row.get("source_file") or "unknown").strip().lower()
     domain = str(row.get("domain") or "unknown").strip().lower()
+    text = normalize_whitespace(str(row.get("source_text") or row.get("review_text") or ""))
+    if text:
+        return stable_id("group-fallback", source, domain, text[:200])
     return f"{source}:{domain}"
 
 
@@ -332,9 +337,9 @@ def _build_gold_interpretations(row: dict[str, Any]) -> list[dict[str, Any]]:
             key = (aspect.lower(), sentiment)
             if key not in collapsed:
                 collapsed[key] = {
-                    "aspect_label": aspect,
+                    "aspect": aspect,
                     "sentiment": sentiment,
-                    "evidence_text": str(label.get("evidence_text") or label.get("evidence") or "").strip(),
+                    "evidence": str(label.get("evidence_text") or label.get("evidence") or "").strip(),
                     "annotator_support": 0,
                     "source": "gold",
                     "label_type": "implicit",
@@ -352,12 +357,38 @@ def _evidence_for_aspect(row: dict[str, Any], aspect: str) -> tuple[str, list[in
     for span in spans:
         latent = str(span.get("latent_label") or span.get("latent_aspect") or span.get("aspect") or "").strip().lower()
         if latent and latent == aspect.lower():
-            text = str(span.get("text") or span.get("snippet") or "").strip()
+            text = str(span.get("evidence_text") or span.get("clause") or span.get("evidence") or "").strip()
             start = int(span.get("start_char", -1) or -1)
             end = int(span.get("end_char", -1) or -1)
             return text, [start, end], False
     source_text = str(row.get("source_text") or "").strip()
     return source_text, [-1, -1], True
+
+
+def _normalize_evidence_text(value: Any) -> str:
+    return normalize_whitespace(str(value or "")).lower()
+
+
+def _dedupe_gold_interpretations(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        aspect = str(item.get("aspect") or item.get("aspect_label") or "").strip()
+        if not aspect:
+            continue
+        sentiment = str(item.get("sentiment") or "neutral").strip().lower()
+        evidence_text = str(item.get("evidence") or item.get("evidence_text") or "").strip()
+        key = (aspect.lower(), sentiment, _normalize_evidence_text(evidence_text))
+        if key not in deduped:
+            deduped[key] = dict(item)
+            deduped[key]["aspect"] = aspect
+            deduped[key]["sentiment"] = sentiment
+            deduped[key]["evidence"] = evidence_text
+            deduped[key]["annotator_support"] = int(item.get("annotator_support", 1) or 1)
+        else:
+            deduped[key]["annotator_support"] = int(deduped[key].get("annotator_support", 1) or 1) + int(item.get("annotator_support", 1) or 1)
+    return list(deduped.values())
 
 
 def _ambiguity_score(row: dict[str, Any], gold_interpretations: list[dict[str, Any]]) -> float:
@@ -1648,11 +1679,23 @@ def _benchmark_protocol_assignments(rows: list[dict[str, Any]], seed: int) -> di
 def _build_benchmark_instances(
     rows: list[dict[str, Any]],
     protocol_assignments: dict[str, dict[str, str]],
+    *,
+    artifact_mode: str = "research_release",
+    debug_row_limit: int | None = None,
+    seed: int = 42,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     benchmark_rows_by_split: dict[str, list[dict[str, Any]]] = {"train": [], "val": [], "test": []}
-    all_rows: list[dict[str, Any]] = []
+    selected_rows = list(rows)
+    if artifact_mode == "debug_artifacts" and debug_row_limit is not None and debug_row_limit > 0 and len(selected_rows) > debug_row_limit:
+        selected_rows = _stable_keep(selected_rows, seed=seed, token="benchmark-debug-cap", limit=debug_row_limit)
 
-    for row in rows:
+    total_interpretations = 0
+    grounded_interpretations = 0
+    duplicate_interpretations_removed = 0
+    thermal_interpretations = 0
+    val_guard_triggered = False
+
+    for row in selected_rows:
         row_id = str(row.get("id") or "")
         split_protocol = protocol_assignments.get(row_id, {})
         random_split = str(split_protocol.get("random") or row.get("split") or "train")
@@ -1664,22 +1707,49 @@ def _build_benchmark_instances(
             implicit = row.get("implicit", {}) or {}
             spans = implicit.get("spans") or []
             for span in spans:
+                latent = str(span.get("latent_label") or span.get("aspect") or "").strip()
+                if not latent:
+                    continue
+                evidence_text = str(span.get("evidence_text") or span.get("clause") or "").strip()
+                if not evidence_text:
+                    continue
                 gold_interpretations.append({
-                    "aspect": str(span.get("latent_label") or span.get("aspect") or ""),
+                    "aspect": latent,
                     "sentiment": str(span.get("sentiment") or "neutral"),
-                    "evidence": str(span.get("aspect") or ""), # The span surface itself
+                    "evidence": evidence_text,
+                    "evidence_span": [int(span.get("start_char", -1) or -1), int(span.get("end_char", -1) or -1)],
                     "annotator_support": 1,
                     "source": str(span.get("source") or "rule"),
                     "label_type": str(span.get("label_type") or "implicit"),
                     "conformal_set": implicit.get("conformal_set", [str(span.get("aspect") or "")]),
                 })
 
+        before_dedupe = len(gold_interpretations)
+        gold_interpretations = _dedupe_gold_interpretations(gold_interpretations)
+        duplicate_interpretations_removed += max(0, before_dedupe - len(gold_interpretations))
+
+        review_text = str(row.get("source_text") or row.get("review_text") or "")
+        review_text_norm = _normalize_evidence_text(review_text)
+        filtered_interpretations: list[dict[str, Any]] = []
+        for interp in gold_interpretations:
+            total_interpretations += 1
+            aspect_value = str(interp.get("aspect") or interp.get("aspect_label") or "").strip().lower()
+            if aspect_value == "thermal":
+                thermal_interpretations += 1
+            evidence = str(interp.get("evidence") or interp.get("evidence_text") or "").strip()
+            if evidence and _normalize_evidence_text(evidence) and _normalize_evidence_text(evidence) in review_text_norm:
+                grounded_interpretations += 1
+                filtered_interpretations.append(interp)
+
+        gold_interpretations = filtered_interpretations
         benchmark_row = {
             "instance_id": row_id,
-            "review_text": str(row.get("source_text") or row.get("review_text") or ""),
+            "review_text": review_text,
             "domain": str(row.get("domain") or "unknown"),
             "group_id": _group_identity(row),
             "gold_interpretations": gold_interpretations,
+            "abstain_acceptable": bool(row.get("abstain_acceptable", False)),
+            "novel_aspect_acceptable": bool(row.get("novel_aspect_acceptable", False)),
             "ambiguity_score": _ambiguity_score(row, gold_interpretations),
             "split_protocol": {
                 "random": random_split,
@@ -1688,16 +1758,46 @@ def _build_benchmark_instances(
             },
         }
         benchmark_rows_by_split.setdefault(random_split, []).append(benchmark_row)
-        all_rows.append({"split": random_split, "group_id": benchmark_row["group_id"]})
 
     all_bench = [r for s in benchmark_rows_by_split.values() for r in s]
+    if all_bench and not benchmark_rows_by_split.get("val"):
+        # Deterministic guardrail: ensure non-empty validation split by moving one row from test/train.
+        donor_split = "test" if benchmark_rows_by_split.get("test") else "train"
+        if benchmark_rows_by_split.get(donor_split):
+            moved = benchmark_rows_by_split[donor_split].pop(0)
+            moved["split_protocol"]["random"] = "val"
+            benchmark_rows_by_split["val"].append(moved)
+            val_guard_triggered = True
+            all_bench = [r for s in benchmark_rows_by_split.values() for r in s]
+
+    leakage_rows = [{"split": split, "group_id": row.get("group_id", "unknown")} for split, rows_split in benchmark_rows_by_split.items() for row in rows_split]
+    split_counts = {split: len(rows_split) for split, rows_split in benchmark_rows_by_split.items()}
     metadata = {
+        "artifact_mode": artifact_mode,
+        "source_rows": len(rows),
+        "selected_rows": len(selected_rows),
+        "export_row_limit": debug_row_limit if artifact_mode == "debug_artifacts" else None,
         "rows": len(all_bench),
+        "split_counts": split_counts,
         "multi_gold_label_rate": round(sum(1 for r in all_bench if len(r["gold_interpretations"]) > 1) / max(1, len(all_bench)), 4),
         "average_gold_interpretations": round(sum(len(r["gold_interpretations"]) for r in all_bench) / max(1, len(all_bench)), 4),
-        "grouped_split_leakage": grouped_leakage_report(all_rows, group_key="group_id"),
+        "grouped_split_leakage": grouped_leakage_report(leakage_rows, group_key="group_id"),
+        "grounded_evidence_rate": round(grounded_interpretations / max(1, total_interpretations), 4),
+        "duplicate_interpretations_removed": int(duplicate_interpretations_removed),
+        "duplicate_interpretation_rate": round(duplicate_interpretations_removed / max(1, total_interpretations), 4),
+        "validation_empty_guard_triggered": bool(val_guard_triggered),
+        "thermal_share": round(thermal_interpretations / max(1, total_interpretations), 4),
     }
     return benchmark_rows_by_split, metadata
+
+
+def _benchmark_artifact_counts(base_dir: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for split in ("train", "val", "test"):
+        path = base_dir / f"{split}.jsonl"
+        counts[split] = len(read_jsonl(path)) if path.exists() else 0
+    counts["total"] = sum(counts[split] for split in ("train", "val", "test"))
+    return counts
 
 
 async def _process_row(
@@ -1716,6 +1816,7 @@ async def _process_row(
     train_domain_support: dict[str, int],
     domain_conditioning_mode: str,
     llm_provider: Any = None,
+    bypass_cache: bool = False,
 ) -> dict[str, Any]:
     idx, row = item
     coref_text = None
@@ -1761,6 +1862,9 @@ async def _process_row(
         domain_support_rows=int(train_domain_support.get(domain, 0)),
         enforce_grounding=cfg.enforce_grounding,
         llm_provider=llm_provider,
+        high_difficulty=cfg.high_difficulty,
+        adversarial_refine=cfg.adversarial_refine,
+        bypass_cache=bypass_cache
     )
 
     return {
@@ -1790,6 +1894,21 @@ def _normalize_run_profile(cfg: BuilderConfig) -> str:
     return profile if profile in {"research", "debug"} else "research"
 
 
+def _normalize_artifact_mode(cfg: BuilderConfig, *, run_profile: str | None = None) -> str:
+    raw = str(getattr(cfg, "artifact_mode", "auto") or "auto").strip().lower()
+    if raw in {"debug_artifacts", "research_release"}:
+        return raw
+    profile = run_profile or _normalize_run_profile(cfg)
+    return "debug_artifacts" if profile == "debug" else "research_release"
+
+
+def _resolve_llm_provider_for_mode(*, llm_provider: str | None, artifact_mode: str) -> str:
+    provider = str(llm_provider or "auto").strip().lower()
+    if provider and provider != "auto":
+        return provider
+    return "mock" if artifact_mode == "debug_artifacts" else "runpod"
+
+
 def _resolve_promotion_eligibility(
     *,
     run_profile: str,
@@ -1812,12 +1931,18 @@ def _resolve_promotion_eligibility(
         and bool(validation.get("strict_h2_h3_ok", True))
         and bool(validation.get("strict_multi_aspect_ok", True))
         and bool(validation.get("strict_challenge_ok", True))
+        and bool(validation.get("benchmark_val_non_empty", True))
+        and bool(validation.get("benchmark_grounded_evidence_ok", True))
+        and bool(validation.get("benchmark_duplicate_rate_ok", True))
+        and bool(validation.get("benchmark_thermal_share_ok", True))
+        and bool(validation.get("benchmark_artifact_counts_match", True))
     )
     return "eligible" if quality_ok else "blocked_quality"
 
 
 async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     run_profile = _normalize_run_profile(cfg)
+    artifact_mode = _normalize_artifact_mode(cfg, run_profile=run_profile)
     sampled_run = (cfg.sample_size is not None) or (cfg.chunk_size is not None)
     if run_profile == "research" and sampled_run:
         raise ValueError(
@@ -1828,8 +1953,25 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     cfg.ensure_dirs()
     progress = _ProgressTracker(enabled=bool(getattr(cfg, "progress", True)), total_steps=10)
     
-    from llm_utils import resolve_async_llm_provider
+    from llm_utils import resolve_async_llm_provider, flush_llm_cache
+    if cfg.no_llm_cache:
+        from implicit_pipeline import flush_llm_cache as flush_implicit_cache
+        flush_implicit_cache()
+        flush_llm_cache()
+
     llm_provider = resolve_async_llm_provider(cfg.llm_provider, model_name=cfg.llm_model_name)
+    
+    # RunPod Connectivity Smoke Test
+    if llm_provider and cfg.no_llm_cache:
+        try:
+            print("\n[!] Performing RunPod Connectivity Smoke Test...")
+            smoke_res = await llm_provider.generate("ping", cfg.llm_model_name, bypass_cache=True)
+            if isinstance(smoke_res, str) and smoke_res.strip().lower().startswith("error:"):
+                raise RuntimeError(smoke_res)
+            print("[+] RunPod Connectivity Verified.")
+        except Exception as e:
+            print(f"[!] Warning: RunPod connectivity probe failed: {e}")
+            print("    Check your RUNPOD_API_KEY and RUNPOD_ENDPOINT_URL.")
     
     frame = load_inputs(cfg.input_dir)
     if frame.empty:
@@ -1870,7 +2012,13 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     train_domain_conditioning_mode, eval_domain_conditioning_mode = _resolve_split_domain_conditioning_modes(cfg)
     train_domain_support = Counter(str(_canonical_domain(str(row.get("source_file", "unknown")))) for row in train_rows)
     
-    candidate_aspects = discover_aspects(train_rows, text_column=text_column, max_aspects=cfg.max_aspects, implicit_mode=cfg.implicit_mode)
+    candidate_aspects = discover_aspects(
+        train_rows,
+        text_column=text_column,
+        max_aspects=cfg.max_aspects,
+        implicit_mode=cfg.implicit_mode,
+        random_seed=cfg.random_seed,
+    )
     candidate_aspects_by_language: dict[str, list[str]] = {}
     candidate_aspects_by_domain: dict[str, list[str]] = {}
     
@@ -1884,13 +2032,13 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         # Parallelize Aspects by Language
         lang_tasks = {
             lang: executor.submit(discover_aspects, [row for row in train_rows if str(row.get("language", "unknown")) == lang], 
-                                  text_column=text_column, max_aspects=cfg.max_aspects, implicit_mode=cfg.implicit_mode)
+                                  text_column=text_column, max_aspects=cfg.max_aspects, implicit_mode=cfg.implicit_mode, random_seed=cfg.random_seed)
             for lang in languages
         }
         # Parallelize Aspects by Domain
         domain_tasks = {
             dom: executor.submit(discover_aspects, [row for row in train_rows if _canonical_domain(str(row.get("source_file", "unknown"))) == dom], 
-                                 text_column=text_column, max_aspects=cfg.max_aspects, implicit_mode=cfg.implicit_mode)
+                                 text_column=text_column, max_aspects=cfg.max_aspects, implicit_mode=cfg.implicit_mode, random_seed=cfg.random_seed)
             for dom in domains
         }
         
@@ -1925,7 +2073,8 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
                         candidate_aspect_domain=candidate_aspects_by_domain if domain_conditioning_mode != "off" else {},
                         train_domain_support=dict(train_domain_support),
                         domain_conditioning_mode=domain_conditioning_mode,
-                        llm_provider=llm_provider
+                        llm_provider=llm_provider,
+                        bypass_cache=cfg.no_llm_cache
                     )
                     results[idx] = res
                 except Exception as e:
@@ -2109,7 +2258,17 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         strict_review_candidates,
         seed=cfg.random_seed,
         token="strict-review-queue",
-        limit=max(0, int(cfg.strict_review_sample_size)),
+        limit=max(
+            0,
+            int(
+                min(
+                    int(cfg.strict_review_sample_size),
+                    int(cfg.debug_benchmark_max_rows),
+                )
+                if artifact_mode == "debug_artifacts"
+                else int(cfg.strict_review_sample_size)
+            ),
+        ),
     )
     strict_challenge_candidates = [
         row for row in (strict_train_export_rows + strict_val_export_rows + strict_test_export_rows)
@@ -2119,7 +2278,20 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         strict_challenge_candidates,
         seed=cfg.random_seed,
         token="strict-challenge",
-        limit=min(len(strict_challenge_candidates), max(1, int(cfg.strict_review_sample_size))),
+        limit=min(
+            len(strict_challenge_candidates),
+            max(
+                1,
+                int(
+                    min(
+                        int(cfg.strict_review_sample_size),
+                        int(cfg.debug_benchmark_max_rows),
+                    )
+                    if artifact_mode == "debug_artifacts"
+                    else int(cfg.strict_review_sample_size)
+                ),
+            ),
+        ),
     )
     train_export_rows = strict_train_export_rows
     train_general_dominance_rate = (
@@ -2175,6 +2347,15 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     )
     grounding = _grounding_metrics(finalized_rows)
     gold_metrics = gold_eval(finalized_rows)
+    benchmark_assignments = _benchmark_protocol_assignments(finalized_rows, seed=cfg.random_seed)
+    benchmark_rows_by_split, benchmark_metadata = _build_benchmark_instances(
+        finalized_rows,
+        benchmark_assignments,
+        artifact_mode=artifact_mode,
+        debug_row_limit=cfg.debug_benchmark_max_rows,
+        seed=cfg.random_seed,
+    )
+    benchmark_gold_metrics = benchmark_gold_eval([row for split_rows in benchmark_rows_by_split.values() for row in split_rows])
     domain_generalization = _domain_generalization(
         finalized_rows,
         evaluation_protocol=cfg.evaluation_protocol,
@@ -2185,13 +2366,12 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         train_domain_support=dict(train_domain_support),
         weak_domain_support_row_threshold=cfg.weak_domain_support_row_threshold,
     )
-    benchmark_assignments = _benchmark_protocol_assignments(finalized_rows, seed=cfg.random_seed)
-    benchmark_rows_by_split, benchmark_metadata = _build_benchmark_instances(finalized_rows, benchmark_assignments)
     report = {
         "pipeline_version": "6.0-v6-only",
         "output_version": cfg.output_version,
         "generated_at": utc_now_iso(),
         "run_profile": run_profile,
+        "artifact_mode": artifact_mode,
         "config": asdict(cfg),
         "schema": asdict(schema),
         "implicit_mode": cfg.implicit_mode,
@@ -2236,6 +2416,8 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         "split_sizes": {"train": len(train_built), "val": len(val_built), "test": len(test_built)},
         "implicit_diagnostics": diagnostics,
         "benchmark_summary": benchmark_metadata,
+        "benchmark_gold_eval": benchmark_gold_metrics,
+        "benchmark_artifact_counts": benchmark_metadata.get("split_counts", {}),
         "output_quality": quality_summary,
         "strict_quality": quality_summary.get("strict_quality", {}),
         "strict_artifacts": {
@@ -2313,6 +2495,11 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             "grouped_split_leakage_ok": int(benchmark_metadata.get("grouped_split_leakage", {}).get("overlap_counts", {}).get("train_val", 0)) == 0
             and int(benchmark_metadata.get("grouped_split_leakage", {}).get("overlap_counts", {}).get("train_test", 0)) == 0
             and int(benchmark_metadata.get("grouped_split_leakage", {}).get("overlap_counts", {}).get("val_test", 0)) == 0,
+            "benchmark_val_non_empty": int(len(benchmark_rows_by_split.get("val", []))) > 0,
+            "benchmark_grounded_evidence_ok": float(benchmark_metadata.get("grounded_evidence_rate", 0.0)) >= 0.98,
+            "benchmark_duplicate_rate_ok": float(benchmark_metadata.get("duplicate_interpretation_rate", 1.0)) <= 0.01,
+            "benchmark_thermal_share_ok": float(benchmark_metadata.get("thermal_share", 1.0)) <= 0.35,
+            "benchmark_artifact_counts_match": True,
         },
     }
     blocking_reasons: list[dict[str, str]] = []
@@ -2349,6 +2536,14 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         blocking_reasons.append({"code": "STRICT_CHALLENGE_TOO_LOW", "message": "Strict challenge metric is below configured floor."})
     if not bool(report["validation"].get("grouped_split_leakage_ok")):
         blocking_reasons.append({"code": "GROUPED_SPLIT_LEAKAGE", "message": "Grouped split leakage detected across benchmark splits."})
+    if not bool(report["validation"].get("benchmark_val_non_empty")):
+        blocking_reasons.append({"code": "BENCHMARK_VAL_EMPTY", "message": "Benchmark validation split is empty."})
+    if not bool(report["validation"].get("benchmark_grounded_evidence_ok")):
+        blocking_reasons.append({"code": "BENCHMARK_EVIDENCE_NOT_GROUNDED", "message": "Benchmark evidence grounding rate is below required threshold."})
+    if not bool(report["validation"].get("benchmark_duplicate_rate_ok")):
+        blocking_reasons.append({"code": "BENCHMARK_DUPLICATE_INTERPRETATIONS", "message": "Benchmark still contains duplicate interpretations."})
+    if not bool(report["validation"].get("benchmark_thermal_share_ok")):
+        blocking_reasons.append({"code": "BENCHMARK_THERMAL_OVERCONCENTRATION", "message": "Thermal aspect share remains over concentrated."})
     report["blocking_reasons"] = blocking_reasons
     report["promotion_eligibility"] = _resolve_promotion_eligibility(
         run_profile=run_profile,
@@ -2376,9 +2571,27 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     progress.step("report assembly")
     if not cfg.dry_run:
         write_benchmark_outputs(cfg.benchmark_dir, benchmark_rows_by_split, benchmark_metadata)
+        benchmark_artifact_counts = _benchmark_artifact_counts(cfg.benchmark_dir)
+        benchmark_report_counts = dict(benchmark_metadata.get("split_counts", {}))
+        benchmark_report_counts["total"] = int(benchmark_metadata.get("rows", 0))
+        benchmark_artifact_counts_match = benchmark_artifact_counts == benchmark_report_counts
+        report["benchmark_artifact_counts"] = benchmark_artifact_counts
+        report["validation"]["benchmark_artifact_counts_match"] = benchmark_artifact_counts_match
+        if not benchmark_artifact_counts_match:
+            report["blocking_reasons"] = report.get("blocking_reasons", [])
+            report["blocking_reasons"].append({
+                "code": "BENCHMARK_ARTIFACT_COUNT_MISMATCH",
+                "message": "Written benchmark JSONL counts do not match report metadata.",
+            })
+        report["promotion_eligibility"] = _resolve_promotion_eligibility(
+            run_profile=run_profile,
+            sampled=sampled_run,
+            validation=report["validation"],
+        )
         write_json(cfg.reports_dir / "build_report.json", report)
         write_json(cfg.reports_dir / "data_quality_report.json", {
             "run_profile": run_profile,
+            "artifact_mode": artifact_mode,
             "rows_in": len(frame),
             "rows_out": len(prepared),
             "text_column": text_column,
@@ -2394,6 +2607,9 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
             "research": report["research"],
             "output_quality": quality_summary,
             "benchmark_summary": benchmark_metadata,
+            "benchmark_artifact_counts": benchmark_artifact_counts,
+            "benchmark_report_counts": benchmark_report_counts,
+            "benchmark_artifact_counts_match": benchmark_artifact_counts_match,
             "strict_quality": report.get("strict_quality", {}),
             "strict_artifacts": report.get("strict_artifacts", {}),
             "train_salvage_stats": train_salvage_stats,
@@ -2451,7 +2667,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chunk-size", type=int, default=None)
     parser.add_argument("--chunk-offset", type=int, default=0)
     parser.add_argument("--run-profile", type=str, default="research", choices=["research", "debug"])
-    parser.add_argument("--llm-provider", type=str, default=str(runtime_defaults.get("llm_provider", "openai")), choices=["openai", "runpod", "ollama", "mock"])
+    parser.add_argument("--artifact-mode", type=str, default="auto", choices=["auto", "debug_artifacts", "research_release"])
+    parser.add_argument("--debug-benchmark-max-rows", type=int, default=180)
+    parser.add_argument("--llm-provider", type=str, default="auto", choices=["auto", "openai", "runpod", "ollama", "mock"])
     parser.add_argument("--llm-model-name", type=str, default=str(runtime_defaults.get("llm_model_name", "gpt-4o-mini")))
     parser.add_argument("--enable-reasoned-recovery", dest="enable_reasoned_recovery", action="store_true")
     parser.add_argument("--no-enable-reasoned-recovery", dest="enable_reasoned_recovery", action="store_false")
@@ -2544,6 +2762,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--preview", action="store_true")
     parser.add_argument("--zip-only", action="store_true", help="Skip dataset build and only zip existing benchmark/report artifacts")
+    parser.add_argument("--no-llm-cache", "--no-cache-llm", dest="no_llm_cache", action="store_true", help="Bypass and clear the LLM response cache for this run.")
+    parser.set_defaults(no_llm_cache=False)
     return parser
 
 
@@ -2558,6 +2778,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print("No dataset artifacts found to archive.")
         return 1
+
+    artifact_mode = str(args.artifact_mode or "auto").strip().lower()
+    if artifact_mode == "auto":
+        artifact_mode = "debug_artifacts" if str(args.run_profile).strip().lower() == "debug" else "research_release"
+    llm_provider = _resolve_llm_provider_for_mode(llm_provider=args.llm_provider, artifact_mode=artifact_mode)
 
     domain_conditioning_mode = str(args.domain_conditioning_mode or "").strip().lower()
     if not args.use_domain_conditioning:
@@ -2586,6 +2811,8 @@ def main(argv: list[str] | None = None) -> int:
         chunk_size=args.chunk_size,
         chunk_offset=args.chunk_offset,
         run_profile=args.run_profile,
+        artifact_mode=artifact_mode,
+        debug_benchmark_max_rows=args.debug_benchmark_max_rows,
         dry_run=args.dry_run or args.preview,
         preview_only=args.preview,
         confidence_threshold=args.confidence_threshold,
@@ -2649,12 +2876,13 @@ def main(argv: list[str] | None = None) -> int:
         strict_h2_h3_ratio_min=args.strict_h2_h3_ratio_min,
         strict_multi_aspect_ratio_min=args.strict_multi_aspect_ratio_min,
         strict_challenge_macro_f1_min=args.strict_challenge_macro_f1_min,
-        llm_provider=args.llm_provider,
+        llm_provider=llm_provider,
         llm_model_name=args.llm_model_name,
         enable_reasoned_recovery=args.enable_reasoned_recovery,
         max_workers=args.max_workers,
         high_difficulty=args.high_difficulty,
         adversarial_refine=args.adversarial_refine,
+        no_llm_cache=args.no_llm_cache,
     )
     import asyncio
     report = asyncio.run(run_pipeline(cfg))

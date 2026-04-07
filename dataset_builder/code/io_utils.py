@@ -5,6 +5,8 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import pandas as pd
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 
 
 SUPPORTED_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl", ".xlsx", ".xls", ".xml"}
@@ -64,30 +66,66 @@ _REVIEW_COLUMN_ALIASES = [
 
 
 def _normalize_review_columns(frame: pd.DataFrame) -> pd.DataFrame:
-    if "review" in frame.columns:
-        return frame
+    # We copy the frame to ensure a separate object for every process.
+    frame = frame.copy()
     for alias in _REVIEW_COLUMN_ALIASES:
-        if alias in frame.columns:
-            # Keep source schema intact for text_column_override compatibility.
-            frame = frame.copy()
-            frame["review"] = frame[alias]
-            return frame
+        if alias in frame.columns and "text" not in frame.columns:
+            frame["text"] = frame[alias]
+            break
+    # Default column name for the primary review text
+    if "text" not in frame.columns and not frame.empty:
+        # Fallback to the first object-type column if no alias matches
+        object_cols = frame.select_dtypes(include=["object", "string"]).columns
+        if len(object_cols) > 0:
+            frame["text"] = frame[object_cols[0]]
+            
+    # Ensure source_text is also populated as it's used in some downstream logic
+    if "text" in frame.columns:
+        frame["source_text"] = frame["text"]
     return frame
 
 
+def _load_and_normalize(path: Path) -> pd.DataFrame:
+    # This helper must be at module level for ProcessPoolExecutor to pickle it.
+    try:
+        frame = load_file(path)
+        if not frame.empty:
+            return _normalize_review_columns(frame)
+        return frame
+    except Exception as e:
+        print(f"[!] Error loading {path.name}: {e}")
+        return pd.DataFrame()
+
+
 def load_inputs(input_dir: Path) -> pd.DataFrame:
-    frames = []
     if not input_dir.exists():
         return pd.DataFrame()
-    for path in sorted(input_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES:
-            frame = load_file(path)
-            if not frame.empty:
-                frame = _normalize_review_columns(frame)
-                frames.append(frame)
-    if not frames:
+        
+    files = [
+        path for path in sorted(input_dir.iterdir())
+        if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
+    ]
+    
+    if not files:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True, sort=False)
+
+    # Use multiprocessing only for multiple files to avoid overhead
+    if len(files) > 2:
+        # We use a reasonable worker count to avoid over-saturating the user's "slow" system
+        num_workers = min(len(files), multiprocessing.cpu_count())
+        try:
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                frames = list(executor.map(_load_and_normalize, files))
+        except Exception as e:
+            print(f"[!] Parallel input loading failed, falling back to serial mode: {e}")
+            frames = [_load_and_normalize(f) for f in files]
+    else:
+        frames = [_load_and_normalize(f) for f in files]
+        
+    valid_frames = [f for f in frames if not f.empty]
+    if not valid_frames:
+        return pd.DataFrame()
+    return pd.concat(valid_frames, ignore_index=True, sort=False)
 
 
 def load_gold_annotations(path: Path) -> list[dict]:

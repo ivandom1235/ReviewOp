@@ -22,6 +22,8 @@ class BuilderConfig:
     dry_run: bool = False
     preview_only: bool = False
     run_profile: str = "research"
+    artifact_mode: str = "auto"
+    debug_benchmark_max_rows: int = 180
     confidence_threshold: float = 0.6
     max_aspects: int = 20
     min_text_tokens: int = 4
@@ -96,6 +98,7 @@ class BuilderConfig:
     strict_multi_aspect_ratio_min: float = 0.12
     strict_challenge_macro_f1_min: float = 0.5
     max_workers: int = 10
+    no_llm_cache: bool = False
 
     @property
     def explicit_dir(self) -> Path:

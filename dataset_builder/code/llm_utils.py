@@ -95,8 +95,18 @@ class AsyncRunPodProvider(AsyncLlmProvider):
         } if self.api_key else {}
 
     async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
+        # Late-bind the endpoint and key to ensure .env updates reflect in long-running processes
+        self.api_key = self.api_key or os.environ.get("RUNPOD_API_KEY")
+        self.base_url = self.base_url or os.environ.get("RUNPOD_ENDPOINT_URL")
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        } if self.api_key else {}
+        
         if not self.api_key or not self.base_url:
             raise ValueError("RunPod API key and Endpoint URL are required")
+
+        bypass = kwargs.pop("bypass_cache", False)
         data = {
             "input": {
                 "prompt": prompt,
@@ -104,9 +114,22 @@ class AsyncRunPodProvider(AsyncLlmProvider):
                 **kwargs
             }
         }
+        cache_key = hashlib.md5(f"runpod:{model_name}:{prompt}".encode("utf-8")).hexdigest()
+        cached_val = GLOBAL_LLM_CACHE.get(cache_key, bypass=bypass)
+        if cached_val:
+            return cached_val
+
+
+        # Ensure we use the synchronous endpoint for immediate response
+        base_url = self.base_url
+        if base_url.endswith("/run"):
+            base_url = base_url.replace("/run", "/runsync")
+        elif not base_url.endswith("/runsync"):
+            base_url = base_url.rstrip("/") + "/runsync"
+
         async with httpx.AsyncClient(timeout=300.0) as client:
             try:
-                res = await client.post(self.base_url, json=data, headers=self.headers)
+                res = await client.post(base_url, json=data, headers=self.headers)
                 res.raise_for_status()
                 result = res.json()
                 # RunPod Serverless standard return is {"output": ..., "id": ..., "status": ...}
@@ -118,6 +141,7 @@ class AsyncRunPodProvider(AsyncLlmProvider):
                     return json.dumps(output)
                 return json.dumps(result)
             except Exception as e:
+                print(f"\n[!] LLM API Call Failed: {str(e)}")
                 return f"Error: {str(e)}"
 
 class AsyncOpenAiProvider(AsyncLlmProvider):
@@ -176,7 +200,9 @@ class PersistentCache:
             except (json.JSONDecodeError, IOError):
                 self._data = {}
 
-    def get(self, key: str) -> Optional[str]:
+    def get(self, key: str, bypass: bool = False) -> Optional[str]:
+        if bypass:
+            return None
         # Lock-free fast path for reads (Python dict access is thread-safe due to the GIL)
         return self._data.get(key)
 
@@ -292,7 +318,7 @@ Explicit version:"""
         return [text]
 
 
-async def reason_implicit_signal_async(text: str, candidate_aspects: List[str], provider: AsyncLlmProvider, model_name: str) -> List[str]:
+async def reason_implicit_signal_async(text: str, candidate_aspects: List[str], provider: AsyncLlmProvider, model_name: str, bypass_cache: bool = False) -> List[str]:
     prompt = f"""Given the following review segment: "{text}"
 Rephrase it such that any implicit aspects from this list: {candidate_aspects} become explicit.
 If the segment does not imply any of these aspects, return the original text.
@@ -301,12 +327,12 @@ Review segment: {text}
 Explicit version:"""
     
     cache_key = hashlib.md5(f"async:{model_name}:{prompt}".encode("utf-8")).hexdigest()
-    cached_val = GLOBAL_LLM_CACHE.get(cache_key)
+    cached_val = GLOBAL_LLM_CACHE.get(cache_key, bypass=bypass_cache)
     if cached_val:
         return [cached_val]
 
     try:
-        paraphrase = await provider.generate(prompt, model_name, temperature=0.2)
+        paraphrase = await provider.generate(prompt, model_name, temperature=0.2, bypass_cache=bypass_cache)
         result = paraphrase.strip()
         GLOBAL_LLM_CACHE.set(cache_key, result)
         return [result]
