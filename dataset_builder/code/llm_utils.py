@@ -9,6 +9,14 @@ import httpx
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+
+def _env_value(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
+
 class LlmProvider(ABC):
     @abstractmethod
     def generate(self, prompt: str, model_name: str, **kwargs) -> str:
@@ -16,8 +24,8 @@ class LlmProvider(ABC):
 
 class RunPodProvider(LlmProvider):
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        self.api_key = api_key or os.environ.get("RUNPOD_API_KEY")
-        self.base_url = base_url or os.environ.get("RUNPOD_ENDPOINT_URL")
+        self.api_key = api_key or _env_value("REVIEWOP_RUNPOD_API_KEY", "RUNPOD_API_KEY")
+        self.base_url = base_url or _env_value("REVIEWOP_RUNPOD_ENDPOINT_URL", "RUNPOD_ENDPOINT_URL")
         self.session = requests.Session()
         if self.api_key:
             self.session.headers.update({
@@ -60,6 +68,34 @@ class OpenAiProvider(LlmProvider):
         res.raise_for_status()
         return res.json()["choices"][0]["message"]["content"]
 
+class ClaudeProvider(LlmProvider):
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        self.api_key = api_key or _env_value("REVIEWOP_CLAUDE_API_KEY", "CLAUDE_API_KEY")
+        self.base_url = base_url or _env_value("REVIEWOP_CLAUDE_BASE_URL", "CLAUDE_BASE_URL", default="https://api.anthropic.com/v1")
+        self.session = requests.Session()
+        if self.api_key:
+            self.session.headers.update(
+                {
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                }
+            )
+
+    def generate(self, prompt: str, model_name: str, **kwargs) -> str:
+        payload = {
+            "model": model_name,
+            "max_tokens": int(kwargs.pop("max_tokens", 1024)),
+            "messages": [{"role": "user", "content": prompt}],
+            **kwargs,
+        }
+        res = self.session.post(f"{self.base_url}/messages", json=payload)
+        res.raise_for_status()
+        content = res.json().get("content", [])
+        if isinstance(content, list):
+            return "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+        return str(content)
+
 class OllamaProvider(LlmProvider):
     def __init__(self, base_url: str | None = None):
         self.base_url = base_url or "http://localhost:11434"
@@ -87,8 +123,8 @@ class AsyncLlmProvider(ABC):
 
 class AsyncRunPodProvider(AsyncLlmProvider):
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        self.api_key = api_key or os.environ.get("RUNPOD_API_KEY")
-        self.base_url = base_url or os.environ.get("RUNPOD_ENDPOINT_URL")
+        self.api_key = api_key or _env_value("REVIEWOP_RUNPOD_API_KEY", "RUNPOD_API_KEY")
+        self.base_url = base_url or _env_value("REVIEWOP_RUNPOD_ENDPOINT_URL", "RUNPOD_ENDPOINT_URL")
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -96,8 +132,8 @@ class AsyncRunPodProvider(AsyncLlmProvider):
 
     async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
         # Late-bind the endpoint and key to ensure .env updates reflect in long-running processes
-        self.api_key = self.api_key or os.environ.get("RUNPOD_API_KEY")
-        self.base_url = self.base_url or os.environ.get("RUNPOD_ENDPOINT_URL")
+        self.api_key = self.api_key or _env_value("REVIEWOP_RUNPOD_API_KEY", "RUNPOD_API_KEY")
+        self.base_url = self.base_url or _env_value("REVIEWOP_RUNPOD_ENDPOINT_URL", "RUNPOD_ENDPOINT_URL")
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -128,21 +164,17 @@ class AsyncRunPodProvider(AsyncLlmProvider):
             base_url = base_url.rstrip("/") + "/runsync"
 
         async with httpx.AsyncClient(timeout=300.0) as client:
-            try:
-                res = await client.post(base_url, json=data, headers=self.headers)
-                res.raise_for_status()
-                result = res.json()
-                # RunPod Serverless standard return is {"output": ..., "id": ..., "status": ...}
-                if isinstance(result, dict) and "output" in result:
-                    output = result["output"]
-                    # vLLM/Flash usually returns a string or a dict depending on the template
-                    if isinstance(output, str):
-                        return output
-                    return json.dumps(output)
-                return json.dumps(result)
-            except Exception as e:
-                print(f"\n[!] LLM API Call Failed: {str(e)}")
-                return f"Error: {str(e)}"
+            res = await client.post(base_url, json=data, headers=self.headers)
+            res.raise_for_status()
+            result = res.json()
+            # RunPod Serverless standard return is {"output": ..., "id": ..., "status": ...}
+            if isinstance(result, dict) and "output" in result:
+                output = result["output"]
+                # vLLM/Flash usually returns a string or a dict depending on the template
+                if isinstance(output, str):
+                    return output
+                return json.dumps(output)
+            return json.dumps(result)
 
 class AsyncOpenAiProvider(AsyncLlmProvider):
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
@@ -160,6 +192,35 @@ class AsyncOpenAiProvider(AsyncLlmProvider):
             res = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=self.headers)
             res.raise_for_status()
             return res.json()["choices"][0]["message"]["content"]
+
+class AsyncClaudeProvider(AsyncLlmProvider):
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        self.api_key = api_key or _env_value("REVIEWOP_CLAUDE_API_KEY", "CLAUDE_API_KEY")
+        self.base_url = base_url or _env_value("REVIEWOP_CLAUDE_BASE_URL", "CLAUDE_BASE_URL", default="https://api.anthropic.com/v1")
+        self.headers = (
+            {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+            if self.api_key
+            else {}
+        )
+
+    async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
+        payload = {
+            "model": model_name,
+            "max_tokens": int(kwargs.pop("max_tokens", 1024)),
+            "messages": [{"role": "user", "content": prompt}],
+            **kwargs,
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            res = await client.post(f"{self.base_url}/messages", json=payload, headers=self.headers)
+            res.raise_for_status()
+            content = res.json().get("content", [])
+            if isinstance(content, list):
+                return "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+            return str(content)
 
 class AsyncOllamaProvider(AsyncLlmProvider):
     def __init__(self, base_url: str | None = None):
@@ -243,6 +304,8 @@ def get_provider(provider_type: str, api_key: str | None = None, base_url: str |
         return RunPodProvider(api_key, base_url)
     elif provider_key == "openai":
         return OpenAiProvider(api_key, base_url)
+    elif provider_key in {"claude", "anthropic"}:
+        return ClaudeProvider(api_key, base_url)
     elif provider_key == "ollama":
         return OllamaProvider(base_url)
     elif provider_key == "mock":
@@ -257,6 +320,8 @@ def get_async_provider(provider_type: str, api_key: str | None = None, base_url:
         return AsyncRunPodProvider(api_key, base_url)
     elif provider_key == "openai":
         return AsyncOpenAiProvider(api_key, base_url)
+    elif provider_key in {"claude", "anthropic"}:
+        return AsyncClaudeProvider(api_key, base_url)
     elif provider_key == "ollama":
         return AsyncOllamaProvider(base_url)
     elif provider_key == "mock":
@@ -283,13 +348,26 @@ def resolve_async_llm_provider(provider_name: str | None, model_name: str | None
     return get_async_provider(provider_key)
 
 
+def resolve_processor_async_provider(processor_name: str | None, model_name: str | None = None) -> AsyncLlmProvider | None:
+    processor_key = str(processor_name or "local").strip().lower()
+    if processor_key in {"", "none", "local"}:
+        return None
+    if processor_key == "runpod":
+        return resolve_async_llm_provider("runpod", model_name=model_name)
+    raise ValueError(f"Unsupported processor: {processor_name}")
+
+
 def discover_best_provider() -> Tuple[str, Optional[str], Optional[str]]:
-    runpod_key = os.environ.get("RUNPOD_API_KEY")
-    runpod_url = os.environ.get("RUNPOD_ENDPOINT_URL")
+    runpod_key = _env_value("REVIEWOP_RUNPOD_API_KEY", "RUNPOD_API_KEY")
+    runpod_url = _env_value("REVIEWOP_RUNPOD_ENDPOINT_URL", "RUNPOD_ENDPOINT_URL")
     if runpod_key and runpod_url:
         return "runpod", runpod_key, runpod_url
     
-    openai_key = os.environ.get("OPENAI_API_KEY")
+    claude_key = _env_value("REVIEWOP_CLAUDE_API_KEY", "CLAUDE_API_KEY")
+    if claude_key:
+        return "claude", claude_key, _env_value("REVIEWOP_CLAUDE_BASE_URL", "CLAUDE_BASE_URL", default="https://api.anthropic.com/v1")
+
+    openai_key = _env_value("OPENAI_API_KEY")
     if openai_key:
         return "openai", openai_key, None
     

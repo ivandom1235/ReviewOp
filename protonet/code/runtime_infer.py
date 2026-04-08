@@ -121,9 +121,21 @@ class ProtonetRuntime:
     def load(cls, bundle_path: str | Path) -> "ProtonetRuntime":
         payload = torch.load(Path(bundle_path), map_location="cpu")
         cfg = _build_config(payload["config"])
+        encoder_info = dict(payload.get("encoder") or {})
+        encoder_backend = str(encoder_info.get("backend") or cfg.encoder_backend or "auto").strip().lower()
+        if encoder_backend in {"bow", "transformer"}:
+            cfg.encoder_backend = encoder_backend
+        if encoder_backend == "bow":
+            hidden_size = int(encoder_info.get("hidden_size") or cfg.bow_dim)
+            cfg.bow_dim = hidden_size
         encoder = HybridTextEncoder(cfg)
-        projection = ProjectionHead(encoder.hidden_size, int(cfg.projection_dim), float(cfg.dropout))
-        projection.load_state_dict(payload["projection_state_dict"])
+        projection_state = payload["projection_state_dict"]
+        first_weight = projection_state.get("layers.0.weight")
+        last_weight = projection_state.get("layers.4.weight")
+        projection_input_dim = int(first_weight.shape[1]) if hasattr(first_weight, "shape") else encoder.hidden_size
+        projection_output_dim = int(last_weight.shape[0]) if hasattr(last_weight, "shape") else int(cfg.projection_dim)
+        projection = ProjectionHead(projection_input_dim, projection_output_dim, float(cfg.dropout))
+        projection.load_state_dict(projection_state)
         if "encoder_state" in payload:
             encoder_state = payload["encoder_state"]
             if "state_dict" in encoder_state and encoder.model is not None:
@@ -196,7 +208,9 @@ class ProtonetRuntime:
         if rows:
             distance_sq = float(rows[0].get("min_distance_sq", 0.0))
             distance_novelty = max(0.0, min(1.0, distance_sq / (distance_sq + 1.0)))
-        novelty = max(0.0, min(1.0, distance_novelty))
+        energy_raw = float(rows[0].get("energy", 0.0)) if rows else 0.0
+        energy_score = max(0.0, min(1.0, (energy_raw + 5.0) / 10.0))
+        novelty = max(0.0, min(1.0, 0.45 * distance_novelty + 0.25 * ambiguity + 0.20 * energy_score))
         evidence_quality = 1.0 if evidence_text.strip() else 0.0
         selective_conf = (
             self.cfg.selective_alpha * p1
@@ -265,9 +279,10 @@ class ProtonetRuntime:
                 row["novel_alias"] = alias
         else:
             for row in accepted:
-                row["routing"] = "known"
+                row["routing"] = "boundary" if decision_band == "boundary" else "known"
 
         return {
+            "routing": "novel" if decision_band == "novel" else ("boundary" if decision_band == "boundary" else "known"),
             "decision": decision,
             "abstain": decision == "abstain",
             "decision_band": decision_band,
@@ -275,6 +290,11 @@ class ProtonetRuntime:
             "ambiguity_score": float(ambiguity),
             "novelty_score": float(novelty),
             "novelty_thresholds": {"T_known": t_known, "T_novel": t_novel},
+            "novelty_decomposition": {
+                "distance_score": float(distance_novelty),
+                "ambiguity_score": float(ambiguity),
+                "energy_score": float(energy_score),
+            },
             "accepted_predictions": accepted,
             "abstained_predictions": abstained_predictions,
             "novel_candidates": novel_candidates,

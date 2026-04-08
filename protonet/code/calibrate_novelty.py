@@ -56,11 +56,24 @@ def calibrate_thresholds(rows: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     truth = np.asarray([1 if bool(row.get("novel_acceptable", False)) else 0 for row in rows], dtype=int)
+    has_known = bool(np.any(truth == 0))
+    has_novel = bool(np.any(truth == 1))
+    if not has_known or not has_novel:
+        return {
+            "version": "v2",
+            "scorer": "distance_ambiguity_energy",
+            "thresholds": {"T_known": 0.35, "T_novel": 0.65},
+            "best_open_set_f1": 0.0,
+            "validation_snapshot_hash": _snapshot_hash(rows),
+            "sweep": [],
+            "warning": "Calibration skipped: validation must contain both known and novel positives.",
+            "not_applicable": True,
+        }
     scores = np.asarray([float(row.get("novelty_score", 0.0)) for row in rows], dtype=float)
 
     candidate_thresholds = np.linspace(0.05, 0.95, 19)
     sweep: list[dict[str, float]] = []
-    best = {"f1": -1.0, "T_known": 0.35, "T_novel": 0.65}
+    best = {"objective": -1.0, "f1": -1.0, "T_known": 0.35, "T_novel": 0.65}
     for t_known in candidate_thresholds:
         for t_novel in candidate_thresholds:
             if float(t_known) >= float(t_novel):
@@ -78,23 +91,36 @@ def calibrate_thresholds(rows: list[dict[str, Any]]) -> dict[str, Any]:
             fn = sum(1 for pred, gold in zip(preds, truth) if pred != 1 and gold == 1)
             f1 = _f1(tp, fp, fn)
             abstain_rate = sum(1 for pred in preds if pred == -1) / max(1, len(preds))
+            boundary_rows = [rows[idx] for idx, pred in enumerate(preds) if pred == -1]
+            boundary_abstain_quality = float(
+                np.mean([1.0 if bool(row.get("abstain_acceptable", False)) else 0.0 for row in boundary_rows])
+            ) if boundary_rows else 0.0
+            known_tp = sum(1 for pred, gold in zip(preds, truth) if pred == 0 and gold == 0)
+            known_fn = sum(1 for pred, gold in zip(preds, truth) if pred != 0 and gold == 0)
+            known_recall = known_tp / max(1, known_tp + known_fn)
+            objective = 0.5 * float(f1) + 0.3 * float(boundary_abstain_quality) + 0.2 * float(known_recall)
             scorecard = {
                 "T_known": float(t_known),
                 "T_novel": float(t_novel),
                 "novel_f1": float(f1),
+                "boundary_abstain_quality": float(boundary_abstain_quality),
+                "known_recall": float(known_recall),
+                "objective": float(objective),
                 "abstain_rate": float(round(abstain_rate, 4)),
             }
             sweep.append(scorecard)
-            if f1 > best["f1"]:
-                best = {"f1": float(f1), "T_known": float(t_known), "T_novel": float(t_novel)}
+            if objective > best["objective"]:
+                best = {"objective": float(objective), "f1": float(f1), "T_known": float(t_known), "T_novel": float(t_novel)}
 
     return {
         "version": "v2",
-        "scorer": "distance_energy",
+        "scorer": "distance_ambiguity_energy",
         "thresholds": {"T_known": float(best["T_known"]), "T_novel": float(best["T_novel"])},
         "best_open_set_f1": float(max(0.0, best["f1"])),
+        "best_objective": float(max(0.0, best["objective"])),
         "validation_snapshot_hash": _snapshot_hash(rows),
         "sweep": sweep,
+        "not_applicable": False,
     }
 
 

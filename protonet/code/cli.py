@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 
@@ -22,6 +23,14 @@ except ImportError:
     from model import ProtoNetModel
     from trainer import load_checkpoint, train_model
     from calibrate_novelty import calibrate_thresholds
+
+
+def _env_value(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
 
 
 def _build_config(args: argparse.Namespace) -> ProtonetConfig:
@@ -77,7 +86,15 @@ def _prepare_examples(cfg: ProtonetConfig):
     return rows_by_split, summary
 
 
-def run_train(args: argparse.Namespace) -> int:
+def namespace_from_payload(command: str, payload: dict[str, object]) -> argparse.Namespace:
+    parser = build_parser()
+    defaults = parser.parse_args([command])
+    for key, value in payload.items():
+        setattr(defaults, key, value)
+    return defaults
+
+
+def run_train_local(args: argparse.Namespace) -> dict[str, object]:
     cfg = _build_config(args)
     cfg.ensure_dirs()
     seed_everything(cfg.seed)
@@ -125,11 +142,10 @@ def run_train(args: argparse.Namespace) -> int:
         history=result.history,
         novelty_calibration=novelty_calibration,
     )
-    print(f"Training complete. Report: {report_path}")
-    return 0
+    return {"report_path": str(report_path), "bundle_path": str(bundle_path), "checkpoint_path": str(result.checkpoint_path)}
 
 
-def run_eval(args: argparse.Namespace) -> int:
+def run_eval_local(args: argparse.Namespace) -> dict[str, object]:
     cfg = _build_config(args)
     cfg.ensure_dirs()
     seed_everything(cfg.seed)
@@ -141,7 +157,19 @@ def run_eval(args: argparse.Namespace) -> int:
     split = args.split
     metrics, predictions = evaluate_episodes(model, episodes_by_split[split], cfg, split)
     write_jsonl(cfg.predictions_dir / f"{split}_predictions.jsonl", predictions)
-    print(metrics)
+    return {"metrics": metrics, "prediction_count": len(predictions), "checkpoint_path": str(checkpoint_path)}
+
+
+def run_train(args: argparse.Namespace) -> int:
+    payload = run_train_local(args)
+    report_path = payload.get("report_path", "<unknown>")
+    print(f"Training complete. Report: {report_path}")
+    return 0
+
+
+def run_eval(args: argparse.Namespace) -> int:
+    payload = run_eval_local(args)
+    print(payload.get("metrics", payload))
     return 0
 
 
@@ -180,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--output-dir", type=str, default=None)
     common.add_argument("--metadata-dir", type=str, default=None)
     common.add_argument("--encoder-backend", choices=["auto", "transformer", "bow"], default="auto")
-    common.add_argument("--encoder-model-name", type=str, default="microsoft/deberta-v3-base")
+    common.add_argument("--encoder-model-name", type=str, default=_env_value("REVIEWOP_PROTONET_ENCODER_MODEL", "PROTONET_ENCODER_MODEL", default="microsoft/deberta-v3-base") or "microsoft/deberta-v3-base")
     common.add_argument("--n-way", type=int, default=3)
     common.add_argument("--k-shot", type=int, default=2)
     common.add_argument("--q-query", type=int, default=2)

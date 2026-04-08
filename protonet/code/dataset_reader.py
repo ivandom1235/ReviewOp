@@ -31,6 +31,22 @@ def _normalize_sentiment(value: Any, fallback: str = "neutral") -> str:
     return sentiment or fallback
 
 
+def _normalize_evidence_span(evidence_span: Any, review_text: str, evidence_text: str) -> tuple[list[int], bool]:
+    if isinstance(evidence_span, list) and len(evidence_span) == 2:
+        try:
+            start = int(evidence_span[0] if evidence_span[0] is not None else -1)
+            end = int(evidence_span[1] if evidence_span[1] is not None else -1)
+            if 0 <= start <= end <= len(review_text):
+                return [start, end], False
+        except (TypeError, ValueError):
+            pass
+    if evidence_text and review_text:
+        start = review_text.lower().find(evidence_text.lower())
+        if start >= 0:
+            return [int(start), int(start + len(evidence_text))], True
+    return [-1, -1], True
+
+
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
@@ -87,11 +103,9 @@ def _label_from_interpretation(
 ) -> Dict[str, Any]:
     sentiment = _normalize_sentiment(interp.get("sentiment"))
     evidence_text = str(interp.get("evidence_text") or "").strip()
-    evidence_span = interp.get("evidence_span")
-    if not (isinstance(evidence_span, list) and len(evidence_span) == 2):
-        evidence_span = [-1, -1]
     if not evidence_text:
         evidence_text = review_text
+    evidence_span, evidence_fallback_used = _normalize_evidence_span(interp.get("evidence_span"), review_text, evidence_text)
     return {
         "example_id": f"{instance_id}_g{idx}",
         "parent_review_id": instance_id,
@@ -99,8 +113,12 @@ def _label_from_interpretation(
         "evidence_sentence": evidence_text,
         "evidence_text": evidence_text,
         "evidence_span": evidence_span,
-        "evidence_fallback_used": evidence_span == [-1, -1],
+        "evidence_fallback_used": evidence_fallback_used or evidence_span == [-1, -1],
         "domain": domain,
+        "domain_family": str(interp.get("domain_family") or ""),
+        "group_id": str(interp.get("group_id") or ""),
+        "hardness_tier": str(interp.get("hardness_tier") or "H0"),
+        "annotation_source": str(interp.get("annotation_source") or "unknown"),
         "aspect": str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip(),
         "implicit_aspect": str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip(),
         "sentiment": sentiment,
@@ -123,6 +141,9 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> str:
     if not rows:
         raise ValueError(f"No benchmark rows found for split {split}")
     expanded: List[Dict[str, Any]] = []
+    evidence_fallback_counter = 0
+    novel_counter = 0
+    abstain_counter = 0
     for index, row in enumerate(rows):
         instance_id = str(row.get("instance_id") or "").strip()
         review_text = str(row.get("review_text") or "").strip()
@@ -141,6 +162,14 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> str:
         novel_cluster_id = str(row.get("novel_cluster_id") or "").strip() or None
         novel_alias = str(row.get("novel_alias") or "").strip() or None
         novel_evidence_text = str(row.get("novel_evidence_text") or "").strip() or None
+        group_id = str(row.get("group_id") or "").strip()
+        domain_family = str(row.get("domain_family") or "").strip()
+        hardness_tier = str(row.get("hardness_tier") or "H0").strip().upper()
+        annotation_source = str(row.get("annotation_source") or "unknown").strip()
+        if novel_acceptable:
+            novel_counter += 1
+        if abstain_acceptable:
+            abstain_counter += 1
         gold_joint_labels = []
         for interp in interpretations:
             if not isinstance(interp, dict):
@@ -151,26 +180,40 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> str:
         for interp_idx, interp in enumerate(interpretations, start=1):
             if not isinstance(interp, dict):
                 continue
-            expanded.append(
-                _label_from_interpretation(
-                    instance_id,
-                    review_text,
-                    domain,
-                    interp,
-                    split,
-                    interp_idx,
-                    gold_joint_labels,
-                    split_protocol,
-                    ambiguity_score,
-                    abstain_acceptable,
-                    str(interp.get("ambiguity_type") or "").strip() or None,
-                    novel_acceptable,
-                    novel_cluster_id,
-                    novel_alias,
-                    novel_evidence_text,
-                )
+            payload = {
+                **interp,
+                "group_id": group_id,
+                "domain_family": domain_family,
+                "hardness_tier": hardness_tier,
+                "annotation_source": annotation_source,
+            }
+            built = _label_from_interpretation(
+                instance_id,
+                review_text,
+                domain,
+                payload,
+                split,
+                interp_idx,
+                gold_joint_labels,
+                split_protocol,
+                ambiguity_score,
+                abstain_acceptable,
+                str(interp.get("ambiguity_type") or "").strip() or None,
+                novel_acceptable,
+                novel_cluster_id,
+                novel_alias,
+                novel_evidence_text,
             )
+            if bool(built.get("evidence_fallback_used", False)):
+                evidence_fallback_counter += 1
+            expanded.append(built)
     rows[:] = expanded
+    if split in {"val", "test"} and novel_counter == 0:
+        print(f"[warn] {split} split contains zero novel positives; novelty calibration/eval will be limited.")
+    if split in {"val", "test"} and abstain_counter == 0:
+        print(f"[warn] {split} split contains zero abstain-acceptable rows; abstention eval will be limited.")
+    if evidence_fallback_counter > 0:
+        print(f"[warn] {split} split required evidence span fallback for {evidence_fallback_counter} examples.")
     return "benchmark_examples"
 
 

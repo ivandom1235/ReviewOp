@@ -1,50 +1,11 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
-const DEFAULT_TIMEOUT_MS = 15000;
 
-function withTimeout(options = {}, requestOptions = {}) {
-  const timeoutMs = Number(requestOptions.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS);
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
-  const externalSignal = requestOptions.signal;
-  let cleanupExternalAbort = null;
-
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      controller.abort();
-    } else {
-      const abortBridge = () => controller.abort();
-      externalSignal.addEventListener("abort", abortBridge, { once: true });
-      cleanupExternalAbort = () => externalSignal.removeEventListener("abort", abortBridge);
-    }
-  }
-
-  return {
-    fetchOptions: {
-      ...options,
-      headers: {
-        Accept: "application/json",
-        ...(options.headers || {}),
-      },
-      signal: controller.signal,
-    },
-    timeoutId,
-    cleanupExternalAbort,
-  };
-}
-
-async function request(path, options = {}, requestOptions = {}) {
-  const { fetchOptions, timeoutId, cleanupExternalAbort } = withTimeout(options, requestOptions);
+async function request(path, options = {}) {
   let response;
   try {
-    response = await fetch(`${API_BASE}${path}`, fetchOptions);
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw new Error("Request timed out. Please retry.");
-    }
+    response = await fetch(`${API_BASE}${path}`, options);
+  } catch {
     throw new Error("Backend is unreachable. Start backend API and check VITE_PROXY_TARGET/VITE_API_BASE_URL.");
-  } finally {
-    window.clearTimeout(timeoutId);
-    cleanupExternalAbort?.();
   }
 
   const text = await response.text();
@@ -139,7 +100,6 @@ export async function getBatchAspectGraph(filters = {}) {
   if (filters.product_id) params.set("product_id", filters.product_id);
   if (filters.from) params.set("from", filters.from);
   if (filters.to) params.set("to", filters.to);
-  params.set("graph_mode", filters.graph_mode || "accepted");
   params.set("min_edge_weight", String(filters.min_edge_weight || 1));
 
   const query = params.toString();
@@ -250,18 +210,7 @@ export async function getUserReviewsList({
 }
 
 async function downloadFile(path, filename) {
-  const { fetchOptions, timeoutId } = withTimeout();
-  let response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, fetchOptions);
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw new Error("Download timed out. Please retry.");
-    }
-    throw new Error("Download failed because backend is unreachable.");
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
+  const response = await fetch(`${API_BASE}${path}`);
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || `Download failed: ${response.status}`);
@@ -311,17 +260,13 @@ export async function getMe(token) {
   });
 }
 
-export async function getProductSuggestions(token, requestOptions = {}) {
+export async function getProductSuggestions(token) {
   return request("/user/products/suggestions", {
     headers: { ...authHeaders(token) },
-  }, requestOptions);
+  });
 }
 
-export async function searchProducts(
-  token,
-  { q = "", min_rating = 1, sort = "most_recent", offset = 0 } = {},
-  requestOptions = {}
-) {
+export async function searchProducts(token, { q = "", min_rating = 1, sort = "most_recent", offset = 0 } = {}) {
   const params = new URLSearchParams();
   if (q) params.set("q", q);
   params.set("min_rating", String(min_rating));
@@ -329,13 +274,13 @@ export async function searchProducts(
   params.set("offset", String(offset));
   return request(`/user/products/search?${params.toString()}`, {
     headers: { ...authHeaders(token) },
-  }, requestOptions);
+  });
 }
 
-export async function getProductDetail(token, productId, requestOptions = {}) {
+export async function getProductDetail(token, productId) {
   return request(`/user/products/${encodeURIComponent(productId)}`, {
     headers: { ...authHeaders(token) },
-  }, requestOptions);
+  });
 }
 
 export async function getProductReviews(token, productId, options = {}) {

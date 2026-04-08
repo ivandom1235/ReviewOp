@@ -6,10 +6,10 @@ from datetime import datetime, timedelta
 import hashlib
 from math import sqrt
 from statistics import pstdev
-from typing import Optional, List, Tuple
+from typing import Optional
 
 from sqlalchemy import func, case, text
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, joinedload
 
 from models.tables import Alert, DismissedAlert, ProductCatalog, Review, Prediction, EvidenceSpan, User, UserProductReview
 from services.graph_builders import _infer_origin
@@ -33,24 +33,24 @@ def overview(db: Session, dt_from: Optional[str], dt_to: Optional[str], domain: 
     t = _parse_dt(dt_to)
 
     q_reviews = db.query(func.count(Review.id))
-    q_preds = db.query(func.count(Prediction.id))
-    q_unique = db.query(func.count(func.distinct(Prediction.aspect_raw)))
-    q_avg_conf = db.query(func.avg(Prediction.confidence))
+    q_preds = db.query(func.count(Prediction.id)).join(Review, Review.id == Prediction.review_id)
+    q_unique = db.query(func.count(func.distinct(Prediction.aspect_raw))).join(Review, Review.id == Prediction.review_id)
+    q_avg_conf = db.query(func.avg(Prediction.confidence)).join(Review, Review.id == Prediction.review_id)
 
     if domain:
         q_reviews = q_reviews.filter(Review.domain == domain)
 
     if f:
         q_reviews = q_reviews.filter(Review.created_at >= f)
-        q_preds = q_preds.join(Review, Review.id == Prediction.review_id).filter(Review.created_at >= f)
-        q_unique = q_unique.join(Review, Review.id == Prediction.review_id).filter(Review.created_at >= f)
-        q_avg_conf = q_avg_conf.join(Review, Review.id == Prediction.review_id).filter(Review.created_at >= f)
+        q_preds = q_preds.filter(Review.created_at >= f)
+        q_unique = q_unique.filter(Review.created_at >= f)
+        q_avg_conf = q_avg_conf.filter(Review.created_at >= f)
 
     if t:
         q_reviews = q_reviews.filter(Review.created_at <= t)
-        q_preds = q_preds.join(Review, Review.id == Prediction.review_id).filter(Review.created_at <= t)
-        q_unique = q_unique.join(Review, Review.id == Prediction.review_id).filter(Review.created_at <= t)
-        q_avg_conf = q_avg_conf.join(Review, Review.id == Prediction.review_id).filter(Review.created_at <= t)
+        q_preds = q_preds.filter(Review.created_at <= t)
+        q_unique = q_unique.filter(Review.created_at <= t)
+        q_avg_conf = q_avg_conf.filter(Review.created_at <= t)
 
     total_reviews = int(q_reviews.scalar() or 0)
     total_mentions = int(q_preds.scalar() or 0)
@@ -258,7 +258,12 @@ def aspect_leaderboard(db: Session, limit: int = 25, domain: Optional[str] = Non
 
     implicit_counts = defaultdict(int)
     explicit_counts = defaultdict(int)
-    sample_preds = db.query(Prediction).join(Review, Review.id == Prediction.review_id).filter(Review.created_at >= cur_start, Review.created_at <= cur_end)
+    sample_preds = (
+        db.query(Prediction)
+        .options(joinedload(Prediction.evidence_spans))
+        .join(Review, Review.id == Prediction.review_id)
+        .filter(Review.created_at >= cur_start, Review.created_at <= cur_end)
+    )
     if domain:
         sample_preds = sample_preds.filter(Review.domain == domain)
     for pred in sample_preds.limit(5000):
@@ -323,7 +328,11 @@ def aspect_leaderboard(db: Session, limit: int = 25, domain: Optional[str] = Non
 
 
 def evidence_drilldown(db: Session, aspect: Optional[str] = None, sentiment: Optional[str] = None, limit: int = 50, domain: Optional[str] = None) -> list[dict]:
-    q = db.query(Prediction, Review).join(Review, Review.id == Prediction.review_id)
+    q = (
+        db.query(Prediction, Review)
+        .options(joinedload(Prediction.evidence_spans))
+        .join(Review, Review.id == Prediction.review_id)
+    )
     if aspect:
         q = q.filter(Prediction.aspect_raw == aspect)
     if sentiment:
@@ -456,6 +465,8 @@ def aspect_detail(db: Session, aspect: str, interval: str = "day", domain: Optio
 def _generate_alert_candidates(db: Session, domain: Optional[str] = None) -> list[dict]:
     out = []
     leaderboard = aspect_leaderboard(db, limit=20, domain=domain)
+    if not leaderboard:
+        return out
     change_series = [float(row["change_7d_vs_prev_7d"]) for row in leaderboard]
     sigma = pstdev(change_series) if len(change_series) > 1 else 0.0
     mean_change = sum(change_series) / len(change_series) if change_series else 0.0

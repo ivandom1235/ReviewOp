@@ -253,9 +253,26 @@ def is_surface_leakage(text: str, aspect: str) -> bool:
 _ADVERSATIVE_RE = re.compile(r"\bbut\b|\bhowever\b|\byet\b|\bwhile\b|\balthough\b", re.IGNORECASE)
 _COORD_AND_RE = re.compile(r",\s*and\b|\band\b", re.IGNORECASE)
 _MIN_CLAUSE_TOKENS_FOR_SPLIT = 10
+_NEGATORS = {"not", "never", "no", "isnt", "wasnt", "doesnt", "didnt", "cant", "wont", "neither", "nor", "without", "hardly"}
+_CONTRASTIVE_TOKENS = {"but", "however", "although", "though", "yet", "while"}
+_COMPARATIVE_TOKENS = {"better", "worse", "faster", "slower", "more", "less"}
+_SUPERLATIVE_POSITIVE = {"best", "fastest", "cleanest", "smoothest", "greatest"}
+_SUPERLATIVE_NEGATIVE = {"worst", "slowest", "dirtiest", "weakest"}
+_STRONG_NEGATIVE_EVENTS = {
+    "crashed", "crash", "dropped", "drop", "refund denied", "denied", "waited", "stopped working", "failed", "failure",
+    "disconnected", "overheating", "burning", "stalled", "froze", "freeze", "broken",
+}
+_STRONG_POSITIVE_EVENTS = {"resolved", "fixed", "quickly replaced", "on time", "seamless", "worked perfectly", "stable"}
 
 
 def _sentence_clauses(text: str) -> list[str]:
+    return [item["clause"] for item in _sentence_clauses_with_offsets(text)]
+
+
+def _sentence_clauses_with_offsets(text: str) -> list[dict[str, int | str]]:
+    full_text = normalize_whitespace(text)
+    if not full_text:
+        return []
     clauses: list[str] = []
     for sentence in split_sentences(text):
         # Stage 1: split on adversative conjunctions.
@@ -280,7 +297,24 @@ def _sentence_clauses(text: str) -> list[str]:
             else:
                 refined.append(piece)
         clauses.extend(refined)
-    return clauses or [normalize_whitespace(text)]
+
+    final_clauses = clauses or [full_text]
+    out: list[dict[str, int | str]] = []
+    cursor = 0
+    lowered = full_text.lower()
+    for clause in final_clauses:
+        piece = normalize_whitespace(clause)
+        if not piece:
+            continue
+        start = lowered.find(piece.lower(), cursor)
+        if start < 0:
+            start = lowered.find(piece.lower())
+        if start < 0:
+            start = 0
+        end = start + len(piece)
+        cursor = end
+        out.append({"clause": piece, "start": int(start), "end": int(end)})
+    return out
 
 
 def _infer_fallback_latent_from_clause(clause: str) -> tuple[str | None, int]:
@@ -308,40 +342,101 @@ def _infer_fallback_latent_from_clause(clause: str) -> tuple[str | None, int]:
 
 
 def infer_sentiment(text: str) -> str:
+    return infer_sentiment_details(text)["label"]
+
+
+def infer_sentiment_details(text: str) -> dict[str, Any]:
     tokens = tokenize(text)
     lower_text = normalize_whitespace(text).lower()
-    negators = {"not", "never", "no", "isnt", "wasnt", "doesnt", "didnt", "cant", "wont", "neither", "nor"}
-    
-    # Special strong triggers
-    strong_neg = {"crash", "crashed", "broken", "unusable", "terrible", "worst", "fail", "failure", "awful", "horrible"}
-    
-    pos_score = 0
-    neg_score = 0
+    pos_score = 0.0
+    neg_score = 0.0
+    strong_positive_hits = 0
+    strong_negative_hits = 0
+    comparative_hits = 0
+    if not tokens:
+        return {
+            "label": "neutral",
+            "abstained": True,
+            "margin": 0.0,
+            "risk_bucket": "high",
+            "sentiment_mismatch": False,
+            "scores": {"positive": 0.0, "negative": 0.0},
+        }
     
     for i, token in enumerate(tokens):
         # Lookback for negations (simple 1-2 token window)
         is_negated = False
-        if i > 0 and tokens[i-1] in negators:
+        if i > 0 and tokens[i-1] in _NEGATORS:
             is_negated = True
-        elif i > 1 and tokens[i-2] in negators:
+        elif i > 1 and tokens[i-2] in _NEGATORS:
             is_negated = True
 
         if token in POSITIVE_WORDS:
-            if is_negated: neg_score += 1.5
-            else: pos_score += 1
+            if is_negated:
+                neg_score += 1.4
+            else:
+                pos_score += 1.0
         elif token in NEGATIVE_WORDS:
-            if is_negated: pos_score += 1
-            else: neg_score += 1
-        
-        if token in strong_neg:
-            if not is_negated: neg_score += 2
-            else: pos_score += 0.5  # "not broken" is slightly positive
+            if is_negated:
+                pos_score += 1.0
+            else:
+                neg_score += 1.0
+        if token in _COMPARATIVE_TOKENS:
+            comparative_hits += 1
+            if token in {"better", "faster", "more"}:
+                pos_score += 0.35
+            elif token in {"worse", "slower", "less"}:
+                neg_score += 0.35
+        if token in _SUPERLATIVE_POSITIVE:
+            pos_score += 1.2
+        if token in _SUPERLATIVE_NEGATIVE:
+            neg_score += 1.2
 
-    if pos_score > neg_score:
-        return "positive"
-    if neg_score > pos_score:
-        return "negative"
-    return "neutral"
+    for trigger in _STRONG_NEGATIVE_EVENTS:
+        if trigger in lower_text:
+            neg_score += 2.0
+            strong_negative_hits += 1
+    for trigger in _STRONG_POSITIVE_EVENTS:
+        if trigger in lower_text:
+            pos_score += 1.5
+            strong_positive_hits += 1
+
+    if any(tok in tokens for tok in _CONTRASTIVE_TOKENS):
+        # Tail clauses after contrastive pivots carry stronger sentiment signal.
+        tail = re.split(r"\bbut\b|\bhowever\b|\balthough\b|\bthough\b|\byet\b|\bwhile\b", lower_text)[-1].strip()
+        if tail:
+            tail_tokens = tokenize(tail)
+            tail_pos = sum(1 for tok in tail_tokens if tok in POSITIVE_WORDS)
+            tail_neg = sum(1 for tok in tail_tokens if tok in NEGATIVE_WORDS)
+            if tail_neg > tail_pos:
+                neg_score += 0.8
+            elif tail_pos > tail_neg:
+                pos_score += 0.8
+
+    margin = abs(pos_score - neg_score)
+    abstained = margin < 0.55
+    if pos_score > neg_score and not abstained:
+        label = "positive"
+    elif neg_score > pos_score and not abstained:
+        label = "negative"
+    else:
+        label = "neutral"
+
+    sentiment_mismatch = bool(strong_positive_hits > 0 and label == "neutral")
+    risk_bucket = "low" if margin >= 1.25 else ("medium" if margin >= 0.55 else "high")
+    return {
+        "label": label,
+        "abstained": abstained,
+        "margin": round(margin, 4),
+        "risk_bucket": risk_bucket,
+        "sentiment_mismatch": sentiment_mismatch,
+        "scores": {"positive": round(pos_score, 4), "negative": round(neg_score, 4)},
+        "diagnostics": {
+            "strong_positive_hits": strong_positive_hits,
+            "strong_negative_hits": strong_negative_hits,
+            "comparative_hits": comparative_hits,
+        },
+    }
 
 
 def _extract_gold_aspects(rows: List[Dict[str, Any]]) -> list[str]:
@@ -472,7 +567,7 @@ async def build_implicit_row(
     enforce_grounding: bool = True,
     enable_reasoned_recovery: bool = False,
     llm_provider: Any = None,
-    llm_model_name: str = "llama3",
+    llm_model_name: str | None = None,
     high_difficulty: bool = False,
     adversarial_refine: bool = False,
     bypass_cache: bool = False,
@@ -482,8 +577,9 @@ async def build_implicit_row(
     mode = _canonical_mode(implicit_mode)
     raw_text = normalize_whitespace(row.get(text_column, ""))
     processed_text = normalize_whitespace(coref_text or raw_text)
-    clauses = _sentence_clauses(processed_text)
-    sentiment = infer_sentiment(processed_text)
+    clauses = _sentence_clauses_with_offsets(processed_text)
+    sentiment_detail = infer_sentiment_details(processed_text)
+    sentiment = str(sentiment_detail.get("label") or "neutral")
     
     # State tracking
     spans: list[dict[str, Any]] = []
@@ -494,7 +590,9 @@ async def build_implicit_row(
     leakage_flags_total: set[str] = set()
 
     # Stage A/B: Hybrid Candidate Generation (Optimized single-pass)
-    for clause in clauses:
+    for clause_payload in clauses:
+        clause = str(clause_payload.get("clause") or "")
+        clause_start = int(clause_payload.get("start") or 0)
         clause_sentiment = infer_sentiment(clause)
         clause_matches: list[dict[str, Any]] = []
         
@@ -530,6 +628,11 @@ async def build_implicit_row(
 
         # 2. LLM Fallback (Stage C - only if no lexical matches)
         if not clause_matches and enable_llm_fallback and llm_provider:
+            if llm_model_name is None or not str(llm_model_name).strip():
+                raise RuntimeError(
+                    "REVIEWOP_LLM_MODEL_NAME or a provider-specific model env (GROQ_MODEL, OPENAI_MODEL, OLLAMA_MODEL) "
+                    "is required when LLM fallback is enabled"
+                )
             llm_fallback_used = True
             paraphrases = await reason_implicit_signal_async(clause, candidate_aspects, llm_provider, llm_model_name, bypass_cache=bypass_cache)
             fallback_branch = "llm_parse"
@@ -568,24 +671,26 @@ async def build_implicit_row(
             leakage_flags_total.update(flags)
             
             matched_surface = match["aspect"]
-            start = clause.lower().find(matched_surface.lower())
+            local_start = clause.lower().find(matched_surface.lower())
             
-            if start == -1:
+            if local_start == -1:
                 continue 
 
+            absolute_start = int(clause_start + local_start)
+            absolute_end = int(absolute_start + len(matched_surface))
             spans.append({
                 "aspect": matched_surface,
                 "latent_label": latent,
                 "evidence_text": clause,
-                "evidence_span": [int(start), int(start + len(matched_surface))],
+                "evidence_span": [absolute_start, absolute_end],
                 "sentiment": clause_sentiment,
                 "confidence": match["confidence"],
                 "support_type": match["support_type"],
                 "label_type": match["label_type"],
                 "source": match["source"],
                 "hardness": match["hardness"],
-                "start_char": start,
-                "end_char": start + len(matched_surface) if start >= 0 else -1,
+                "start_char": absolute_start,
+                "end_char": absolute_end if absolute_start >= 0 else -1,
                 "clause": clause,
                 "leakage_flags": sorted(flags),
             })
@@ -615,6 +720,12 @@ async def build_implicit_row(
     if len(sorted_conf) > 1:
         # High ambiguity if the gap between top two is small
         ambiguity_score = max(0.0, 1.0 - (sorted_conf[0][1] - sorted_conf[1][1]))
+    if spans:
+        span_labels = {str(s.get("latent_label") or "") for s in spans if str(s.get("latent_label") or "")}
+        if len(span_labels) >= 2 and ambiguity_score >= 0.45:
+            max_hardness = max(max_hardness, 3)
+        elif any(int(s.get("hardness", 0)) >= 2 for s in spans):
+            max_hardness = max(max_hardness, 2)
     
     # Explicit Pivoting (Unconventional cross-check)
     pivot_confirmed = False
@@ -651,6 +762,12 @@ async def build_implicit_row(
             "ambiguity_score": round(ambiguity_score, 4),
             "pivot_confirmed": pivot_confirmed,
             "dominant_sentiment": sentiment,
+            "sentiment_abstained": bool(sentiment_detail.get("abstained", False)),
+            "sentiment_risk_bucket": str(sentiment_detail.get("risk_bucket") or "high"),
+            "sentiment_margin": float(sentiment_detail.get("margin", 0.0) or 0.0),
+            "sentiment_mismatch": bool(sentiment_detail.get("sentiment_mismatch", False)),
+            "sentiment_scores": sentiment_detail.get("scores", {}),
+            "sentiment_diagnostics": sentiment_detail.get("diagnostics", {}),
             "aspect_sentiments": {a: Counter(s).most_common(1)[0][0] for a, s in aspect_sentiments.items()},
             "aspect_confidence": aspect_confidence,
             "spans": spans,

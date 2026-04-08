@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import os
 from pathlib import Path
 import random
 from typing import Any, Dict
@@ -16,6 +17,14 @@ INPUT_ROOT = PROTONET_ROOT / "input"
 OUTPUT_ROOT = PROTONET_ROOT / "output"
 METADATA_ROOT = PROTONET_ROOT / "metadata"
 BENCHMARK_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output" / "benchmark" / "ambiguity_grounded"
+
+
+def _env_value(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
 
 
 def resolve_default_input_dir(input_type: str) -> Path:
@@ -37,7 +46,8 @@ class ProtonetConfig:
     predictions_dir: Path = OUTPUT_ROOT / "predictions"
 
     encoder_backend: str = "auto"
-    encoder_model_name: str = "microsoft/deberta-v3-base"
+    # Fast options: "microsoft/deberta-v3-small" (44M params) or "distilbert-base-uncased" (66M params)
+    encoder_model_name: str = _env_value("REVIEWOP_PROTONET_ENCODER_MODEL", "PROTONET_ENCODER_MODEL", default="microsoft/deberta-v3-base") or "microsoft/deberta-v3-base"
     bow_dim: int = 512
     max_length: int = 160
     projection_dim: int = 256
@@ -49,6 +59,8 @@ class ProtonetConfig:
     q_query: int = 2
     max_train_episodes: int = 120
     max_eval_episodes: int = 48
+    protocol_eval_enabled: bool = True
+    protocol_eval_splits: tuple[str, ...] = ("random", "grouped", "domain_holdout")
 
     warmup_epochs: int = 1
     epochs: int = 12
@@ -74,6 +86,7 @@ class ProtonetConfig:
     novelty_known_threshold: float = 0.35
     novelty_novel_threshold: float = 0.65
     novelty_calibration_path: Path = METADATA_ROOT / "novelty_calibration_v2.json"
+    runtime_cache_max_items: int = 20000
 
     seed: int = 42
     no_progress: bool = False

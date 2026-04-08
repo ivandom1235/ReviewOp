@@ -18,6 +18,7 @@ def ensure_database_exists() -> None:
     db_name = url.database
     if not db_name:
         raise RuntimeError("mysql_db is not configured")
+    safe_db_name = db_name.replace("`", "``")
 
     # Connect to MySQL server without selecting a specific database.
     admin_url = url.set(database=None)
@@ -30,7 +31,7 @@ def ensure_database_exists() -> None:
 
     with admin_engine.begin() as conn:
         conn.execute(
-            text(f"CREATE DATABASE IF NOT EXISTS `{db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+            text(f"CREATE DATABASE IF NOT EXISTS `{safe_db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
         )
 
     admin_engine.dispose()

@@ -1,20 +1,25 @@
 # proto/backend/services/kg_build.py
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Tuple
 import math
 import re
 
 import numpy as np
 import networkx as nx
 from sqlalchemy.orm import Session
+
+from core.config import settings
 from sentence_transformers import SentenceTransformer
 
 from models.tables import Prediction, Review, AspectNode, AspectEdge
 
 
 _WORD_RE = re.compile(r"[a-zA-Z0-9']+")
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------
@@ -82,17 +87,25 @@ class KGConfig:
     overall_neg_thresh: float = -0.15
 
 
+@lru_cache(maxsize=2)
+def _cached_embedder(model_name: str) -> SentenceTransformer:
+    return SentenceTransformer(model_name, local_files_only=True)
+
+
 # ---------------------------------------------------------
 # Builder
 # ---------------------------------------------------------
 
 class KGBuilder:
 
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = settings.kg_embedding_model_name):
         try:
-            self.embedder = SentenceTransformer(model_name)
+            self.embedder = _cached_embedder(model_name)
+            self.model_name = model_name
         except Exception:
+            logger.exception("Failed to load KG embedder for model %s", model_name)
             self.embedder = None
+            self.model_name = model_name
 
     # ---------------------------------------------------------
     # Main rebuild pipeline
@@ -175,6 +188,78 @@ class KGBuilder:
     # ---------------------------------------------------------
     # Graph Builders
     # ---------------------------------------------------------
+
+    def build_for_review(self, review: Review) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Builds a small graph representing the aspects in a single review.
+        """
+        nodes = []
+        node_map = {}
+        aspects = []
+
+        # 1. Build nodes from predictions
+        for pred in getattr(review, "predictions", []) or []:
+            a_raw = pred.aspect_raw
+            a_cluster = pred.aspect_cluster or a_raw
+            
+            # Take first evidence span
+            evidence_text = "-"
+            ev_start = 0
+            ev_end = 0
+            if pred.evidence_spans:
+                ev_obj = pred.evidence_spans[0]
+                evidence_text = ev_obj.snippet
+                ev_start = ev_obj.start_char
+                ev_end = ev_obj.end_char
+
+            node_id = f"single-{a_cluster.lower()}"
+            if node_id in node_map:
+                continue
+
+            node = {
+                "id": node_id,
+                "label": a_cluster,
+                "sentiment": pred.sentiment,
+                "confidence": float(pred.confidence or 0.0),
+                "evidence": evidence_text,
+                "evidence_start": ev_start,
+                "evidence_end": ev_end,
+                "origin": "explicit", # Default to explicit
+            }
+            nodes.append(node)
+            node_map[node_id] = node
+            aspects.append(a_cluster)
+
+        # 2. Build similarities if embedder is available
+        edges = []
+        if aspects and self.embedder:
+            emb = self.embedder.encode(aspects, normalize_embeddings=True, show_progress_bar=False)
+            emb = np.asarray(emb, dtype=np.float32)
+            sim = emb @ emb.T
+
+            n_asp = len(aspects)
+            for i in range(n_asp):
+                for j in range(i + 1, n_asp):
+                    w = float(sim[i, j])
+                    if w >= 0.7: # Slightly lower threshold for single review
+                        edges.append({
+                            "source": f"single-{aspects[i].lower()}",
+                            "target": f"single-{aspects[j].lower()}",
+                            "type": "semantic",
+                            "weight": w
+                        })
+
+        # 3. All-to-all co-occurrence within the review (with lower weight)
+        for i in range(len(aspects)):
+            for j in range(i + 1, len(aspects)):
+                edges.append({
+                    "source": f"single-{aspects[i].lower()}",
+                    "target": f"single-{aspects[j].lower()}",
+                    "type": "cooccurrence",
+                    "weight": 0.5
+                })
+
+        return nodes, edges
 
     def _build_similarity_graph(self, aspects: List[str], threshold: float) -> nx.Graph:
         g = nx.Graph()

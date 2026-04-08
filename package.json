@@ -1,4 +1,11 @@
 {
+  "scripts": {
+    "test": "node tools/run_repo_tests.mjs",
+    "test:backend": "python -m unittest discover -s backend/tests -p \"test_*.py\" -v",
+    "test:dataset-builder": "python -m unittest discover -s dataset_builder/tests -p \"test_*.py\" -v",
+    "test:protonet": "python -m unittest discover -s protonet/tests -p \"test_*.py\" -v",
+    "test:frontend": "npm --prefix frontend run build"
+  },
   "dependencies": {
     "eslint": "^10.0.2",
     "uvicorn": "^0.0.1-security"

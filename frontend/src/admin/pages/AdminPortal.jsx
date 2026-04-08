@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   inferSingleReview,
@@ -22,31 +22,28 @@ import {
   getUserReviewsList,
   getUserReviewsSummary,
 } from "../../api/client";
+import Dashboard from "./Dashboard";
+import AspectAnalytics from "./AspectAnalytics";
+import GraphExplorer from "./GraphExplorer";
+import ReviewExplorer from "./ReviewExplorer";
+import AlertsPage from "./AlertsPage";
+import AlertDetailPage from "./AlertDetailPage";
+import UserReviewsInsights from "./UserReviewsInsights";
 import { useAuth } from "../../auth/AuthContext";
-import { RouteLoading } from "../../components/RouteLoading";
-import { useTheme } from "../../theme/ThemeContext";
-
-const Dashboard = lazy(() => import("./Dashboard"));
-const AspectAnalytics = lazy(() => import("./AspectAnalytics"));
-const GraphExplorer = lazy(() => import("./GraphExplorer"));
-const ReviewExplorer = lazy(() => import("./ReviewExplorer"));
-const AlertsPage = lazy(() => import("./AlertsPage"));
-const AlertDetailPage = lazy(() => import("./AlertDetailPage"));
-const UserReviewsInsights = lazy(() => import("./UserReviewsInsights"));
 
 const initialGraphFilters = {
   domain: "",
   product_id: "",
   from: "",
   to: "",
-  graph_mode: "accepted",
   min_edge_weight: 2,
 };
 
 export default function AdminPortal() {
   const { logout } = useAuth();
   const navigate = useNavigate();
-  const { isDark, setTheme } = useTheme();
+  const [theme, setTheme] = useState(() => localStorage.getItem("reviewop-theme") || "dark");
+  const isDark = theme === "dark";
   const [activePage, setActivePage] = useState("Dashboard");
   const [selectedAlert, setSelectedAlert] = useState(null);
 
@@ -75,14 +72,25 @@ export default function AdminPortal() {
   const [graphLoading, setGraphLoading] = useState(false);
   const [error, setError] = useState("");
   const [jobStatus, setJobStatus] = useState(null);
-  const mountedRef = useRef(true);
-  const batchPollingRef = useRef(false);
 
-  useEffect(() => () => {
-    mountedRef.current = false;
+  useEffect(() => {
+    localStorage.setItem("reviewop-theme", theme);
+    document.documentElement.classList.toggle("dark", theme === "dark");
+  }, [theme]);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        await refreshAnalytics();
+        await refreshBatchGraph(initialGraphFilters);
+      } catch {
+        // allow empty startup
+      }
+    };
+    load();
   }, []);
 
-  const refreshAnalytics = useCallback(async () => {
+  async function refreshAnalytics() {
     const [k, l, t, e, ev, a, impact, segments, weekly, urs, url] = await Promise.all([
       getDashboardKpis(),
       getAspectLeaderboard(),
@@ -96,8 +104,6 @@ export default function AdminPortal() {
       getUserReviewsSummary(),
       getUserReviewsList({ limit: 100, offset: 0 }),
     ]);
-    if (!mountedRef.current) return;
-
     setKpis(k);
     setLeaderboard(l || []);
     setAspectTrends(t || []);
@@ -110,33 +116,21 @@ export default function AdminPortal() {
     setUserReviewSummary(urs || null);
     setUserReviewList(url || { total: 0, limit: 50, offset: 0, rows: [] });
 
-    if (l?.length && mountedRef.current) {
+    if (l?.length) {
       const detail = await getAspectDetail(l[0].aspect);
-      if (mountedRef.current) setAspectDetail(detail);
+      setAspectDetail(detail);
     }
-  }, []);
+  }
 
-  const refreshBatchGraph = useCallback(async (nextFilters) => {
+  async function refreshBatchGraph(nextFilters = graphFilters) {
     setGraphLoading(true);
     try {
       const graph = await getBatchAspectGraph(nextFilters);
-      if (mountedRef.current) setBatchGraph(graph);
+      setBatchGraph(graph);
     } finally {
-      if (mountedRef.current) setGraphLoading(false);
+      setGraphLoading(false);
     }
-  }, []);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        await refreshAnalytics();
-        await refreshBatchGraph(initialGraphFilters);
-      } catch {
-        // allow empty startup
-      }
-    };
-    load();
-  }, [refreshAnalytics, refreshBatchGraph]);
+  }
 
   async function handleSingleSubmit(e) {
     e.preventDefault();
@@ -144,49 +138,45 @@ export default function AdminPortal() {
     setLoading(true);
     try {
       const out = await inferSingleReview(reviewText.trim());
-      if (!mountedRef.current) return;
       setSingleOutput(out);
       const graph = await getReviewGraph(out.review_id);
-      if (!mountedRef.current) return;
       setReviewGraph(graph);
       setActivePage("ReviewExplorer");
     } catch (ex) {
-      if (mountedRef.current) setError(ex.message || "Single review inference failed");
+      setError(ex.message || "Single review inference failed");
     } finally {
-      if (mountedRef.current) setLoading(false);
+      setLoading(false);
     }
   }
 
-  const handleBatchSubmit = useCallback(async (e) => {
+  async function handleBatchSubmit(e) {
     e.preventDefault();
-    if (!batchFile || batchPollingRef.current) return;
+    if (!batchFile) return;
 
     setError("");
     setLoading(true);
-    batchPollingRef.current = true;
     try {
       const created = await inferBatchCsv(batchFile);
       let latest = created;
-      if (mountedRef.current) setJobStatus(created);
+      setJobStatus(created);
       for (let i = 0; i < 15; i += 1) {
         const status = await getJob(created.job_id);
         latest = status;
-        if (mountedRef.current) setJobStatus(status);
+        setJobStatus(status);
         if (["done", "failed"].includes((status.status || "").toLowerCase())) break;
         await new Promise((r) => setTimeout(r, 800));
       }
       if ((latest.status || "").toLowerCase() === "failed") throw new Error(latest.error || "Batch job failed");
       await Promise.all([refreshAnalytics(), refreshBatchGraph(graphFilters)]);
-      if (mountedRef.current) setActivePage("ReviewExplorer");
+      setActivePage("ReviewExplorer");
     } catch (ex) {
-      if (mountedRef.current) setError(ex.message || "Batch CSV inference failed");
+      setError(ex.message || "Batch CSV inference failed");
     } finally {
-      batchPollingRef.current = false;
-      if (mountedRef.current) setLoading(false);
+      setLoading(false);
     }
-  }, [batchFile, graphFilters, refreshAnalytics, refreshBatchGraph]);
+  }
 
-  const applyBatchGraphFilters = useCallback(async (e) => {
+  async function applyBatchGraphFilters(e) {
     e.preventDefault();
     setError("");
     try {
@@ -194,17 +184,17 @@ export default function AdminPortal() {
     } catch (ex) {
       setError(ex.message || "Batch graph load failed");
     }
-  }, [graphFilters, refreshBatchGraph]);
+  }
 
   const leaderboardRows = useMemo(() => leaderboard.map((row, idx) => ({ id: `${row.aspect}-${idx}`, ...row })), [leaderboard]);
   const pageNav = ["Dashboard", "AspectAnalytics", "GraphExplorer", "ReviewExplorer", "Alerts", "UserReviews"];
 
-  const handleAlertClick = useCallback((alert) => {
+  const handleAlertClick = (alert) => {
     setSelectedAlert(alert);
     setActivePage("AlertDetail");
-  }, []);
+  };
 
-  const handleAlertClear = useCallback(async (alert) => {
+  async function handleAlertClear(alert) {
     if (!alert?.id) return;
     try {
       await clearAlert(alert.id);
@@ -216,7 +206,7 @@ export default function AdminPortal() {
     } catch (ex) {
       setError(ex.message || "Failed to clear alert");
     }
-  }, [refreshAnalytics, selectedAlert?.id]);
+  }
 
   async function handleExportJson() {
     try {
@@ -236,22 +226,13 @@ export default function AdminPortal() {
 
 
   return (
-    <div className="min-h-screen bg-app text-[hsl(var(--text-main))]">
-      <header className="border-b border-border-subtle bg-[hsla(var(--bg-surface)/0.82)] backdrop-blur-xl">
+    <div className={`min-h-screen ${isDark ? "bg-[#060b18] text-slate-100" : "bg-[#f1f5f9] text-slate-800"}`}>
+      <header className={`border-b ${isDark ? "border-slate-800 bg-[#050a16]" : "border-slate-200 bg-white"}`}>
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-5">
-          <div className="text-3xl font-bold tracking-[0.08em] text-brand-primary">REVIEWOP</div>
+          <div className="text-3xl font-bold tracking-[0.08em]">REVIEWOP</div>
           <div className="flex flex-wrap items-center gap-2">
             {pageNav.map((name) => (
-              <button
-                key={name}
-                type="button"
-                onClick={() => setActivePage(name)}
-                className={`rounded-xl px-3 py-2 text-sm font-semibold transition-all ${
-                  activePage === name
-                    ? "premium-gradient text-white shadow-md"
-                    : "glass-card text-muted-main hover:text-brand-primary"
-                }`}
-              >
+              <button key={name} type="button" onClick={() => setActivePage(name)} className={`rounded-xl px-3 py-2 text-sm font-semibold ${activePage === name ? "bg-emerald-500 text-slate-950" : isDark ? "bg-slate-800 text-slate-200" : "bg-slate-200 text-slate-700"}`}>
                 {name === "AspectAnalytics" ? "Analytics" : name}
               </button>
             ))}
@@ -261,19 +242,19 @@ export default function AdminPortal() {
             <button
               type="button"
               onClick={handleExportJson}
-              className="rounded-xl border border-border-subtle bg-app/30 px-3 py-2 text-sm font-semibold text-brand-primary transition-colors hover:bg-brand-primary/10"
+              className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-cyan-700 text-cyan-100" : "bg-cyan-100 text-cyan-800"}`}
             >
               Export JSON
             </button>
             <button
               type="button"
               onClick={handleExportPdf}
-              className="rounded-xl border border-border-subtle bg-app/30 px-3 py-2 text-sm font-semibold text-brand-primary transition-colors hover:bg-brand-primary/10"
+              className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-violet-700 text-violet-100" : "bg-violet-100 text-violet-800"}`}
             >
               Export PDF
             </button>
             <label className="inline-flex items-center gap-3 text-sm">
-              <span className="text-muted-main">Day</span>
+              <span className={isDark ? "text-slate-300" : "text-slate-600"}>Day</span>
               <span className="relative inline-flex items-center">
                 <input
                   type="checkbox"
@@ -282,10 +263,10 @@ export default function AdminPortal() {
                   onChange={(e) => setTheme(e.target.checked ? "dark" : "light")}
                   aria-label="Theme toggle"
                 />
-                <span className="h-8 w-14 rounded-full bg-slate-300 transition-all duration-300 peer-checked:bg-blue-600" />
+                <span className="h-8 w-14 rounded-full bg-slate-300 transition-all duration-300 peer-checked:bg-indigo-600" />
                 <span className="absolute left-1 top-1 h-6 w-6 rounded-full bg-white shadow transition-all duration-300 peer-checked:left-7" />
               </span>
-              <span className="text-muted-main">Night</span>
+              <span className={isDark ? "text-slate-300" : "text-slate-600"}>Night</span>
             </label>
             <button
               type="button"
@@ -293,7 +274,7 @@ export default function AdminPortal() {
                 logout();
                 navigate("/login");
               }}
-              className="rounded-xl border border-border-subtle bg-app/30 px-3 py-2 text-sm font-semibold text-muted-main transition-colors hover:bg-app/50"
+              className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-slate-800 text-slate-200" : "bg-slate-200 text-slate-700"}`}
             >
               Logout
             </button>
@@ -302,69 +283,68 @@ export default function AdminPortal() {
       </header>
 
       <main className="mx-auto max-w-7xl space-y-4 px-6 py-6">
-        {error ? <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-red-300">{error}</div> : null}
+        {error ? <div className={`rounded-xl p-3 ${isDark ? "bg-red-950 text-red-300" : "bg-red-100 text-red-700"}`}>{error}</div> : null}
 
         <div key={activePage} className="page-fade-in">
-          <Suspense fallback={<RouteLoading label="Loading admin page..." />}>
-            {activePage === "Dashboard" ? <Dashboard kpis={kpis} alerts={alerts} leaderboardRows={leaderboardRows} impactRows={impactMatrix} segmentRows={segmentRows} weeklySummary={weeklySummary} isDark={isDark} onSeeMoreAlerts={() => setActivePage("Alerts")} /> : null}
-            {activePage === "AspectAnalytics" ? <AspectAnalytics trends={aspectTrends} emerging={emergingAspects} evidence={evidenceRows} aspectDetail={aspectDetail} weeklySummary={weeklySummary} isDark={isDark} /> : null}
-            {activePage === "GraphExplorer" ? (
-              <GraphExplorer
-                graph={batchGraph}
-                graphFilters={graphFilters}
-                setGraphFilters={setGraphFilters}
-                onApplyFilters={applyBatchGraphFilters}
-                graphLoading={graphLoading}
-                isDark={isDark}
-              />
-            ) : null}
-            {activePage === "ReviewExplorer" ? (
-              <ReviewExplorer
-                reviewText={reviewText}
-                setReviewText={setReviewText}
-                onSubmit={handleSingleSubmit}
-                loading={loading}
-                output={singleOutput}
-                reviewGraph={reviewGraph}
-                batchFile={batchFile}
-                setBatchFile={setBatchFile}
-                onBatchSubmit={handleBatchSubmit}
-                jobStatus={jobStatus}
-                kpis={kpis}
-                leaderboardRows={leaderboardRows}
-                impactRows={impactMatrix}
-                segmentRows={segmentRows}
-                weeklySummary={weeklySummary}
-                alerts={alerts}
-                evidenceRows={evidenceRows}
-                onOpenGraph={() => setActivePage("GraphExplorer")}
-                onOpenAnalytics={() => setActivePage("AspectAnalytics")}
-                isDark={isDark}
-              />
-            ) : null}
-            {activePage === "Alerts" ? (
-              <AlertsPage 
-                alerts={alerts} 
-                isDark={isDark} 
-                onAlertClick={handleAlertClick}
-                onAlertClear={handleAlertClear}
-              />
-            ) : null}
-            {activePage === "UserReviews" ? (
-              <UserReviewsInsights
-                summary={userReviewSummary}
-                list={userReviewList}
-                isDark={isDark}
-              />
-            ) : null}
-            {activePage === "AlertDetail" ? (
-              <AlertDetailPage 
-                alert={selectedAlert} 
-                isDark={isDark} 
-                onBack={() => setActivePage("Alerts")} 
-              />
-            ) : null}
-          </Suspense>
+          {activePage === "Dashboard" ? <Dashboard kpis={kpis} alerts={alerts} leaderboardRows={leaderboardRows} impactRows={impactMatrix} segmentRows={segmentRows} weeklySummary={weeklySummary} isDark={isDark} onSeeMoreAlerts={() => setActivePage("Alerts")} /> : null}
+          {activePage === "AspectAnalytics" ? <AspectAnalytics trends={aspectTrends} emerging={emergingAspects} evidence={evidenceRows} aspectDetail={aspectDetail} weeklySummary={weeklySummary} isDark={isDark} /> : null}
+          {activePage === "GraphExplorer" ? (
+            <GraphExplorer
+              graph={batchGraph}
+              graphFilters={graphFilters}
+              setGraphFilters={setGraphFilters}
+              onApplyFilters={applyBatchGraphFilters}
+              graphLoading={graphLoading}
+              isDark={isDark}
+            />
+          ) : null}
+          {activePage === "ReviewExplorer" ? (
+            <ReviewExplorer
+              reviewText={reviewText}
+              setReviewText={setReviewText}
+              onSubmit={handleSingleSubmit}
+              loading={loading}
+              output={singleOutput}
+              reviewGraph={reviewGraph}
+              batchFile={batchFile}
+              setBatchFile={setBatchFile}
+              onBatchSubmit={handleBatchSubmit}
+              jobStatus={jobStatus}
+              kpis={kpis}
+              leaderboardRows={leaderboardRows}
+              impactRows={impactMatrix}
+              segmentRows={segmentRows}
+              weeklySummary={weeklySummary}
+              alerts={alerts}
+              evidenceRows={evidenceRows}
+              onOpenGraph={() => setActivePage("GraphExplorer")}
+              onOpenAnalytics={() => setActivePage("AspectAnalytics")}
+              isDark={isDark}
+            />
+          ) : null}
+          {activePage === "Alerts" ? (
+            <AlertsPage 
+              alerts={alerts} 
+              isDark={isDark} 
+              onAlertClick={handleAlertClick}
+              onAlertClear={handleAlertClear}
+            />
+          ) : null}
+          {activePage === "UserReviews" ? (
+            <UserReviewsInsights
+              summary={userReviewSummary}
+              list={userReviewList}
+              isDark={isDark}
+            />
+          ) : null}
+          {activePage === "AlertDetail" ? (
+            <AlertDetailPage 
+              alert={selectedAlert} 
+              isDark={isDark} 
+              onBack={() => setActivePage("Alerts")} 
+            />
+          ) : null}
+
         </div>
       </main>
     </div>

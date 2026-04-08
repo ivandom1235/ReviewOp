@@ -11,20 +11,20 @@ class EvidenceSpanOut(BaseModel):
 
 
 class PredictionOut(BaseModel):
-    aspect_raw: str
-    aspect_cluster: str
-    sentiment: str  # positive|neutral|negative
-    confidence: float
+    aspect_raw: str = Field(..., description="The original aspect text extracted from the review", example="battery life")
+    aspect_cluster: str = Field(..., description="The canonical cluster or normalized aspect name", example="Battery")
+    sentiment: str = Field(..., description="Sentiment label: positive, neutral, or negative", example="negative")
+    confidence: float = Field(..., description="Confidence score of the prediction (0.0 to 1.0)", example=0.85)
 
-    aspect_weight: Optional[float] = None
-    aspect_score: Optional[float] = None
+    aspect_weight: Optional[float] = Field(None, description="Impact weight of this aspect")
+    aspect_score: Optional[float] = Field(None, description="Numeric sentiment score")
 
-    evidence_spans: List[EvidenceSpanOut] = Field(default_factory=list)
-    rationale: Optional[str] = None
-    source: Optional[str] = None
-    is_implicit: Optional[bool] = None
+    evidence_spans: List[EvidenceSpanOut] = Field(default_factory=list, description="Text spans in the review supporting this prediction")
+    rationale: Optional[str] = Field(None, description="Explanation for the prediction")
+    source: Optional[str] = Field(None, description="Engine source: explicit, implicit, or verified")
+    is_implicit: Optional[bool] = Field(None, description="Whether this aspect was inferred implicitly")
     verification_status: Optional[str] = None
-    decision: Optional[str] = None
+    decision: Optional[str] = Field(None, description="Selective inference decision (accepted/rejected/abstain)")
     routing: Optional[str] = None
     ambiguity_score: Optional[float] = None
     novelty_score: Optional[float] = None
@@ -62,6 +62,14 @@ class NovelCandidateOut(BaseModel):
     evidence_text: Optional[str] = None
 
 
+class OverviewOut(BaseModel):
+    total_reviews: int
+    total_aspect_mentions: int
+    unique_aspects_raw: int
+    avg_confidence: float
+    sentiment_counts: dict
+
+
 class InferReviewIn(BaseModel):
     text: str
     domain: Optional[str] = None
@@ -73,8 +81,6 @@ class InferReviewOut(BaseModel):
     domain: Optional[str] = None
     product_id: Optional[str] = None
     predictions: List[PredictionOut]
-
-    # NEW:
     overall_sentiment: Optional[str] = None
     overall_score: Optional[float] = None
     overall_confidence: Optional[float] = None
@@ -96,14 +102,6 @@ class JobStatusOut(BaseModel):
     processed: int
     failed: int
     error: Optional[str] = None
-
-
-class OverviewOut(BaseModel):
-    total_reviews: int
-    total_aspect_mentions: int
-    unique_aspects_raw: int
-    avg_confidence: float
-    sentiment_counts: dict
 
 
 class TopAspectOut(BaseModel):

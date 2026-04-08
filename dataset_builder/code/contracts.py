@@ -37,8 +37,8 @@ class BuilderConfig:
     enable_llm_fallback: bool = True
     llm_fallback_threshold: float = 0.65
     enable_reasoned_recovery: bool = True
-    llm_provider: str | None = None  # options: runpod, openai, anthropic, ollama
-    llm_model_name: str = "llama3-8b-instruct"
+    llm_provider: str | None = None  # options: runpod, openai, claude, anthropic, ollama
+    llm_model_name: str | None = None
     llm_api_key: str | None = None
     llm_base_url: str | None = None
     llm_max_retries: int = 3
@@ -97,6 +97,7 @@ class BuilderConfig:
     strict_h2_h3_ratio_min: float = 0.35
     strict_multi_aspect_ratio_min: float = 0.12
     strict_challenge_macro_f1_min: float = 0.5
+    processor: str | None = None
     max_workers: int = 10
     no_llm_cache: bool = False
 

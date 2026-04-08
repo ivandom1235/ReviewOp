@@ -1,0 +1,563 @@
+{
+  "registry_version": "v1",
+  "domains": {
+    "telecom": {
+      "power": {
+        "canonical_label": "power",
+        "aliases": [
+          "battery"
+        ],
+        "support_count": 20,
+        "stability_score": 0.4,
+        "sentiment_profile": {
+          "positive": 21
+        },
+        "first_seen": "2026-04-08T15:01:46Z",
+        "last_seen": "2026-04-08T15:01:46Z",
+        "status": "candidate",
+        "seen_runs": 1,
+        "missing_runs": 4,
+        "version": "v1"
+      },
+      "display_quality": {
+        "canonical_label": "display_quality",
+        "aliases": [
+          "screen"
+        ],
+        "support_count": 20,
+        "stability_score": 0.4,
+        "sentiment_profile": {
+          "negative": 21
+        },
+        "first_seen": "2026-04-08T15:01:46Z",
+        "last_seen": "2026-04-08T15:01:46Z",
+        "status": "candidate",
+        "seen_runs": 1,
+        "missing_runs": 4,
+        "version": "v1"
+      }
+    },
+    "electronics": {
+      "power": {
+        "canonical_label": "power",
+        "aliases": [
+          "battery"
+        ],
+        "support_count": 20,
+        "stability_score": 0.4,
+        "sentiment_profile": {
+          "positive": 21
+        },
+        "first_seen": "2026-04-08T15:01:46Z",
+        "last_seen": "2026-04-08T15:01:46Z",
+        "status": "candidate",
+        "seen_runs": 1,
+        "missing_runs": 4,
+        "version": "v1"
+      },
+      "display_quality": {
+        "canonical_label": "display_quality",
+        "aliases": [
+          "screen"
+        ],
+        "support_count": 20,
+        "stability_score": 0.4,
+        "sentiment_profile": {
+          "negative": 21
+        },
+        "first_seen": "2026-04-08T15:01:46Z",
+        "last_seen": "2026-04-08T15:01:46Z",
+        "status": "candidate",
+        "seen_runs": 1,
+        "missing_runs": 4,
+        "version": "v1"
+      }
+    },
+    "automotive": {
+      "performance": {
+        "canonical_label": "performance",
+        "aliases": [
+          "performance"
+        ],
+        "support_count": 8,
+        "stability_score": 0.16,
+        "sentiment_profile": {
+          "neutral": 10
+        },
+        "first_seen": "2026-04-08T16:04:29Z",
+        "last_seen": "2026-04-08T16:05:13Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 2,
+        "version": "v1"
+      },
+      "comfort": {
+        "canonical_label": "comfort",
+        "aliases": [
+          "comfort"
+        ],
+        "support_count": 14,
+        "stability_score": 0.28,
+        "sentiment_profile": {
+          "neutral": 16
+        },
+        "first_seen": "2026-04-08T16:04:29Z",
+        "last_seen": "2026-04-08T16:05:13Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 2,
+        "version": "v1"
+      },
+      "build_quality": {
+        "canonical_label": "build_quality",
+        "aliases": [
+          "build"
+        ],
+        "support_count": 6,
+        "stability_score": 0.12,
+        "sentiment_profile": {
+          "neutral": 8
+        },
+        "first_seen": "2026-04-08T16:04:29Z",
+        "last_seen": "2026-04-08T16:05:13Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 2,
+        "version": "v1"
+      },
+      "display_quality": {
+        "canonical_label": "display_quality",
+        "aliases": [
+          "display"
+        ],
+        "support_count": 4,
+        "stability_score": 0.08,
+        "sentiment_profile": {
+          "neutral": 6
+        },
+        "first_seen": "2026-04-08T16:04:29Z",
+        "last_seen": "2026-04-08T16:05:13Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 2,
+        "version": "v1"
+      }
+    },
+    "laptop": {
+      "service_quality": {
+        "canonical_label": "service_quality",
+        "aliases": [
+          "driver",
+          "friendly",
+          "helpful",
+          "kind",
+          "manager",
+          "nice",
+          "professional",
+          "responsive",
+          "service",
+          "staff",
+          "support"
+        ],
+        "support_count": 416,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "neutral": 236,
+          "negative": 28,
+          "positive": 154
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "value": {
+        "canonical_label": "value",
+        "aliases": [
+          "budget",
+          "cheap",
+          "cost",
+          "deal",
+          "dollars",
+          "expensive",
+          "money",
+          "overpriced",
+          "payment",
+          "price",
+          "priced",
+          "rate",
+          "saving",
+          "value",
+          "worth"
+        ],
+        "support_count": 558,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "positive": 196,
+          "neutral": 284,
+          "negative": 80
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "power": {
+        "canonical_label": "power",
+        "aliases": [
+          "adapter",
+          "battery",
+          "charger",
+          "charging",
+          "dead",
+          "drains",
+          "hours",
+          "lasted",
+          "plug",
+          "plugged in",
+          "power",
+          "short life"
+        ],
+        "support_count": 676,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "neutral": 514,
+          "positive": 108,
+          "negative": 56
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "thermal": {
+        "canonical_label": "thermal",
+        "aliases": [
+          "burning",
+          "cool",
+          "cooling",
+          "fan",
+          "heat",
+          "hot",
+          "overheating",
+          "thermal",
+          "warm"
+        ],
+        "support_count": 134,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "negative": 14,
+          "neutral": 100,
+          "positive": 22
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "sensory_quality": {
+        "canonical_label": "sensory_quality",
+        "aliases": [
+          "audio",
+          "clear",
+          "food",
+          "fresh",
+          "loud",
+          "music",
+          "noisy",
+          "sound",
+          "yummy"
+        ],
+        "support_count": 162,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "negative": 16,
+          "neutral": 108,
+          "positive": 40
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "accessibility": {
+        "canonical_label": "accessibility",
+        "aliases": [
+          "access",
+          "blocked",
+          "confusing",
+          "direct",
+          "easy",
+          "gps",
+          "lost",
+          "simple",
+          "stuck"
+        ],
+        "support_count": 332,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "positive": 264,
+          "neutral": 58,
+          "negative": 12
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "reliability": {
+        "canonical_label": "reliability",
+        "aliases": [
+          "broken",
+          "crash",
+          "crashed",
+          "defect",
+          "died",
+          "durable",
+          "error",
+          "failure",
+          "freezes",
+          "frozen",
+          "issue",
+          "malfunction",
+          "problem",
+          "quit",
+          "reboot",
+          "restart",
+          "stable",
+          "stopped working",
+          "support",
+          "useless",
+          "warranty"
+        ],
+        "support_count": 536,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "neutral": 376,
+          "negative": 116,
+          "positive": 46
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "performance": {
+        "canonical_label": "performance",
+        "aliases": [
+          "app",
+          "efficient",
+          "fast",
+          "freezes",
+          "hardware",
+          "laggy",
+          "operating system",
+          "os",
+          "performance",
+          "powerful",
+          "processor",
+          "responsive",
+          "slow",
+          "smooth",
+          "software",
+          "speed",
+          "wait"
+        ],
+        "support_count": 910,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "positive": 322,
+          "neutral": 472,
+          "negative": 118
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "connectivity": {
+        "canonical_label": "connectivity",
+        "aliases": [
+          "bluetooth",
+          "connection",
+          "data",
+          "internet",
+          "network",
+          "pairing",
+          "searching",
+          "signal",
+          "unstable",
+          "wifi",
+          "wireless"
+        ],
+        "support_count": 254,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "negative": 18,
+          "neutral": 188,
+          "positive": 50
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "build_quality": {
+        "canonical_label": "build_quality",
+        "aliases": [
+          "build",
+          "casing",
+          "cheap plastic",
+          "construction",
+          "design",
+          "durable",
+          "material",
+          "premium",
+          "solid",
+          "strong",
+          "sturdy"
+        ],
+        "support_count": 202,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "negative": 16,
+          "neutral": 72,
+          "positive": 116
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "timeliness": {
+        "canonical_label": "timeliness",
+        "aliases": [
+          "delay",
+          "fast",
+          "late",
+          "prompt",
+          "quick",
+          "speedy",
+          "standard",
+          "time",
+          "wait",
+          "waiting"
+        ],
+        "support_count": 388,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "positive": 184,
+          "negative": 32,
+          "neutral": 174
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "display_quality": {
+        "canonical_label": "display_quality",
+        "aliases": [
+          "brightness",
+          "crisp",
+          "display",
+          "interface",
+          "monitor",
+          "panel",
+          "resolution",
+          "screen",
+          "sharp",
+          "vivid"
+        ],
+        "support_count": 526,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "neutral": 300,
+          "positive": 188,
+          "negative": 40
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "comfort": {
+        "canonical_label": "comfort",
+        "aliases": [
+          "comfortable",
+          "environment",
+          "quiet",
+          "room",
+          "setting",
+          "space",
+          "uncomfortable"
+        ],
+        "support_count": 88,
+        "stability_score": 1.0,
+        "sentiment_profile": {
+          "negative": 8,
+          "neutral": 46,
+          "positive": 36
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      },
+      "cleanliness": {
+        "canonical_label": "cleanliness",
+        "aliases": [
+          "clean",
+          "dirty",
+          "dust",
+          "messy",
+          "neat",
+          "trash"
+        ],
+        "support_count": 48,
+        "stability_score": 0.96,
+        "sentiment_profile": {
+          "positive": 20,
+          "negative": 8,
+          "neutral": 22
+        },
+        "first_seen": "2026-04-08T16:10:47Z",
+        "last_seen": "2026-04-08T16:19:51Z",
+        "status": "candidate",
+        "seen_runs": 2,
+        "missing_runs": 0,
+        "version": "v1"
+      }
+    }
+  },
+  "history": {
+    "runs_seen": 8
+  },
+  "updated_at": "2026-04-08T16:19:51Z"
+}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { searchProducts } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
@@ -19,7 +19,6 @@ export default function SearchResultsPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
-  const searchAbortRef = useRef(null);
 
   const q = params.get("q") || "";
   const minRating = Number(params.get("min_rating") ?? "0");
@@ -33,21 +32,13 @@ export default function SearchResultsPage() {
     // Reset when keywords or filters change
     setError("");
     setLoading(true);
-    searchAbortRef.current?.abort();
-    const controller = new AbortController();
-    searchAbortRef.current = controller;
-
-    searchProducts(token, { q, min_rating: minRating, sort, offset: 0 }, { signal: controller.signal })
+    searchProducts(token, { q, min_rating: minRating, sort, offset: 0 })
       .then((data) => {
         setRows(data);
         setHasMore(data.length === limit);
       })
-      .catch((ex) => {
-        if (controller.signal.aborted) return;
-        setError(ex.message || "Search failed");
-      })
+      .catch((ex) => setError(ex.message || "Search failed"))
       .finally(() => setLoading(false));
-    return () => controller.abort();
   }, [token, q, minRating, sort]);
 
   useEffect(() => {
@@ -80,26 +71,25 @@ export default function SearchResultsPage() {
 
   return (
     <UserShell title="Search Results">
-      <div className="page-fade-in space-y-6">
-        <div className="glass-card flex flex-wrap gap-3 rounded-xl p-4">
+      <div className="flex flex-wrap gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
         <div className="relative flex-1 min-w-[220px]">
           <input
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            className="w-full rounded-lg border border-border-subtle bg-[hsla(var(--bg-surface)/0.85)] px-3 py-2 text-[hsl(var(--text-main))] placeholder:text-muted-main"
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
             placeholder="Search products"
           />
           {searchInput !== q && (
-            <div className="absolute right-3 top-2.5 h-4 w-4 animate-spin rounded-full border-2 border-blue-500 border-t-transparent"></div>
+            <div className="absolute right-3 top-2.5 h-4 w-4 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent"></div>
           )}
         </div>
-        <select value={minRating} onChange={(e) => setParams({ q, min_rating: e.target.value, sort })} className="rounded-lg border border-border-subtle bg-[hsla(var(--bg-surface)/0.85)] px-3 py-2 text-[hsl(var(--text-main))]">
+        <select value={minRating} onChange={(e) => setParams({ q, min_rating: e.target.value, sort })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
           <option value={4}>4 stars and above</option>
           <option value={3}>3 stars and above</option>
           <option value={2}>2 stars and above</option>
           <option value={1}>1 star and above</option>
         </select>
-        <select value={sort} onChange={(e) => setParams({ q, min_rating: String(minRating), sort: e.target.value })} className="rounded-lg border border-border-subtle bg-[hsla(var(--bg-surface)/0.85)] px-3 py-2 text-[hsl(var(--text-main))]">
+        <select value={sort} onChange={(e) => setParams({ q, min_rating: String(minRating), sort: e.target.value })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
           {SORT_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
@@ -108,11 +98,11 @@ export default function SearchResultsPage() {
 
       {loading && !rows.length ? (
         <div className="mt-8 flex justify-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-500 border-t-transparent"></div>
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-600 border-t-transparent"></div>
         </div>
       ) : (
         <>
-          {error ? <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</div> : null}
+          {error ? <div className="mt-4 rounded-lg bg-red-100 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-200">{error}</div> : null}
           
           <div className="mt-6 grid gap-3 md:grid-cols-2">
             {rows.map((p) => (
@@ -121,7 +111,7 @@ export default function SearchResultsPage() {
           </div>
 
           {!rows.length && !error && !loading ? (
-            <p className="mt-6 text-sm text-muted-main">No products found.</p>
+            <p className="mt-6 text-sm text-slate-600 dark:text-slate-300">No products found.</p>
           ) : null}
 
           {hasMore && rows.length > 0 && (
@@ -129,7 +119,7 @@ export default function SearchResultsPage() {
               <button
                 onClick={handleLoadMore}
                 disabled={loading}
-                className="card-hover-lift subtle-pulse rounded-lg border border-border-subtle bg-app/30 px-6 py-2 text-sm font-medium text-brand-primary disabled:opacity-50"
+                className="rounded-lg bg-slate-100 px-6 py-2 text-sm font-medium text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 disabled:opacity-50"
               >
                 {loading ? "Loading..." : "Load More Products"}
               </button>
@@ -137,7 +127,6 @@ export default function SearchResultsPage() {
           )}
         </>
       )}
-      </div>
     </UserShell>
   );
 }

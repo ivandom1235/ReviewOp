@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 import hashlib
+import importlib.util
+from pathlib import Path
+import sys
 from typing import Any, Dict, List
 import time
 
@@ -13,7 +16,14 @@ try:
     from .config import ProtonetConfig
     from .progress import task_bar
 except ImportError:
-    from config import ProtonetConfig
+    _config_path = Path(__file__).resolve().with_name("config.py")
+    _config_spec = importlib.util.spec_from_file_location("protonet_local_config", _config_path)
+    if _config_spec is None or _config_spec.loader is None:  # pragma: no cover
+        raise
+    _config_module = importlib.util.module_from_spec(_config_spec)
+    sys.modules[_config_spec.name] = _config_module
+    _config_spec.loader.exec_module(_config_module)
+    ProtonetConfig = _config_module.ProtonetConfig
     from progress import task_bar
 
 
@@ -256,9 +266,24 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
                     
                     pred_set = {pred_label}
                     jaccard = len(true_set & pred_set) / max(1, len(true_set | pred_set))
-                    max_logit = float(out.logits[row_index].max().detach().cpu().item())
+                    row_logits = out.logits[row_index].detach().cpu()
+                    max_logit = float(row_logits.max().item())
                     min_distance_sq = max(0.0, -max_logit * eval_temperature)
-                    novelty_score = max(0.0, min(1.0, min_distance_sq / (min_distance_sq + 1.0)))
+                    distance_score = max(0.0, min(1.0, min_distance_sq / (min_distance_sq + 1.0)))
+                    ranked_probs = np.sort(probs[row_index])[::-1]
+                    p_top1 = float(ranked_probs[0]) if len(ranked_probs) > 0 else 0.0
+                    p_top2 = float(ranked_probs[1]) if len(ranked_probs) > 1 else 0.0
+                    ambiguity_score = max(0.0, min(1.0, 1.0 - (p_top1 - p_top2)))
+                    energy_raw = float((-eval_temperature * torch.logsumexp(row_logits, dim=0)).item())
+                    energy_score = max(0.0, min(1.0, (energy_raw + 5.0) / 10.0))
+                    # Change 21: Improved novelty scoring (re-weighted to sum to 1.0)
+                    novelty_score = max(
+                        0.0,
+                        min(
+                            1.0,
+                            0.50 * distance_score + 0.30 * ambiguity_score + 0.20 * energy_score,
+                        ),
+                    )
                     split_protocol = query_row.get("split_protocol") if isinstance(query_row, dict) else {}
                     novel_truth_label = 1 if bool(query_row.get("novel_acceptable", False)) else 0
                     novelty_truth.append(novel_truth_label)
@@ -307,6 +332,11 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
                             "abstained": did_abstain,
                             "post_aspect_abstained": float(post_aspect.get("confidence", confidence)) < cfg.low_confidence_threshold,
                             "novelty_score": float(novelty_score),
+                            "novelty_components": {
+                                "distance_score": float(distance_score),
+                                "ambiguity_score": float(ambiguity_score),
+                                "energy_score": float(energy_score),
+                            },
                             "routing": routing,
                             "decision_band": decision_band,
                             "split_protocol": split_protocol if isinstance(split_protocol, dict) else {},
@@ -336,9 +366,10 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
     risk = 1.0 - (running_correct / max(1, len(y_true)))
     avg_overlap = float(np.mean([float(row.get("multi_label_overlap", 0.0)) for row in predictions])) if predictions else 0.0
     flex_correct_rate = float(np.mean([1.0 if row.get("flex_correct") else 0.0 for row in predictions])) if predictions else 0.0
+    has_novel_positives = any(int(value) == 1 for value in novelty_truth)
     known_novel_quality = float(np.mean([1.0 if int(pred) == int(truth) else 0.0 for pred, truth in zip(novelty_pred, novelty_truth)])) if novelty_truth else 0.0
     known_vs_novel_auroc = 0.0
-    if len(set(novelty_truth)) > 1:
+    if has_novel_positives and len(set(novelty_truth)) > 1:
         try:
             known_vs_novel_auroc = float(roc_auc_score(novelty_truth, novelty_scores))
         except ValueError:
@@ -353,7 +384,7 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
     precision_known = tn / max(1, tn + fn)
     recall_known = tn / max(1, tn + fp)
     f1_known = (2 * precision_known * recall_known / (precision_known + recall_known)) if (precision_known + recall_known) else 0.0
-    known_novel_f1_macro = (f1_known + f1_novel) / 2.0
+    known_novel_f1_macro = (f1_known + f1_novel) / 2.0 if has_novel_positives else 0.0
     boundary_rows = [row for row in predictions if str(row.get("decision_band") or "") == "boundary"]
     boundary_abstain_quality = float(
         np.mean(
@@ -410,6 +441,14 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
             return 0.0
         vals = [correctness[i] for i in indices if i < len(correctness)]
         return float(np.mean(vals)) if vals else 0.0
+    def _protocol_macro_f1(indices: List[int]) -> float:
+        if not indices:
+            return 0.0
+        true_vals = [y_true[i] for i in indices if i < len(y_true)]
+        pred_vals = [y_pred[i] for i in indices if i < len(y_pred)]
+        if not true_vals:
+            return 0.0
+        return float(f1_score(true_vals, pred_vals, average="macro"))
     metrics = {
         "split": split_name,
         "num_episodes": len(episodes),
@@ -430,14 +469,15 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
         "known_vs_novel_f1_macro": float(known_novel_f1_macro),
         "known_vs_novel_f1": {"known": float(f1_known), "novel": float(f1_novel)},
         "known_vs_novel_confusion": {"tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn)},
+        "known_vs_novel_not_applicable": bool(not has_novel_positives),
         "open_set_risk_coverage_curve": open_set_curve,
         "boundary_abstain_quality": float(boundary_abstain_quality),
         "novel_cluster_consistency": float(cluster_consistency),
         "ambiguity_sliced": {"high_ambiguity_accuracy": float(high_ambiguity_accuracy)},
         "protocol_breakdown": {
-            "random": {"accuracy": _protocol_acc(protocol_groups["random"])},
-            "grouped": {"accuracy": _protocol_acc(protocol_groups["grouped"])},
-            "domain_holdout": {"accuracy": _protocol_acc(protocol_groups["domain_holdout"])},
+            "random": {"accuracy": _protocol_acc(protocol_groups["random"]), "macro_f1": _protocol_macro_f1(protocol_groups["random"])},
+            "grouped": {"accuracy": _protocol_acc(protocol_groups["grouped"]), "macro_f1": _protocol_macro_f1(protocol_groups["grouped"])},
+            "domain_holdout": {"accuracy": _protocol_acc(protocol_groups["domain_holdout"]), "macro_f1": _protocol_macro_f1(protocol_groups["domain_holdout"])},
         },
         "per_aspect_accuracy": {aspect: float(sum(values) / max(1, len(values))) for aspect, values in sorted(per_aspect.items())},
         "calibration_ece": _expected_calibration_error(confidences, correctness),
@@ -449,6 +489,7 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
     post_aspect_rows = _project_prediction_rows(predictions, "post_aspect")
     post_aspect_mode_metrics = _compact_mode_metrics(post_aspect_rows, cfg, split_name, mode="post_aspect", elapsed=elapsed, episodes=episodes)
     metrics["selected_mode"] = cfg.sentiment_pipeline
+    metrics["primary_modes"] = ["joint", "post_aspect", "abstain_aware"]
     metrics["mode_metrics"] = {
         "joint": joint_mode_metrics,
         "post_aspect": post_aspect_mode_metrics,

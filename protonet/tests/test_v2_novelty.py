@@ -87,6 +87,28 @@ class V2NoveltyTests(unittest.TestCase):
         self.assertLess(first["thresholds"]["T_known"], first["thresholds"]["T_novel"])
         self.assertTrue(first["validation_snapshot_hash"])
 
+    def test_threshold_calibration_skips_without_novel(self) -> None:
+        rows = [
+            {"novelty_score": 0.1, "novel_acceptable": False, "true_label": "battery|negative", "pred_label": "battery|negative", "confidence": 0.9},
+            {"novelty_score": 0.2, "novel_acceptable": False, "true_label": "screen|positive", "pred_label": "screen|positive", "confidence": 0.8},
+        ]
+        result = calibrate_thresholds(rows)
+        self.assertTrue(result["not_applicable"])
+        self.assertIn("warning", result)
+
+    def test_runtime_returns_routing_and_novelty_decomposition(self) -> None:
+        runtime = _RuntimeStub(
+            [
+                {"aspect": "packaging-damage", "sentiment": "negative", "confidence": 0.6, "raw_score": 2.0, "min_distance_sq": 9.0, "energy": 2.0},
+                {"aspect": "battery", "sentiment": "negative", "confidence": 0.4, "raw_score": 1.0, "min_distance_sq": 9.0, "energy": 2.0},
+            ]
+        )
+        out = runtime.score_text_selective("Box arrived crushed", "Box arrived crushed", "electronics")
+        self.assertIn("routing", out)
+        self.assertIn("novelty_decomposition", out)
+        self.assertIn("distance_score", out["novelty_decomposition"])
+        self.assertIn("energy_score", out["novelty_decomposition"])
+
 
 if __name__ == "__main__":
     unittest.main()

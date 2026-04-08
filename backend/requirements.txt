@@ -298,5 +298,3 @@ wrapt==2.1.2
 # The following packages are considered to be unsafe in a requirements file:
 # setuptools
 
-# RunPod Flash (serverless GPU inference)
-runpod-flash>=1.11.0

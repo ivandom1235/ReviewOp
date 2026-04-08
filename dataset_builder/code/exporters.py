@@ -22,8 +22,15 @@ def write_benchmark_outputs(
     target_dir: Path,
     rows_by_split: dict[str, list[dict[str, Any]]],
     metadata: dict[str, Any],
+    protocol_views: dict[str, dict[str, list[dict[str, Any]]]] | None = None,
 ) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     for split in ("train", "val", "test"):
         write_jsonl(target_dir / f"{split}.jsonl", rows_by_split.get(split, []))
+    if protocol_views:
+        for protocol_name, payload in protocol_views.items():
+            protocol_dir = target_dir.parent / protocol_name
+            protocol_dir.mkdir(parents=True, exist_ok=True)
+            for split in ("train", "val", "test"):
+                write_jsonl(protocol_dir / f"{split}.jsonl", payload.get(split, []))
     (target_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")

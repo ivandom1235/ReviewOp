@@ -205,6 +205,10 @@ def benchmark_gold_eval(rows: Iterable[dict[str, Any]]) -> Dict[str, Any]:
     abstain_acceptable_rows = 0
     novel_acceptable_rows = 0
     novel_cluster_counts: Counter[str] = Counter()
+    explicit_grounded_total = 0
+    implicit_grounded_total = 0
+    fallback_only_implicit = 0
+    ontology_compatible_total = 0
 
     for row in eligible:
         domain = str(row.get("domain", "unknown"))
@@ -218,6 +222,8 @@ def benchmark_gold_eval(rows: Iterable[dict[str, Any]]) -> Dict[str, Any]:
             if cluster_id:
                 novel_cluster_counts[cluster_id] += 1
         review_text = _norm_text(row.get("review_text") or row.get("source_text"))
+        explicit_grounded_total += len(list(row.get("explicit_grounded_interpretations") or []))
+        implicit_grounded_total += len(list(row.get("implicit_grounded_interpretations") or []))
         for item in row.get("gold_interpretations", []):
             if not isinstance(item, dict):
                 continue
@@ -235,6 +241,11 @@ def benchmark_gold_eval(rows: Iterable[dict[str, Any]]) -> Dict[str, Any]:
             if evidence and evidence in review_text:
                 grounded_interpretations += 1
                 domain_stats["grounded"] += 1
+            if bool(item.get("fallback_used", False)):
+                fallback_only_implicit += 1
+            canonical = str(item.get("domain_canonical_aspect") or "").strip()
+            if canonical:
+                ontology_compatible_total += 1
 
     return {
         "has_gold_interpretations": True,
@@ -248,7 +259,76 @@ def benchmark_gold_eval(rows: Iterable[dict[str, Any]]) -> Dict[str, Any]:
         "novel_acceptable_rate": round(novel_acceptable_rows / max(1, len(eligible)), 4),
         "novel_cluster_count": int(len(novel_cluster_counts)),
         "novel_cluster_frequency": dict(novel_cluster_counts.most_common()),
+        "implicit_purity_rate": round(implicit_grounded_total / max(1, implicit_grounded_total + explicit_grounded_total), 4),
+        "fallback_only_implicit_rate": round(fallback_only_implicit / max(1, implicit_grounded_total), 4),
+        "ontology_compatibility_rate": round(ontology_compatible_total / max(1, total_interpretations), 4),
         "interpretation_source_distribution": dict(source_counts.most_common()),
         "ambiguity_type_distribution": dict(ambiguity_type_counts),
         "by_domain": by_domain,
+    }
+
+
+def benchmark_structural_audits(rows_by_split: Dict[str, list[dict[str, Any]]]) -> Dict[str, Any]:
+    split_names = ("train", "val", "test")
+    all_rows = [row for split in split_names for row in rows_by_split.get(split, [])]
+    total_rows = max(1, len(all_rows))
+    invalid_spans = 0
+    group_ids = [str(row.get("group_id") or "unknown") for row in all_rows]
+    explicit_count = 0
+    implicit_count = 0
+    split_label_sets: Dict[str, set[str]] = {split: set() for split in split_names}
+    split_h2h3: Dict[str, int] = {split: 0 for split in split_names}
+    split_abstain: Dict[str, int] = {split: 0 for split in split_names}
+    split_novel: Dict[str, int] = {split: 0 for split in split_names}
+
+    for split in split_names:
+        for row in rows_by_split.get(split, []):
+            if bool(row.get("abstain_acceptable", False)):
+                split_abstain[split] += 1
+            if bool(row.get("novel_acceptable", False)):
+                split_novel[split] += 1
+            hardness = str(row.get("hardness_tier") or "H0").strip().upper()
+            if hardness in {"H2", "H3"}:
+                split_h2h3[split] += 1
+            for item in list(row.get("gold_interpretations") or []):
+                if not isinstance(item, dict):
+                    continue
+                aspect = str(item.get("aspect_label") or item.get("aspect") or "").strip().lower()
+                if aspect:
+                    split_label_sets[split].add(aspect)
+                label_source = str(item.get("label_type") or item.get("source") or "").strip().lower()
+                if label_source == "explicit":
+                    explicit_count += 1
+                else:
+                    implicit_count += 1
+                span = item.get("evidence_span")
+                if not (isinstance(span, list) and len(span) == 2):
+                    invalid_spans += 1
+                    continue
+                try:
+                    start = int(span[0] if span[0] is not None else -1)
+                    end = int(span[1] if span[1] is not None else -1)
+                except (TypeError, ValueError):
+                    invalid_spans += 1
+                    continue
+                review = str(row.get("review_text") or "")
+                if start < 0 or end < start or end > len(review):
+                    invalid_spans += 1
+
+    union_labels = set().union(*split_label_sets.values()) if split_label_sets else set()
+    protocol_label_parity = {
+        split: round(len(split_label_sets[split]) / max(1, len(union_labels)), 4)
+        for split in split_names
+    }
+    return {
+        "invalid_span_rate": round(invalid_spans / total_rows, 4),
+        "group_id_uniqueness_ratio": round(len(set(group_ids)) / total_rows, 4),
+        "protocol_label_coverage_parity": protocol_label_parity,
+        "abstain_positive_by_split": split_abstain,
+        "novel_positive_by_split": split_novel,
+        "h2_h3_by_split": split_h2h3,
+        "source_mix": {
+            "explicit": int(explicit_count),
+            "implicit": int(implicit_count),
+        },
     }

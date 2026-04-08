@@ -12,6 +12,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from spacy.language import Language
 from spacy.tokens import Doc, Span, Token
 
+from core.config import settings
+
 ARTICLE_PREFIX_RE = re.compile(r"^(the|a|an|this|that|these|those)\s+", flags=re.I)
 TRAILING_PUNCT_RE = re.compile(r"[^\w\s\-]+$")
 ALPHA_RE = re.compile(r"[a-zA-Z]")
@@ -156,7 +158,7 @@ def _nlp() -> Language:
 
 @lru_cache(maxsize=1)
 def _embedder() -> SentenceTransformer:
-    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    return SentenceTransformer(settings.open_aspect_model_name, local_files_only=True)
 
 
 def _span_text(span: Span) -> str:

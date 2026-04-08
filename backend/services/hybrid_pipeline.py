@@ -10,12 +10,14 @@ from models.tables import AbstainedPrediction, EvidenceSpan, NovelCandidate, Pre
 from services.hybrid_merge import merge_predictions
 from services.review_pipeline import run_single_review_pipeline, split_selective_states
 
-
-import logging
-
-logger = logging.getLogger(__name__)
-
 PredictionLike = Dict[str, Any]
+
+
+def _first_evidence_span(row: PredictionLike) -> dict[str, Any]:
+    spans = row.get("evidence_spans") or []
+    if not spans:
+        return {}
+    return spans[0] if isinstance(spans[0], dict) else {}
 
 
 def _prediction_row_to_dict(pred) -> PredictionLike:
@@ -96,8 +98,7 @@ def _persist_selective_states(db: Session, review_obj, selective_states: Dict[st
             continue
         novelty_score = float(row.get("novelty_score", 0.0))
         confidence = row.get("confidence", None)
-        evidence_spans = row.get("evidence_spans") or []
-        first_span = evidence_spans[0] if evidence_spans else {}
+        first_span = _first_evidence_span(row)
         key = f"{aspect}|{novelty_score:.6f}|{str(first_span.get('snippet') or '')}"
         if key in seen_novel:
             continue
@@ -144,8 +145,6 @@ def run_single_review_hybrid_pipeline(
         review_text=text,
         domain=domain,
     )
-    logger.debug("EXPLICIT: %s", explicit_predictions)
-    logger.debug("IMPLICIT: %s", implicit_predictions)
 
     # Step C: V6 selective routing filter for implicit outputs
     selective_states = split_selective_states(implicit_predictions)

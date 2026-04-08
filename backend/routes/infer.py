@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import io
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Request
 from sqlalchemy.orm import Session
 import pandas as pd
 from pandas.errors import ParserError
@@ -51,6 +51,7 @@ def _read_csv_best_effort(content: bytes, encoding: str) -> pd.DataFrame:
 
 @router.post("/csv", response_model=JobCreateOut)
 async def infer_csv(
+    request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -85,8 +86,7 @@ async def infer_csv(
     db.add(job)
     db.commit()
 
-    from app import app as fastapi_app
-    engine: Seq2SeqEngine = fastapi_app.state.seq2seq_engine
+    engine: Seq2SeqEngine = request.app.state.seq2seq_engine
 
     process_csv_sync(db=db, engine=engine, job=job, df=df)
 

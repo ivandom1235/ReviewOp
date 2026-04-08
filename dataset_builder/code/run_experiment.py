@@ -4,6 +4,7 @@ import argparse
 from dataclasses import asdict, replace
 import itertools
 import json
+import os
 from pathlib import Path
 from typing import Any
 from dotenv import load_dotenv
@@ -21,6 +22,15 @@ try:
 except Exception:  # pragma: no cover
     def flush_llm_cache() -> None:
         return None
+
+
+def _required_env(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    primary = names[0] if names else "environment variable"
+    raise RuntimeError(f"{primary} is required in .env for dataset_builder")
 
 QUALITY_GATES = {
     "fallback_only_rate_max": 0.22,
@@ -43,6 +53,9 @@ QUALITY_GATES = {
     "gold_aspect_f1_min": 0.55,
     "gold_sentiment_f1_min": 0.55,
     "gold_span_overlap_f1_min": 0.4,
+    "benchmark_implicit_purity_rate_min": 0.7,
+    "benchmark_ontology_compatibility_rate_min": 0.9,
+    "worst_domain_f1_min": 0.4,
 }
 NOVELTY_GATES = {
     "required_ablations": ["explicit-only", "implicit-only", "no-grounding", "no-domain-conditioning", "llm-direct", "v6-full"],
@@ -55,13 +68,6 @@ def _resolve_artifact_mode(*, run_profile: str, artifact_mode: str | None) -> st
     if raw in {"debug_artifacts", "research_release"}:
         return raw
     return "debug_artifacts" if str(run_profile).strip().lower() == "debug" else "research_release"
-
-
-def _resolve_llm_provider(*, llm_provider: str | None, artifact_mode: str) -> str:
-    provider = str(llm_provider or "auto").strip().lower()
-    if provider and provider != "auto":
-        return provider
-    return "mock" if artifact_mode == "debug_artifacts" else "runpod"
 
 
 def _parse_bounded_int_list(raw: str, *, minimum: int, maximum: int, fallback: list[int]) -> list[int]:
@@ -125,6 +131,10 @@ def _metrics_from_report(report: dict[str, Any]) -> dict[str, Any]:
         "benchmark_multi_gold_label_rate": float(benchmark_gold.get("multi_gold_label_rate", 0.0)),
         "benchmark_grounded_evidence_rate": float(benchmark_gold.get("grounded_evidence_rate", 0.0)),
         "benchmark_duplicate_interpretation_rate": float(benchmark_gold.get("duplicate_interpretation_rate", 0.0)),
+        "benchmark_implicit_purity_rate": float(benchmark_gold.get("implicit_purity_rate", 0.0)),
+        "benchmark_ontology_compatibility_rate": float(benchmark_gold.get("ontology_compatibility_rate", 0.0)),
+        "worst_domain_f1": float(report.get("robust_training_eval", {}).get("groupdro", {}).get("worst_domain_f1", 0.0)),
+        "promotion_guard_blocked": bool(report.get("promotion_guard", {}).get("blocked", False)),
     }
 
 
@@ -190,6 +200,10 @@ def _meets_quality_gates(metrics: dict[str, Any], *, quality_gates: dict[str, An
         metrics["gold_aspect_f1"] >= quality_gates["gold_aspect_f1_min"]
         and metrics["gold_sentiment_f1"] >= quality_gates["gold_sentiment_f1_min"]
         and metrics["gold_span_overlap_f1"] >= quality_gates["gold_span_overlap_f1_min"]
+        and metrics["benchmark_implicit_purity_rate"] >= quality_gates["benchmark_implicit_purity_rate_min"]
+        and metrics["benchmark_ontology_compatibility_rate"] >= quality_gates["benchmark_ontology_compatibility_rate_min"]
+        and metrics["worst_domain_f1"] >= quality_gates["worst_domain_f1_min"]
+        and not metrics["promotion_guard_blocked"]
     )
 
 
@@ -211,6 +225,8 @@ def _rank_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
         0 if candidate["metrics"]["train_target_size_compliant"] else 1,
         candidate["metrics"]["train_general_dominance_rate"],
         -candidate["metrics"]["grounded_prediction_rate"],
+        -candidate["metrics"]["worst_domain_f1"],
+        1 if candidate["metrics"]["promotion_guard_blocked"] else 0,
         0 if candidate["metrics"]["has_gold_eval"] else 1,
         -candidate["metrics"]["gold_aspect_f1"],
         -candidate["metrics"]["gold_sentiment_f1"],
@@ -425,8 +441,12 @@ def build_parser() -> argparse.ArgumentParser:
     # Backward-compatible alias for older scripts.
     parser.add_argument("--no-enable-reasoned_recovery", dest="enable_reasoned_recovery", action="store_false")
     parser.set_defaults(enable_reasoned_recovery=bool(runtime_defaults.get("enable_reasoned_recovery", True)))
-    parser.add_argument("--llm-provider", type=str, default="auto", choices=["auto", "runpod", "openai", "anthropic", "ollama", "mock"])
-    parser.add_argument("--llm-model-name", type=str, default=str(runtime_defaults.get("llm_model_name", "llama3-8b-instruct")))
+    parser.add_argument("--processor", type=str, default=_required_env("REVIEWOP_DATASET_BUILDER_PROCESSOR", "DATASET_BUILDER_PROCESSOR"), choices=["local", "runpod"])
+    parser.add_argument(
+        "--llm-model-name",
+        type=str,
+        default=_required_env("REVIEWOP_LLM_MODEL_NAME", "LLM_MODEL_NAME", "GROQ_MODEL", "OPENAI_MODEL", "OLLAMA_MODEL"),
+    )
     parser.add_argument("--llm-api-key", type=str, default=None)
     parser.add_argument("--llm-base-url", type=str, default=None)
     parser.add_argument("--llm-max-retries", type=int, default=3)
@@ -474,7 +494,10 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     args = build_parser().parse_args(argv)
     artifact_mode = _resolve_artifact_mode(run_profile=args.run_profile, artifact_mode=args.artifact_mode)
-    llm_provider = _resolve_llm_provider(llm_provider=args.llm_provider, artifact_mode=artifact_mode)
+    processor = str(args.processor or "").strip().lower()
+    if processor not in {"local", "runpod"}:
+        raise ValueError(f"Unsupported processor: {args.processor}")
+    llm_provider = "runpod" if processor == "runpod" else None
     domain_conditioning_mode = str(args.domain_conditioning_mode or "").strip().lower()
     if not args.use_domain_conditioning:
         domain_conditioning_mode = "off"
@@ -533,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
         unseen_implicit_not_ready_rate_max=args.unseen_implicit_not_ready_rate_max,
         unseen_domain_leakage_row_rate_max=args.unseen_domain_leakage_row_rate_max,
         enable_reasoned_recovery=args.enable_reasoned_recovery,
+        processor=processor,
         llm_provider=llm_provider,
         llm_model_name=args.llm_model_name,
         llm_api_key=args.llm_api_key,

@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from core.db import get_db
+from core.config import settings
 from models.schemas import JobStatusOut
 from models.tables import Job
 
@@ -36,5 +37,5 @@ def kg_rebuild(domain: str | None = None, db: Session = Depends(get_db)):
     - aspect_nodes stats (df/idf/centrality)
     - per-review weights + overall sentiment
     """
-    builder = KGBuilder(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    builder = KGBuilder(model_name=settings.kg_embedding_model_name)
     return builder.rebuild(db=db, domain=domain, cfg=KGConfig())

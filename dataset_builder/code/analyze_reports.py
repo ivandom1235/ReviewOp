@@ -120,6 +120,10 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
         failures.append("Positive sentiment remains above configured maximum in train export.")
     if artifact_summary.get("available") and not artifact_summary.get("counts_match", True):
         failures.append("Benchmark artifact file counts do not match report metadata.")
+    if float(benchmark_gold_eval.get("implicit_purity_rate", 0.0)) < 0.7:
+        failures.append("Benchmark implicit purity rate is below target.")
+    if float(benchmark_gold_eval.get("ontology_compatibility_rate", 0.0)) < 0.9:
+        failures.append("Benchmark ontology compatibility rate is below target.")
 
     root_causes: list[str] = []
     sampled = bool(build.get("config", {}).get("sample_size") is not None or build.get("config", {}).get("chunk_size") is not None)
@@ -201,7 +205,15 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
                 "multi_gold_label_rate": float(benchmark_gold_eval.get("multi_gold_label_rate", 0.0)),
                 "grounded_evidence_rate": float(benchmark_gold_eval.get("grounded_evidence_rate", 0.0)),
                 "duplicate_interpretation_rate": float(benchmark_gold_eval.get("duplicate_interpretation_rate", 0.0)),
+                "implicit_purity_rate": float(benchmark_gold_eval.get("implicit_purity_rate", 0.0)),
+                "fallback_only_implicit_rate": float(benchmark_gold_eval.get("fallback_only_implicit_rate", 0.0)),
+                "ontology_compatibility_rate": float(benchmark_gold_eval.get("ontology_compatibility_rate", 0.0)),
                 "interpretation_source_distribution": benchmark_gold_eval.get("interpretation_source_distribution", {}),
+            },
+            "sentiment_quality": {
+                "sentiment_mismatch_rate": float(build.get("sentiment_quality", {}).get("sentiment_mismatch_rate", 0.0)),
+                "abstain_coverage": float(build.get("sentiment_quality", {}).get("abstain_coverage", 0.0)),
+                "abstain_risk_buckets": build.get("sentiment_quality", {}).get("abstain_risk_buckets", {}),
             },
         },
         "core_quality_metrics": {
