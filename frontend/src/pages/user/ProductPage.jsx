@@ -65,7 +65,7 @@ export default function ProductPage() {
           </div>
 
           <div className="mt-4 space-y-2">
-            {detail.star_distribution.map((row) => {
+            {(detail.star_distribution || []).map((row) => {
               const pct = detail.review_count ? (row.count / detail.review_count) * 100 : 0;
               return (
                 <div key={row.stars} className="flex items-center gap-3 text-sm">

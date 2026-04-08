@@ -8,10 +8,14 @@ from typing import Any, Dict
 
 import numpy as np
 import torch
+from dotenv import load_dotenv
 
 
 PROTONET_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PROTONET_ROOT.parent
+
+# Load .env from workspace root
+load_dotenv(REPO_ROOT / ".env")
 CODE_ROOT = PROTONET_ROOT / "code"
 INPUT_ROOT = PROTONET_ROOT / "input"
 OUTPUT_ROOT = PROTONET_ROOT / "output"

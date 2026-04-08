@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, BackgroundTasks, Request
 from sqlalchemy import and_, case, desc, func, or_, select
@@ -29,7 +28,6 @@ from models.tables import (
     Review,
     User,
     UserProductReview,
-    UserSession,
 )
 from services.auth import IdentityManager
 from services.review_pipeline import _refresh_corpus_graph_task, run_single_review_pipeline

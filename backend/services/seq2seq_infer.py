@@ -100,7 +100,7 @@ class Seq2SeqEngine:
                 losses[lab] = loss
 
         # Convert losses to probabilities (softmax over negative losses)
-        neg = torch.tensor([-losses[l] for l in _LABELS], dtype=torch.float32)
+        neg = torch.tensor([-losses[label] for label in _LABELS], dtype=torch.float32)
         probs = torch.softmax(neg, dim=0).tolist()
 
         best_i = int(torch.tensor(probs).argmax().item())
