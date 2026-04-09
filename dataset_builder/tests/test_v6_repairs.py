@@ -18,7 +18,7 @@ if str(PROTONET_CODE_DIR) not in sys.path:
 from implicit_pipeline import build_implicit_row  # noqa: E402
 from implicit_pipeline import discover_aspects  # noqa: E402
 from implicit_pipeline import infer_sentiment_details  # noqa: E402
-from build_dataset import _benchmark_v2_novelty_sidecar, _build_benchmark_instances, _build_quality_analysis_artifact, _group_identity, _safe_absolute_span  # noqa: E402
+from build_dataset import _benchmark_v2_novelty_sidecar, _build_benchmark_instances, _build_quality_analysis_artifact, _group_identity, _safe_absolute_span, build_parser  # noqa: E402
 from build_dataset import _merge_gold_labels  # noqa: E402
 from build_dataset import _select_working_rows, _split_train_review_filter, _strict_topup_recovery, _train_floor_row_passes  # noqa: E402
 from build_dataset import run_pipeline  # noqa: E402
@@ -670,6 +670,50 @@ class V6RepairTests(unittest.TestCase):
         self.assertEqual(_resolve_artifact_mode(run_profile="debug", artifact_mode="auto"), "debug_artifacts")
         self.assertIsNone(resolve_processor_async_provider("local", model_name="llama-3.1-8b-instant"))
         self.assertIsNotNone(resolve_processor_async_provider("runpod", model_name="llama-3.1-8b-instant"))
+
+    def test_dataset_builder_cli_accepts_core_optional_values(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "--run-profile",
+                "debug",
+                "--sample-size",
+                "100",
+                "--chunk-size",
+                "25",
+                "--chunk-offset",
+                "5",
+                "--llm-provider",
+                "openai",
+                "--llm-model-name",
+                "gpt-4.1-mini",
+                "--preview",
+            ]
+        )
+        self.assertEqual(args.run_profile, "debug")
+        self.assertEqual(args.sample_size, 100)
+        self.assertEqual(args.chunk_size, 25)
+        self.assertEqual(args.chunk_offset, 5)
+        self.assertEqual(args.llm_provider, "openai")
+        self.assertEqual(args.llm_model_name, "gpt-4.1-mini")
+        self.assertTrue(args.preview)
+
+    def test_dataset_builder_cli_supports_boolean_toggles(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "--no-use-coref",
+                "--no-enable-llm-fallback",
+                "--no-domain-conditioning",
+                "--no-strict-implicit-enabled",
+                "--no-progress",
+                "--no-discovery-mode",
+            ]
+        )
+        self.assertFalse(args.use_coref)
+        self.assertFalse(args.enable_llm_fallback)
+        self.assertFalse(args.use_domain_conditioning)
+        self.assertFalse(args.strict_implicit_enabled)
+        self.assertFalse(args.progress)
+        self.assertFalse(args.discovery_mode)
 
     def test_grouped_split_keeps_non_empty_val_when_possible(self) -> None:
         rows = [

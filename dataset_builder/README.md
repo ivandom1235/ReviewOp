@@ -16,12 +16,32 @@ python dataset_builder\code\build_dataset.py [options]
 # Standard build
 python dataset_builder\code\build_dataset.py --input-dir dataset_builder\input --output-dir dataset_builder\output
 
-# Preview only (no writes)
-python dataset_builder\code\build_dataset.py --run-profile debug --sample-size 100 --chunk-size 25 --chunk-offset 0 --preview
+# Small sampled preview run with OpenAI
+python dataset_builder\code\build_dataset.py --run-profile debug --sample-size 100 --llm-provider openai --preview
 
 # Zip existing artifacts only
 python dataset_builder\code\build_dataset.py --zip-only --output-dir dataset_builder\output
 ```
+
+## Recommended Core Flags
+
+These are the flags most users should care about:
+
+- `--input-dir`
+- `--output-dir`
+- `--run-profile` (`research` for full runs, `debug` for sampled runs)
+- `--sample-size`
+- `--chunk-size`
+- `--chunk-offset`
+- `--llm-provider`
+- `--llm-model-name`
+- `--preview`
+- `--dry-run`
+- `--zip-only`
+- `--no-llm-cache`
+- `--progress` / `--no-progress`
+
+The rest of the CLI is advanced tuning. Keep using it only when you need to override pipeline behavior.
 
 ## Output Files
 
@@ -52,7 +72,7 @@ python dataset_builder\code\build_dataset.py --zip-only --output-dir dataset_bui
 ### LLM and recovery
 
 - `--llm-provider` choices: `auto`, `openai`, `runpod`, `ollama`, `mock` (default: `auto`)
-- `--llm-model-name` model name/id (reads `REVIEWOP_LLM_MODEL_NAME`, or the active provider's `GROQ_MODEL` / `CLAUDE_MODEL` / `OPENAI_MODEL` / `OLLAMA_MODEL`; fallback: `meta-llama/Meta-Llama-3.1-8B-Instruct`)
+- `--llm-model-name` model name/id (reads `REVIEWOP_LLM_MODEL_NAME`, or the active provider's `RUNPOD_MODEL` / `CLAUDE_MODEL` / `GROQ_MODEL` / `OPENAI_MODEL` / `OLLAMA_MODEL`; fallback: `meta-llama/Meta-Llama-3.1-8B-Instruct`)
 - `--enable-reasoned-recovery` enable reasoned recovery
 - `--no-enable-reasoned-recovery` disable reasoned recovery
 - `--max-workers` max parallel workers (default: `10`)
@@ -60,6 +80,10 @@ python dataset_builder\code\build_dataset.py --zip-only --output-dir dataset_bui
 - `--no-enable-llm-fallback` disable LLM fallback
 - `--llm-fallback-threshold` fallback confidence threshold (default from runtime defaults, fallback: `0.65`)
 - `--no-llm-cache`, `--no-cache-llm` bypass and clear LLM cache for this run
+- `--discovery-mode` enable Open-Domain Discovery for novel aspects (default: `true`)
+- `--no-discovery-mode` disable Open-Domain Discovery
+- `--discovery-min-confidence` threshold for novel aspect promotion (default: `0.55`)
+- `--discovery-stability-threshold` required occurrences for ontology promotion (default: `5`)
 
 ### Extraction and preprocessing
 

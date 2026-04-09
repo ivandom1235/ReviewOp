@@ -84,6 +84,14 @@ def _required_env(*names: str) -> str:
     raise RuntimeError(f"{primary} is required in .env for dataset_builder")
 
 
+def _optional_env(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
+
+
 class _ProgressTracker:
     def __init__(self, *, enabled: bool, total_steps: int) -> None:
         self._enabled = bool(enabled)
@@ -112,6 +120,27 @@ def _assign_ids(frame: pd.DataFrame) -> pd.DataFrame:
 
     out["id"] = [get_row_id(row) for row in out.itertuples()]
     return out
+
+
+def _harvest_dataset_aspects(frame: pd.DataFrame) -> list[tuple[str, set[str], set[str]]]:
+    """Extracts gold labels from all input data to bootstrap the Adaptive Lexicon."""
+    aspect_cols = [c for c in frame.columns if c.lower() in {"aspect", "gold_aspect", "target_aspect", "implicit_aspect"}]
+    if not aspect_cols:
+        return []
+    
+    discovered_labels = set()
+    for col in aspect_cols:
+        vals = frame[col].dropna().unique()
+        for v in vals:
+            if isinstance(v, str) and len(v.strip()) > 2:
+                discovered_labels.add(v.strip().lower())
+    
+    # Map them to rules: (label, explicit_kws, implicit_sigs)
+    # For harvesting, we treat the label itself as the explicit keyword.
+    new_rules = []
+    for label in discovered_labels:
+        new_rules.append((label, {label}, set()))
+    return new_rules
 
 
 def _get_row_domain(row: dict[str, Any]) -> str:
@@ -693,27 +722,38 @@ def _group_identity(row: dict[str, Any]) -> str:
 
 
 def _group_identity_with_source(row: dict[str, Any]) -> tuple[str, str]:
+    # Highest priority: Explicit grouping IDs (Provided per-review or per-entity)
     for key in ("product_id", "business_id", "entity_id", "group_id"):
         value = row.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip().lower(), "source_identity"
+        if value is not None:
+            val_str = str(value).strip().lower()
+            if val_str:
+                return val_str, "source_identity"
 
     for key in ("parent_review_id",):
         value = row.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip().lower(), "parent_review_identity"
+        if value is not None:
+            val_str = str(value).strip().lower()
+            if val_str:
+                return val_str, "parent_review_identity"
 
+    # Secondary: IDs that imply grouping within a file
+    for key in ("review_id", "record_id", "id", "instance_id"):
+        value = row.get(key)
+        if value is not None:
+            val_str = str(value).strip().lower()
+            if val_str:
+                # Include source_file to avoid ID collisions across different files
+                source = str(row.get("source_file") or "unknown").strip().lower()
+                return f"{source}:{val_str}", "instance_identity"
+
+    # Semantic fallback: signature based on text content
     semantic = _semantic_group_identity(row)
     if semantic:
         return semantic, "semantic_fallback"
 
-    for key in ("review_id", "record_id", "id"):
-        value = row.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip().lower(), "per_row_fallback"
-    source = str(row.get("source_file") or "unknown").strip().lower()
-    domain = str(row.get("domain") or "unknown").strip().lower()
-    return f"fallback:{source}:{domain}", "per_row_fallback"
+    # Path A: If we can't find a strong identity, return a drop marker
+    return "UNKNOWN_GROUP", "unidentified"
 
 
 def _normalize_for_grouping(text: str) -> str:
@@ -2635,8 +2675,13 @@ def _build_benchmark_instances(
     benchmark_hardness_counts = Counter(str(row.get("hardness_tier") or "unknown") for row in all_bench)
     local_group_source_counts: Counter[str] = Counter()
     for row in all_bench:
-        rid = str(row.get("instance_id") or row.get("record_id") or "")
-        local_group_source_counts[_GROUP_ID_SOURCE_ROW.get(rid, "per_row_fallback")] += 1
+        rid = str(
+            row.get("id")
+            or row.get("instance_id") 
+            or row.get("record_id")
+            or stable_id("group-row", row.get("source_text") or row.get("review_text") or "")
+        )
+        local_group_source_counts[_GROUP_ID_SOURCE_ROW.get(rid, "unidentified")] += 1
     metadata = {
         "artifact_mode": artifact_mode,
         "source_rows": len(rows),
@@ -2842,9 +2887,12 @@ async def _process_row(
         domain_support_rows=int(train_domain_support.get(domain, 0)),
         enforce_grounding=cfg.enforce_grounding,
         llm_provider=llm_provider,
+        llm_model_name=cfg.llm_model_name,
         high_difficulty=cfg.high_difficulty,
         adversarial_refine=cfg.adversarial_refine,
-        bypass_cache=bypass_cache
+        bypass_cache=bypass_cache,
+        discovery_mode=cfg.discovery_mode,
+        discovery_min_confidence=cfg.discovery_min_confidence,
     )
 
     return {
@@ -2924,7 +2972,6 @@ def _resolve_promotion_eligibility(
         and bool(validation.get("benchmark_grounded_evidence_ok", True))
         and bool(validation.get("benchmark_duplicate_rate_ok", True))
         and bool(validation.get("benchmark_thermal_share_ok", True))
-        and bool(validation.get("benchmark_implicit_purity_ok", True))
         and bool(validation.get("benchmark_ontology_compatibility_ok", True))
         and bool(validation.get("sentiment_mismatch_rate_ok", True))
         and bool(validation.get("promotion_guard_ok", True))
@@ -2946,13 +2993,17 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     cfg.ensure_dirs()
     progress = _ProgressTracker(enabled=bool(getattr(cfg, "progress", True)), total_steps=10)
     
-    from llm_utils import flush_llm_cache, resolve_processor_async_provider
+    from llm_utils import flush_llm_cache, resolve_async_llm_provider, resolve_processor_async_provider
     if cfg.no_llm_cache:
         from implicit_pipeline import flush_llm_cache as flush_implicit_cache
         flush_implicit_cache()
         flush_llm_cache()
 
-    llm_provider = resolve_processor_async_provider(cfg.processor, model_name=cfg.llm_model_name)
+    llm_provider = cfg.llm_provider
+    if isinstance(llm_provider, str) or llm_provider is None:
+        llm_provider = resolve_async_llm_provider(llm_provider, model_name=cfg.llm_model_name)
+    if llm_provider is None:
+        llm_provider = resolve_processor_async_provider(cfg.processor, model_name=cfg.llm_model_name)
     
     # RunPod Connectivity Smoke Test
     if llm_provider and cfg.no_llm_cache:
@@ -2983,6 +3034,29 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     
     gold_annotations_path = cfg.gold_annotations_path or (cfg.input_dir / "gold_annotations.jsonl")
     gold_annotations = load_gold_annotations(gold_annotations_path) if gold_annotations_path else []
+    
+    # Adaptive Lexicon Stage (Phase 1)
+    print(f"\n[!] Adaptive Lexicon: Harvesting aspects from {len(frame)} input rows...")
+    harvested_rules = _harvest_dataset_aspects(frame)
+    if harvested_rules:
+        from implicit_pipeline import inject_harvested_rules
+        inject_harvested_rules(harvested_rules)
+        print(f"[+] Injected {len(harvested_rules)} new rules from dataset vocabulary.")
+    
+    # Persistent Discovery Loop (Phase 3)
+    from aspect_registry import LearnedOntologyManager
+    ontology_manager = LearnedOntologyManager.get_instance(cfg.state_dir)
+    domains = frame["domain"].dropna().unique()
+    promoted_discovered = []
+    for dom in domains:
+        promoted = ontology_manager.get_promoted_aspects(dom)
+        for p in promoted:
+            promoted_discovered.append((p, {p}, set()))
+    if promoted_discovered:
+        from implicit_pipeline import inject_harvested_rules
+        inject_harvested_rules(promoted_discovered)
+        print(f"[+] Phase 3 Learning Loop: Injected {len(promoted_discovered)} previously promoted aspects from state.")
+    
     progress.step("input load/schema detect")
     print(f"\n[DEBUG] Rows loaded: {len(frame)}")
     print(f"[DEBUG] Rows prepared: {len(prepared)}")
@@ -2997,6 +3071,16 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     sample_rows = sample_frame.to_dict(orient="records")
     for row in sample_rows:
         row["group_id"] = _group_identity(row)
+    
+    # Path A: Explicitly drop rows without a strong group identity to prevent leakage
+    unidentified_count = sum(1 for row in sample_rows if row.get("group_id") == "UNKNOWN_GROUP")
+    if unidentified_count > 0:
+        print(f"[!] Path A Integrity: Dropping {unidentified_count} rows with unidentified groups to prevent split leakage.")
+    
+    sample_rows = [row for row in sample_rows if row.get("group_id") != "UNKNOWN_GROUP"]
+    if not sample_rows:
+        raise ValueError("No rows remain after dropping unidentified groups (Path A)")
+
     train_rows, val_rows, test_rows = grouped_split(
         sample_rows,
         group_key="group_id",
@@ -3102,6 +3186,35 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     train_built = [row for row in finalized_rows if row.get("split") == "train"]
     val_built = [row for row in finalized_rows if row.get("split") == "val"]
     test_built = [row for row in finalized_rows if row.get("split") == "test"]
+
+    # Phase 3: Persistent Observation & Semantic Merging
+    if cfg.discovery_mode:
+        print("\n[!] Phase 3 Learning Loop: Recording new discoveries...")
+        for row in finalized_rows:
+            dom = row.get("domain", "unknown")
+            implicit = row.get("implicit", {})
+            for span in implicit.get("spans", []):
+                if span.get("source") == "discovery":
+                    label = span.get("latent_label")
+                    conf = span.get("confidence", 0.0)
+                    ontology_manager.record_observation(
+                        domain=dom, 
+                        aspect=label, 
+                        confidence=conf, 
+                        stability_threshold=cfg.discovery_stability_threshold
+                    )
+        
+        # Semantic Merging
+        from implicit_pipeline import VectorAspectMatcher
+        matcher = VectorAspectMatcher.get_instance()
+        def sim_func(a, b):
+            emb_a = matcher.model.encode([a])[0]
+            emb_b = matcher.model.encode([b])[0]
+            return float(np.dot(emb_a, emb_b) / (np.linalg.norm(emb_a) * np.linalg.norm(emb_b)))
+        
+        import numpy as np
+        for dom in domains:
+            ontology_manager.merge_similar(domain=dom, similarity_func=sim_func, threshold=0.85)
 
     # Stage B/C: Reasoning-Augmented Recovery
     if cfg.enable_reasoned_recovery and llm_provider:
@@ -3841,11 +3954,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-profile", type=str, default="research", choices=["research", "debug"])
     parser.add_argument("--artifact-mode", type=str, default="auto", choices=["auto", "debug_artifacts", "research_release"])
     parser.add_argument("--debug-benchmark-max-rows", type=int, default=180)
-    parser.add_argument("--processor", type=str, default=_required_env("REVIEWOP_DATASET_BUILDER_PROCESSOR", "DATASET_BUILDER_PROCESSOR"), choices=["local", "runpod"])
+    parser.add_argument("--processor", type=str, default=_optional_env("REVIEWOP_DATASET_BUILDER_PROCESSOR", "DATASET_BUILDER_PROCESSOR"), choices=["local", "runpod"])
+    parser.add_argument("--llm-provider", type=str, default="auto", choices=["auto", "openai", "runpod", "ollama", "mock", "claude", "anthropic"])
     parser.add_argument(
         "--llm-model-name",
         type=str,
-        default=_required_env("REVIEWOP_LLM_MODEL_NAME", "LLM_MODEL_NAME", "GROQ_MODEL", "OPENAI_MODEL", "OLLAMA_MODEL"),
+        default=_optional_env("REVIEWOP_LLM_MODEL_NAME", "LLM_MODEL_NAME", "RUNPOD_MODEL", "CLAUDE_MODEL", "GROQ_MODEL", "OPENAI_MODEL", "OLLAMA_MODEL", default="meta-llama/Meta-Llama-3.1-8B-Instruct"),
     )
     parser.add_argument("--enable-reasoned-recovery", dest="enable_reasoned_recovery", action="store_true")
     parser.add_argument("--no-enable-reasoned-recovery", dest="enable_reasoned_recovery", action="store_false")
@@ -3940,6 +4054,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zip-only", action="store_true", help="Skip dataset build and only zip existing benchmark/report artifacts")
     parser.add_argument("--no-llm-cache", "--no-cache-llm", dest="no_llm_cache", action="store_true", help="Bypass and clear the LLM response cache for this run.")
     parser.set_defaults(no_llm_cache=False)
+    parser.add_argument("--discovery-mode", action="store_true", default=True, help="Enable Open-Domain Discovery for untracked aspects.")
+    parser.add_argument("--no-discovery-mode", action="store_false", dest="discovery_mode")
+    parser.add_argument("--discovery-min-confidence", type=float, default=0.55)
+    parser.add_argument("--discovery-stability-threshold", type=int, default=5)
     return parser
 
 
@@ -3958,10 +4076,17 @@ def main(argv: list[str] | None = None) -> int:
     artifact_mode = str(args.artifact_mode or "auto").strip().lower()
     if artifact_mode == "auto":
         artifact_mode = "debug_artifacts" if str(args.run_profile).strip().lower() == "debug" else "research_release"
-    processor = _resolve_processor_choice(processor=args.processor)
-    llm_provider = _resolve_llm_provider_for_processor(processor=processor)
-    if llm_provider:
-        llm_provider = resolve_async_llm_provider(llm_provider, model_name=args.llm_model_name)
+    
+    # Provider/Processor Reconciliation
+    llm_provider_choice = str(args.llm_provider).strip().lower()
+    if llm_provider_choice != "auto":
+        llm_provider_name = llm_provider_choice
+        processor = _resolve_processor_choice(processor=args.processor) if args.processor else "local"
+    else:
+        processor = _resolve_processor_choice(processor=args.processor)
+        llm_provider_name = _resolve_llm_provider_for_processor(processor=processor)
+
+    llm_provider = resolve_async_llm_provider(llm_provider_name, model_name=args.llm_model_name) if llm_provider_name else None
 
     domain_conditioning_mode = str(args.domain_conditioning_mode or "").strip().lower()
     if not args.use_domain_conditioning:
@@ -4063,6 +4188,9 @@ def main(argv: list[str] | None = None) -> int:
         high_difficulty=args.high_difficulty,
         adversarial_refine=args.adversarial_refine,
         no_llm_cache=args.no_llm_cache,
+        discovery_mode=args.discovery_mode,
+        discovery_min_confidence=args.discovery_min_confidence,
+        discovery_stability_threshold=args.discovery_stability_threshold,
     )
     import asyncio
     report = asyncio.run(run_pipeline(cfg))

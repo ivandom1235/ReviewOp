@@ -10,6 +10,7 @@ from typing import Any
 class BuilderConfig:
     input_dir: Path = Path(__file__).resolve().parents[1] / "input"
     output_dir: Path = Path(__file__).resolve().parents[1] / "output"
+    state_dir: Path = Path(__file__).resolve().parents[1] / "state"
     reports_subdir: str = "reports"
     random_seed: int = 42
     train_ratio: float = 0.7
@@ -27,7 +28,7 @@ class BuilderConfig:
     confidence_threshold: float = 0.6
     max_aspects: int = 20
     min_text_tokens: int = 4
-    implicit_min_tokens: int = 5
+    implicit_min_tokens: int = 8
     implicit_mode: str = "zeroshot"
     multilingual_mode: str = "shared_vocab"
     use_coref: bool = False
@@ -100,6 +101,9 @@ class BuilderConfig:
     processor: str | None = None
     max_workers: int = 10
     no_llm_cache: bool = False
+    discovery_mode: bool = True
+    discovery_min_confidence: float = 0.55
+    discovery_stability_threshold: int = 5
 
     @property
     def explicit_dir(self) -> Path:

@@ -418,6 +418,56 @@ Explicit version:"""
         return [text]
 
 
+async def discover_novel_aspects_async(
+    text: str, 
+    excluded_aspects: List[str], 
+    provider: AsyncLlmProvider, 
+    model_name: str, 
+    domain: str = "general",
+    bypass_cache: bool = False
+) -> List[dict[str, Any]]:
+    """Phase 2: Open-Domain Discovery for aspects not in the registry."""
+    prompt = f"""Task: Open-Domain Aspect Discovery
+Domain: {domain}
+Review Segment: "{text}"
+Known Aspects to Ignore: {excluded_aspects}
+
+Identify any NEW aspects mentioned or implied in the segment that are NOT in the ignore list.
+For each new aspect:
+1. Provide a concise Label (1-2 words).
+2. Rate your Confidence (0.0 to 1.0).
+3. Extract Evidence snippet from the text.
+
+Return your response as a JSON list of objects:
+[
+  {{"label": "aspect name", "confidence": 0.85, "evidence": "text snippet"}}
+]
+If no new aspects are found, return [].
+"""
+    cache_key = hashlib.md5(f"discover:{model_name}:{prompt}".encode("utf-8")).hexdigest()
+    cached_val = GLOBAL_LLM_CACHE.get(cache_key, bypass=bypass_cache)
+    if cached_val:
+        try: return json.loads(cached_val)
+        except: pass
+
+    try:
+        res = await provider.generate(prompt, model_name, temperature=0.3, bypass_cache=bypass_cache)
+        # Extract JSON from potential code blocks
+        clean_res = res.strip()
+        if "```json" in clean_res:
+            clean_res = clean_res.split("```json")[1].split("```")[0].strip()
+        elif "```" in clean_res:
+            clean_res = clean_res.split("```")[1].split("```")[0].strip()
+        
+        parsed = json.loads(clean_res)
+        if not isinstance(parsed, list):
+            parsed = []
+        GLOBAL_LLM_CACHE.set(cache_key, json.dumps(parsed))
+        return parsed
+    except Exception:
+        return []
+
+
 def augment_implicit_difficulty(text: str, aspect: str, provider: LlmProvider, model_name: str, domain: str = "general") -> str:
     prompt = f"""Task: Adversarial Implicit Aspect Rephrasing (Research-Grade)
 Domain: {domain}

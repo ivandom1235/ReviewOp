@@ -95,12 +95,17 @@ def _predict_with_runtime(
         snippet = str(clause.get("snippet", "")).strip() or review_text
         selective = protonet_runtime.score_text_selective(review_text=review_text, evidence_text=snippet, domain=domain)
         if selective.get("decision") == "abstain":
+            top_row = dict((selective.get("scored_rows") or [{}])[0] or {})
+            aspect = str(top_row.get("aspect") or "").strip()
             abstained.append(
                 {
                     "abstain": True,
                     "decision": "abstain",
                     "decision_band": str(selective.get("decision_band") or "boundary"),
                     "reason": "low_selective_confidence",
+                    "aspect_raw": aspect,
+                    "aspect_cluster": aspect,
+                    "sentiment": str(top_row.get("sentiment") or "neutral").strip().lower() or "neutral",
                     "confidence": float(selective.get("confidence", 0.0)),
                     "ambiguity_score": float(selective.get("ambiguity_score", 0.0)),
                     "novelty_score": float(selective.get("novelty_score", 0.0)),

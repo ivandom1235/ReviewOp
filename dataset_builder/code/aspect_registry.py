@@ -9,19 +9,31 @@ from utils import normalize_whitespace
 ASPECT_REGISTRY_VERSION = "v1"
 
 RESTAURANT_DOMAINS = {"restaurant", "restaurants", "dining", "food"}
-RESTAURANT_CANONICAL_ASPECTS = {"food_quality", "service_speed", "ambience", "portion_size"}
+RESTAURANT_CANONICAL_ASPECTS = {
+    "food_quality", "service_speed", "ambience", "portion_size", 
+    "price", "cleanliness", "wait_time", "location"
+}
 
 _RESTAURANT_LATENT_MAP = {
     "sensory quality": "food_quality",
     "food": "food_quality",
+    "taste": "food_quality",
     "service quality": "service_speed",
     "service": "service_speed",
-    "timeliness": "service_speed",
+    "timeliness": "wait_time",
+    "wait time": "wait_time",
+    "speed": "service_speed",
     "comfort": "ambience",
-    "cleanliness": "ambience",
-    "value": "portion_size",
+    "environment": "ambience",
+    "cleanliness": "cleanliness",
+    "hygiene": "cleanliness",
+    "value": "price",
+    "price": "price",
+    "cost": "price",
     "portion": "portion_size",
     "portion size": "portion_size",
+    "location": "location",
+    "atmosphere": "ambience",
 }
 
 
@@ -33,6 +45,111 @@ def _to_canonical_token(text: str) -> str:
     token = _norm(text).replace("-", " ").replace("/", " ")
     token = "_".join(part for part in token.split(" ") if part)
     return token
+
+from pathlib import Path
+import json
+
+
+class LearnedOntologyManager:
+    """Phase 3: Persistent Domain-Specific Discovery Loop."""
+    
+    _instances: dict[str, LearnedOntologyManager] = {}
+
+    def __init__(self, state_dir: Path):
+        self.state_dir = state_dir
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self._learned_data: dict[str, dict[str, Any]] = {}
+
+    @classmethod
+    def get_instance(cls, state_dir: Path) -> LearnedOntologyManager:
+        sd_str = str(state_dir)
+        if sd_str not in cls._instances:
+            cls._instances[sd_str] = LearnedOntologyManager(state_dir)
+        return cls._instances[sd_str]
+
+    def _get_path(self, domain: str) -> Path:
+        return self.state_dir / f"learned_ontology_{domain.lower()}.json"
+
+    def load(self, domain: str):
+        path = self._get_path(domain)
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self._learned_data[domain] = json.load(f)
+            except:
+                self._learned_data[domain] = {}
+        else:
+            self._learned_data[domain] = {}
+        return self._learned_data[domain]
+
+    def save(self, domain: str):
+        if domain not in self._learned_data: return
+        path = self._get_path(domain)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self._learned_data[domain], f, indent=2, ensure_ascii=False)
+
+    def record_observation(self, domain: str, aspect: str, confidence: float, stability_threshold: int = 5):
+        """Records a discovery event and returns True if aspect should be promoted."""
+        data = self.load(domain)
+        aspect = aspect.lower().strip()
+        if not aspect: return False
+        
+        entry = data.setdefault(aspect, {
+            "occurrences": 0,
+            "max_confidence": 0.0,
+            "promoted": False,
+            "aliases": []
+        })
+        
+        entry["occurrences"] += 1
+        entry["max_confidence"] = max(entry["max_confidence"], confidence)
+        
+        should_save = True
+        promoted_now = False
+        if not entry["promoted"] and entry["occurrences"] >= stability_threshold:
+            entry["promoted"] = True
+            promoted_now = True
+        
+        if should_save:
+            self.save(domain)
+        return promoted_now
+
+    def get_promoted_aspects(self, domain: str) -> list[str]:
+        data = self.load(domain)
+        return [a for a, meta in data.items() if meta.get("promoted")]
+
+    def merge_similar(self, domain: str, similarity_func: Any, threshold: float = 0.85):
+        """Phase 3: Semantic Merging. Aliases similar discovered terms."""
+        data = self.load(domain)
+        labels = list(data.keys())
+        if len(labels) < 2: return
+        
+        merged_count = 0
+        to_delete = set()
+        for i, label_a in enumerate(labels):
+            if label_a in to_delete: continue
+            for label_b in labels[i+1:]:
+                if label_b in to_delete: continue
+                
+                sim = similarity_func(label_a, label_b)
+                if sim >= threshold:
+                    # Merge B into A
+                    entry_a = data[label_a]
+                    entry_b = data[label_b]
+                    entry_a["occurrences"] += entry_b["occurrences"]
+                    entry_a["max_confidence"] = max(entry_a["max_confidence"], entry_b["max_confidence"])
+                    entry_a["aliases"] = sorted(list(set(entry_a.get("aliases", [])) | {label_b} | set(entry_b.get("aliases", []))))
+                    if entry_b.get("promoted"):
+                        entry_a["promoted"] = True
+                    to_delete.add(label_b)
+                    merged_count += 1
+        
+        for label in to_delete:
+            del data[label]
+        
+        if merged_count > 0:
+            self.save(domain)
+            print(f"[+] Phase 3 Semantic Merging: Consolidated {merged_count} similar aspects for domain '{domain}'.")
 
 
 def is_restaurant_domain(domain: str) -> bool:

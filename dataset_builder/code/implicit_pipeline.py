@@ -4,7 +4,11 @@ from collections import Counter, defaultdict
 import json
 import math
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+
 
 from utils import normalize_whitespace, split_sentences, tokenize
 
@@ -101,6 +105,73 @@ PIVOT_TEMPLATES = {
 
 VALID_LATENT_ASPECTS = {label for label, _, _ in LATENT_ASPECT_RULES} | {"general"}
 LATENT_RULE_BY_LABEL = {label: (explicit_kws, implicit_sigs) for label, explicit_kws, implicit_sigs in LATENT_ASPECT_RULES}
+
+
+def inject_harvested_rules(new_rules: list[tuple[str, set[str], set[str]]]):
+    """Dynamic injection for Adaptive Lexicon (Phase 1)."""
+    global LATENT_ASPECT_RULES, VALID_LATENT_ASPECTS, LATENT_RULE_BY_LABEL
+    
+    # Merge rules: if label exists, merge keywords/signals; if new, append.
+    current_rules_dict = {label: (e, i) for label, e, i in LATENT_ASPECT_RULES}
+    for label, e_kws, i_sigs in new_rules:
+        if label in current_rules_dict:
+            curr_e, curr_i = current_rules_dict[label]
+            current_rules_dict[label] = (curr_e | e_kws, curr_i | i_sigs)
+        else:
+            current_rules_dict[label] = (e_kws, i_sigs)
+    
+    LATENT_ASPECT_RULES = [(label, e, i) for label, (e, i) in current_rules_dict.items()]
+    VALID_LATENT_ASPECTS = {label for label, _, _ in LATENT_ASPECT_RULES} | {"general"}
+    LATENT_RULE_BY_LABEL = {label: (e, i) for label, e, i in LATENT_ASPECT_RULES}
+    
+    # Refresh VectorAspectMatcher if instance exists
+    if VectorAspectMatcher._instance:
+        VectorAspectMatcher._instance._initialize_centroids()
+
+
+class VectorAspectMatcher:
+    """Stage 2: Implicit candidate scoring using prototype embeddings."""
+    
+    _instance: Optional[VectorAspectMatcher] = None
+    
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        # We use local_files_only=True if we expect them to be pre-downloaded, 
+        # but for builder we'll let it download if needed (assuming connection)
+        self.model = SentenceTransformer(model_name)
+        self.centroids: Dict[str, np.ndarray] = {}
+        self._initialize_centroids()
+
+    @classmethod
+    def get_instance(cls) -> VectorAspectMatcher:
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def _initialize_centroids(self):
+        """Pre-calculate prototypes for each latent aspect label."""
+        for label, explicit_kws, implicit_sigs in LATENT_ASPECT_RULES:
+            # Seed the prototype with the label itself + all recognized keywords
+            seeds = [label] + list(explicit_kws) + list(implicit_sigs)
+            embeddings = self.model.encode(seeds)
+            self.centroids[label] = np.mean(embeddings, axis=0)
+
+    def match(self, text: str, threshold: float = 0.55) -> List[Dict[str, Any]]:
+        """ stage 2: returns candidate aspects with scores based on cosine similarity."""
+        query_emb = self.model.encode([text])[0]
+        results = []
+        for label, centroid in self.centroids.items():
+            sim = float(cosine_similarity([query_emb], [centroid])[0][0])
+            if sim >= threshold:
+                results.append({
+                    "latent": label,
+                    "confidence": round(sim, 3),
+                    "source": "vector_grounding",
+                    "hardness": 2 if sim < 0.75 else 1
+                })
+        # Sort by confidence
+        results.sort(key=lambda x: x["confidence"], reverse=True)
+        return results
+
 
 
 def _canonical_mode(mode: str) -> str:
@@ -250,9 +321,10 @@ def is_surface_leakage(text: str, aspect: str) -> bool:
     return False
 
 
-_ADVERSATIVE_RE = re.compile(r"\bbut\b|\bhowever\b|\byet\b|\bwhile\b|\balthough\b", re.IGNORECASE)
-_COORD_AND_RE = re.compile(r",\s*and\b|\band\b", re.IGNORECASE)
-_MIN_CLAUSE_TOKENS_FOR_SPLIT = 10
+_ADVERSATIVE_RE = re.compile(r"(?:\s+)(?:but|however|yet|while|although)(?:\s+)", re.IGNORECASE)
+_COORD_AND_RE = re.compile(r"(?:,\s*and\s+|\s+and\s+)", re.IGNORECASE)
+_MIN_CLAUSE_TOKENS_FOR_SPLIT = 6  # Lowered from 10 to catch multi-aspect pairings
+
 _NEGATORS = {"not", "never", "no", "isnt", "wasnt", "doesnt", "didnt", "cant", "wont", "neither", "nor", "without", "hardly"}
 _CONTRASTIVE_TOKENS = {"but", "however", "although", "though", "yet", "while"}
 _COMPARATIVE_TOKENS = {"better", "worse", "faster", "slower", "more", "less"}
@@ -279,24 +351,27 @@ def _sentence_clauses_with_offsets(text: str) -> list[dict[str, int | str]]:
         pieces = [piece.strip(" ,;:-") for piece in _ADVERSATIVE_RE.split(sentence) if piece.strip()]
         if not pieces:
             pieces = [sentence]
-        # Stage 2: split long pieces on commas / coordinating 'and'.
+        # Stage 2: split pieces on coordinating 'and' or commas.
         refined: list[str] = []
         for piece in pieces:
             piece_tokens = tokenize(piece)
-            if len(piece_tokens) >= _MIN_CLAUSE_TOKENS_FOR_SPLIT:
+            # More aggressive splitting for long pieces OR pieces with clear conjunctions
+            if len(piece_tokens) >= _MIN_CLAUSE_TOKENS_FOR_SPLIT or _COORD_AND_RE.search(piece):
                 sub_pieces = [sub.strip(" ,;:-") for sub in _COORD_AND_RE.split(piece) if sub.strip(" ,;:-")]
                 if len(sub_pieces) > 1:
                     refined.extend(sub_pieces)
                 else:
-                    # Try comma-only split for very long clauses.
+                    # Comma-based fallback for lists
                     comma_pieces = [sub.strip(" ,;:-") for sub in piece.split(",") if sub.strip(" ,;:-")]
-                    if len(comma_pieces) > 1 and all(len(tokenize(sub)) >= 3 for sub in comma_pieces):
+                    # Only accept comma splits if they yield substantial sub-clauses
+                    if len(comma_pieces) > 1 and any(len(tokenize(sub)) >= 3 for sub in comma_pieces):
                         refined.extend(comma_pieces)
                     else:
                         refined.append(piece)
             else:
                 refined.append(piece)
         clauses.extend(refined)
+
 
     final_clauses = clauses or [full_text]
     out: list[dict[str, int | str]] = []
@@ -507,7 +582,7 @@ def discover_aspects(
     text_column: str,
     max_aspects: int,
     implicit_mode: str = "zeroshot",
-    sample_rate: float = 0.2,
+    sample_rate: float = 0.4,
     random_seed: int | None = None,
 ) -> list[str]:
     # Lazy Discovery: Sample the dataset to speed up aspect discovery (Step 3/4)
@@ -571,8 +646,10 @@ async def build_implicit_row(
     high_difficulty: bool = False,
     adversarial_refine: bool = False,
     bypass_cache: bool = False,
+    discovery_mode: bool = False,
+    discovery_min_confidence: float = 0.55,
 ) -> Dict[str, Any]:
-    from llm_utils import AsyncLlmProvider, reason_implicit_signal_async
+    from llm_utils import AsyncLlmProvider, reason_implicit_signal_async, discover_novel_aspects_async
 
     mode = _canonical_mode(implicit_mode)
     raw_text = normalize_whitespace(row.get(text_column, ""))
@@ -626,12 +703,29 @@ async def build_implicit_row(
                     })
                     break
 
-        # 2. LLM Fallback (Stage C - only if no lexical matches)
+        # Priority 2: Stage 2 - Vector Grounding (Phase 2 Implementation)
+        if not clause_matches:
+            vector_matcher = VectorAspectMatcher.get_instance()
+            vector_hits = vector_matcher.match(clause)
+            for hit in vector_hits:
+                anchor = (clause[:35] + "...") if len(clause) > 35 else clause
+                clause_matches.append({
+                    "latent": hit["latent"],
+                    "aspect": anchor,
+                    "support_type": "vector_semantic",
+                    "label_type": "implicit",
+                    "hardness": hit["hardness"],
+                    "confidence": hit["confidence"],
+                    "source": "vector"
+                })
+                if len(clause_matches) >= 2: 
+                    break
+
+        # Priority 3: Stage 3 - LLM Fallback (only if no lexical or vector matches)
         if not clause_matches and enable_llm_fallback and llm_provider:
             if llm_model_name is None or not str(llm_model_name).strip():
                 raise RuntimeError(
-                    "REVIEWOP_LLM_MODEL_NAME or a provider-specific model env (GROQ_MODEL, OPENAI_MODEL, OLLAMA_MODEL) "
-                    "is required when LLM fallback is enabled"
+                    "REVIEWOP_LLM_MODEL_NAME or provider-specific model env is required"
                 )
             llm_fallback_used = True
             paraphrases = await reason_implicit_signal_async(clause, candidate_aspects, llm_provider, llm_model_name, bypass_cache=bypass_cache)
@@ -639,16 +733,10 @@ async def build_implicit_row(
             for para in paraphrases:
                 for label, e_kws, i_sigs in LATENT_ASPECT_RULES:
                     for kw in sorted(e_kws | i_sigs, key=len, reverse=True):
-                        # Require keyword boundaries in paraphrase and grounded support in source clause.
                         if _keyword_in_text(para, kw) and _keyword_in_text(clause, kw):
                             clause_matches.append({
-                                "latent": label,
-                                "aspect": kw,
-                                "support_type": "llm_reasoning",
-                                "label_type": "implicit",
-                                "hardness": 2,
-                                "confidence": 0.75,
-                                "source": "llm",
+                                "latent": label,"aspect": kw,"support_type": "llm_reasoning",
+                                "label_type": "implicit","hardness": 2,"confidence": 0.75,"source": "llm",
                             })
                             reasoned_recovery_used = True
                             break
@@ -656,11 +744,57 @@ async def build_implicit_row(
                 if clause_matches: break
             if not clause_matches:
                 llm_parse_errors.append("ungrounded_llm_match")
+        
+        # Priority 4: Stage 4 - Open-Domain Discovery (Phase 2 Implementation)
+        if not clause_matches and discovery_mode and llm_provider:
+            novel_hits = await discover_novel_aspects_async(
+                clause, 
+                excluded_aspects=list(VALID_LATENT_ASPECTS), 
+                provider=llm_provider, 
+                model_name=llm_model_name,
+                domain=domain,
+                bypass_cache=bypass_cache
+            )
+            for hit in novel_hits:
+                conf = float(hit.get("confidence", 0.0))
+                if conf >= discovery_min_confidence:
+                    clause_matches.append({
+                        "latent": str(hit.get("label", "unknown")).lower(),
+                        "aspect": str(hit.get("evidence") or clause[:30]),
+                        "support_type": "discovered",
+                        "label_type": "implicit",
+                        "hardness": 3, # Discovered aspects are always high difficulty
+                        "confidence": conf,
+                        "source": "discovery"
+                    })
+                    if len(clause_matches) >= 2: break
+        # Stage D: Validation & Grounding (Phase 4 Logic)
+        # Sort and filter matches: Prioritize specificity (granularity) over general label
+        if len(clause_matches) > 1:
+            # If we have granular hits, remove 'general' or low-confidence noise
+            granular_hits = [m for m in clause_matches if m["latent"] != "general"]
+            if granular_hits:
+                clause_matches = granular_hits
 
-        # Stage D: Validation & Grounding
         for match in clause_matches:
             latent = match["latent"]
             if not _is_valid_latent_aspect(latent): continue
+
+            # Conflict Resolution: Domain-Clash Check
+            # (e.g., if sentiment is service-based but aspect is hardware-based)
+            is_conflict = False
+            service_cues = {"helpful", "staff", "waiter", "waitress", "service", "friendly", "polite"}
+            hardware_cues = {"battery", "screen", "fast", "slow", "performance", "build", "quality"}
+            
+            if latent in {"service quality", "timeliness"} and any(kw in clause.lower() for kw in hardware_cues):
+                is_conflict = True
+            elif latent in {"power", "performance", "display quality"} and any(kw in clause.lower() for kw in service_cues):
+                is_conflict = True
+                
+            if is_conflict:
+                match["confidence"] -= 0.15 # Penalize conflicting signals
+                match["support_type"] = "conflicting_signal"
+
 
             flags = _compute_leakage_flags(
                 text=processed_text,
@@ -833,12 +967,27 @@ def collect_diagnostics(rows: List[Dict[str, Any]], *, text_column: str, candida
     llm_parse_error_count = 0
     reasoned_recovery_count = 0
     reasoned_recovery_span_count = 0
-    review_reason_counts: Counter[str] = Counter()
     fallback_branch_counts: Counter[str] = Counter()
+    gold_miss_counts: Counter[str] = Counter()
+    total_gold_aspects = 0
+    matched_gold_aspects = 0
+    
     for row in rows:
         text = normalize_whitespace(row.get(text_column, ""))
         clause_count += len(_sentence_clauses(text))
         implicit = row.get("implicit", {})
+        
+        # Registry Coverage Audit (Phase 1)
+        gold_labels = _extract_gold_aspects([row])
+        detected_labels = set(implicit.get("aspects") or [])
+        for gold in gold_labels:
+            if gold == "general": continue
+            total_gold_aspects += 1
+            if gold in detected_labels:
+                matched_gold_aspects += 1
+            else:
+                gold_miss_counts[gold] += 1
+
         language_counts[str(row.get("language", implicit.get("language", "unknown")))] += 1
         track_counts[str(row.get("track", implicit.get("track", "unknown")))] += 1
         if implicit.get("aspects") == ["general"]:
@@ -897,4 +1046,10 @@ def collect_diagnostics(rows: List[Dict[str, Any]], *, text_column: str, candida
         "llm_parse_error_count": llm_parse_error_count,
         "review_reason_counts": dict(review_reason_counts),
         "fallback_branch_counts": dict(fallback_branch_counts),
+        "registry_coverage": {
+            "total_gold_aspects": total_gold_aspects,
+            "matched_gold_aspects": matched_gold_aspects,
+            "coverage_rate": round(matched_gold_aspects / max(1, total_gold_aspects), 4),
+            "top_missing_gold_aspects": gold_miss_counts.most_common(15)
+        }
     }

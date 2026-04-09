@@ -27,7 +27,10 @@ def flatten_dict(payload: dict) -> dict:
 def load_file(path: Path) -> pd.DataFrame:
     suffix = path.suffix.lower()
     if suffix in {".csv", ".tsv"}:
-        frame = pd.read_csv(path, sep="\t" if suffix == ".tsv" else None, engine="python")
+        if suffix == ".tsv":
+            frame = pd.read_csv(path, sep="\t")
+        else:
+            frame = pd.read_csv(path)
     elif suffix in {".xlsx", ".xls"}:
         frame = pd.read_excel(path)
     elif suffix == ".json":
