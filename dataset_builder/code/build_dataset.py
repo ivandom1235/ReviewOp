@@ -1436,6 +1436,7 @@ async def _salvage_train_rows(
     implicit_mode: str,
     max_workers: int,
     llm_provider: Any,
+    llm_model_name: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     import asyncio
     mode_name = str(mode or "recover_non_general").strip().lower()
@@ -1503,6 +1504,7 @@ async def _salvage_train_rows(
                 domain_support_rows=int(train_domain_support.get(domain, 0)),
                 enforce_grounding=enforce_grounding,
                 llm_provider=llm_provider,
+                llm_model_name=llm_model_name,
             )
             return res["implicit"]
 
@@ -1612,6 +1614,7 @@ async def _re_infer_recoverable_train_rows(
     implicit_mode: str,
     max_workers: int,
     llm_provider: Any,
+    llm_model_name: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     import asyncio
     target_reasons = {"weak_support", "low_confidence", "llm_parse_error"}
@@ -1666,6 +1669,7 @@ async def _re_infer_recoverable_train_rows(
                 domain_support_rows=int(train_domain_support.get(domain, 0)),
                 enforce_grounding=enforce_grounding,
                 llm_provider=llm_provider,
+                llm_model_name=llm_model_name,
             )
             return res["implicit"]
 
@@ -2841,6 +2845,7 @@ async def _process_row(
     train_domain_support: dict[str, int],
     domain_conditioning_mode: str,
     llm_provider: Any = None,
+    llm_model_name: str | None = None,
     bypass_cache: bool = False,
 ) -> dict[str, Any]:
     idx, row = item
@@ -2932,7 +2937,7 @@ def _normalize_artifact_mode(cfg: BuilderConfig, *, run_profile: str | None = No
 
 def _resolve_processor_choice(*, processor: str | None) -> str:
     if processor is None or not str(processor).strip():
-        raise RuntimeError("REVIEWOP_DATASET_BUILDER_PROCESSOR is required in .env for dataset_builder")
+        raise RuntimeError("DATASET_BUILDER_PROCESSOR is required in .env for dataset_builder")
     choice = str(processor).strip().lower()
     if choice not in {"local", "runpod"}:
         raise ValueError(f"Unsupported processor: {processor}")
@@ -3005,17 +3010,26 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     if llm_provider is None:
         llm_provider = resolve_processor_async_provider(cfg.processor, model_name=cfg.llm_model_name)
     
-    # RunPod Connectivity Smoke Test
+    # LLM Provider Connectivity Smoke Test
     if llm_provider and cfg.no_llm_cache:
+        provider_display = str(cfg.llm_provider).capitalize()
         try:
-            print("\n[!] Performing RunPod Connectivity Smoke Test...")
+            print(f"\n[!] Performing {provider_display} Connectivity Smoke Test...")
             smoke_res = await llm_provider.generate("ping", cfg.llm_model_name, bypass_cache=True)
             if isinstance(smoke_res, str) and smoke_res.strip().lower().startswith("error:"):
                 raise RuntimeError(smoke_res)
-            print("[+] RunPod Connectivity Verified.")
+            print(f"[+] {provider_display} Connectivity Verified.")
         except Exception as e:
-            print(f"[!] Warning: RunPod connectivity probe failed: {e}")
-            print("    Check your REVIEWOP_RUNPOD_API_KEY and REVIEWOP_RUNPOD_ENDPOINT_URL.")
+            print(f"[!] Warning: {provider_display} connectivity probe failed: {e}")
+            p_name = str(cfg.llm_provider).lower()
+            if p_name == "openai":
+                print("    Check your OPENAI_API_KEY in your .env file.")
+            elif p_name in {"claude", "anthropic"}:
+                print("    Check your CLAUDE_API_KEY in your .env file.")
+            elif p_name == "runpod":
+                print("    Check your RUNPOD_API_KEY and RUNPOD_ENDPOINT_URL in your .env file.")
+            else:
+                print(f"    Check your {p_name.upper()}_API_KEY in your .env file.")
             llm_provider = None
     
     frame = load_inputs(cfg.input_dir)
@@ -3157,6 +3171,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
                         train_domain_support=dict(train_domain_support),
                         domain_conditioning_mode=domain_conditioning_mode,
                         llm_provider=llm_provider,
+                        llm_model_name=cfg.llm_model_name,
                         bypass_cache=cfg.no_llm_cache
                     )
                     results[idx] = res
@@ -3274,6 +3289,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         implicit_mode=cfg.implicit_mode,
         max_workers=cfg.max_workers,
         llm_provider=llm_provider,
+        llm_model_name=cfg.llm_model_name,
     )
     train_export_rows, train_review_dropped_soft_rows, train_review_dropped_hard_rows, train_review_filter_stats = _split_train_review_filter(
         train_export_rows,
@@ -3310,6 +3326,7 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         implicit_mode=cfg.implicit_mode,
         max_workers=cfg.max_workers,
         llm_provider=llm_provider,
+        llm_model_name=cfg.llm_model_name,
     )
     train_export_rows = train_export_rows + salvaged_rows
     train_export_rows, train_leakage_filter_stats_after_salvage = _strict_train_domain_leakage_filter(
@@ -3954,12 +3971,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-profile", type=str, default="research", choices=["research", "debug"])
     parser.add_argument("--artifact-mode", type=str, default="auto", choices=["auto", "debug_artifacts", "research_release"])
     parser.add_argument("--debug-benchmark-max-rows", type=int, default=180)
-    parser.add_argument("--processor", type=str, default=_optional_env("REVIEWOP_DATASET_BUILDER_PROCESSOR", "DATASET_BUILDER_PROCESSOR"), choices=["local", "runpod"])
+    parser.add_argument("--processor", type=str, default=_optional_env("DATASET_BUILDER_PROCESSOR"), choices=["local", "runpod"])
     parser.add_argument("--llm-provider", type=str, default="auto", choices=["auto", "openai", "runpod", "ollama", "mock", "claude", "anthropic"])
     parser.add_argument(
         "--llm-model-name",
         type=str,
-        default=_optional_env("REVIEWOP_LLM_MODEL_NAME", "LLM_MODEL_NAME", "RUNPOD_MODEL", "CLAUDE_MODEL", "GROQ_MODEL", "OPENAI_MODEL", "OLLAMA_MODEL", default="meta-llama/Meta-Llama-3.1-8B-Instruct"),
+        default=None,
     )
     parser.add_argument("--enable-reasoned-recovery", dest="enable_reasoned_recovery", action="store_true")
     parser.add_argument("--no-enable-reasoned-recovery", dest="enable_reasoned_recovery", action="store_false")
@@ -4061,6 +4078,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_llm_config(provider_name: str, model_name: str | None) -> tuple[str, str]:
+    """Resolves the active LLM provider and model name based on .env and CLI args."""
+    # 1. Resolve Provider
+    active_provider = provider_name.strip().lower()
+    if active_provider == "auto":
+        active_provider = _optional_env("DEFAULT_LLM_PROVIDER", default="openai")
+    
+    # 2. Resolve Model
+    # Try provider-specific model first if no explicit model was provided via CLI
+    effective_model = model_name
+    if not effective_model:
+        provider_model_env = f"{active_provider.upper()}_MODEL"
+        effective_model = _optional_env(provider_model_env)
+        
+        if not effective_model:
+            # Fallback to global default model
+            fallback_model = _optional_env("DEFAULT_LLM_MODEL")
+            if fallback_model:
+                print(f"[!] Warning: {provider_model_env} not found in .env. Falling back to DEFAULT_LLM_MODEL: {fallback_model}")
+                effective_model = fallback_model
+            else:
+                # Last resort error (only if not runpod)
+                if active_provider != "runpod":
+                    raise RuntimeError(
+                        f"No model configured for provider '{active_provider}'. "
+                        f"Please define {provider_model_env} or DEFAULT_LLM_MODEL in your .env file."
+                    )
+                else:
+                    # For RunPod serverless, model is often managed at the endpoint level
+                    effective_model = ""
+    
+    return active_provider, effective_model
+
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     output_dir = args.output_dir or BuilderConfig().output_dir
@@ -4079,14 +4131,10 @@ def main(argv: list[str] | None = None) -> int:
     
     # Provider/Processor Reconciliation
     llm_provider_choice = str(args.llm_provider).strip().lower()
-    if llm_provider_choice != "auto":
-        llm_provider_name = llm_provider_choice
-        processor = _resolve_processor_choice(processor=args.processor) if args.processor else "local"
-    else:
-        processor = _resolve_processor_choice(processor=args.processor)
-        llm_provider_name = _resolve_llm_provider_for_processor(processor=processor)
-
-    llm_provider = resolve_async_llm_provider(llm_provider_name, model_name=args.llm_model_name) if llm_provider_name else None
+    llm_provider_name, llm_model_name = _resolve_llm_config(llm_provider_choice, args.llm_model_name)
+    
+    processor = _resolve_processor_choice(processor=args.processor)
+    llm_provider = resolve_async_llm_provider(llm_provider_name, model_name=llm_model_name) if llm_provider_name else None
 
     domain_conditioning_mode = str(args.domain_conditioning_mode or "").strip().lower()
     if not args.use_domain_conditioning:
@@ -4181,8 +4229,8 @@ def main(argv: list[str] | None = None) -> int:
         strict_multi_aspect_ratio_min=args.strict_multi_aspect_ratio_min,
         strict_challenge_macro_f1_min=args.strict_challenge_macro_f1_min,
         processor=processor,
-        llm_provider=llm_provider,
-        llm_model_name=args.llm_model_name,
+        llm_provider=llm_provider_name,
+        llm_model_name=llm_model_name,
         enable_reasoned_recovery=args.enable_reasoned_recovery,
         max_workers=args.max_workers,
         high_difficulty=args.high_difficulty,

@@ -24,8 +24,8 @@ class LlmProvider(ABC):
 
 class RunPodProvider(LlmProvider):
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        self.api_key = api_key or _env_value("REVIEWOP_RUNPOD_API_KEY", "RUNPOD_API_KEY")
-        self.base_url = base_url or _env_value("REVIEWOP_RUNPOD_ENDPOINT_URL", "RUNPOD_ENDPOINT_URL")
+        self.api_key = api_key or _env_value("RUNPOD_API_KEY")
+        self.base_url = base_url or _env_value("RUNPOD_ENDPOINT_URL")
         self.session = requests.Session()
         if self.api_key:
             self.session.headers.update({
@@ -39,10 +39,12 @@ class RunPodProvider(LlmProvider):
         data = {
             "input": {
                 "prompt": prompt,
-                "model_name": model_name,
                 **kwargs
             }
         }
+        if model_name:
+            data["input"]["model_name"] = model_name
+
         response = self.session.post(self.base_url, json=data)
         response.raise_for_status()
         result = response.json()
@@ -59,19 +61,21 @@ class OpenAiProvider(LlmProvider):
             self.session.headers.update({"Authorization": f"Bearer {self.api_key}"})
 
     def generate(self, prompt: str, model_name: str, **kwargs) -> str:
+        kwargs.pop("bypass_cache", None)
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
             **kwargs
         }
-        res = self.session.post(f"{self.base_url}/chat/completions", json=payload)
+        url = self.base_url.rstrip("/") + "/chat/completions"
+        res = self.session.post(url, json=payload)
         res.raise_for_status()
         return res.json()["choices"][0]["message"]["content"]
 
 class ClaudeProvider(LlmProvider):
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        self.api_key = api_key or _env_value("REVIEWOP_CLAUDE_API_KEY", "CLAUDE_API_KEY")
-        self.base_url = base_url or _env_value("REVIEWOP_CLAUDE_BASE_URL", "CLAUDE_BASE_URL", default="https://api.anthropic.com/v1")
+        self.api_key = api_key or _env_value("CLAUDE_API_KEY")
+        self.base_url = base_url or _env_value("CLAUDE_BASE_URL", default="https://api.anthropic.com/v1")
         self.session = requests.Session()
         if self.api_key:
             self.session.headers.update(
@@ -83,13 +87,15 @@ class ClaudeProvider(LlmProvider):
             )
 
     def generate(self, prompt: str, model_name: str, **kwargs) -> str:
+        kwargs.pop("bypass_cache", None)
         payload = {
             "model": model_name,
             "max_tokens": int(kwargs.pop("max_tokens", 1024)),
             "messages": [{"role": "user", "content": prompt}],
             **kwargs,
         }
-        res = self.session.post(f"{self.base_url}/messages", json=payload)
+        url = self.base_url.rstrip("/") + "/messages"
+        res = self.session.post(url, json=payload)
         res.raise_for_status()
         content = res.json().get("content", [])
         if isinstance(content, list):
@@ -123,8 +129,8 @@ class AsyncLlmProvider(ABC):
 
 class AsyncRunPodProvider(AsyncLlmProvider):
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        self.api_key = api_key or _env_value("REVIEWOP_RUNPOD_API_KEY", "RUNPOD_API_KEY")
-        self.base_url = base_url or _env_value("REVIEWOP_RUNPOD_ENDPOINT_URL", "RUNPOD_ENDPOINT_URL")
+        self.api_key = api_key or _env_value("RUNPOD_API_KEY")
+        self.base_url = base_url or _env_value("RUNPOD_ENDPOINT_URL")
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -132,8 +138,8 @@ class AsyncRunPodProvider(AsyncLlmProvider):
 
     async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
         # Late-bind the endpoint and key to ensure .env updates reflect in long-running processes
-        self.api_key = self.api_key or _env_value("REVIEWOP_RUNPOD_API_KEY", "RUNPOD_API_KEY")
-        self.base_url = self.base_url or _env_value("REVIEWOP_RUNPOD_ENDPOINT_URL", "RUNPOD_ENDPOINT_URL")
+        self.api_key = self.api_key or _env_value("RUNPOD_API_KEY")
+        self.base_url = self.base_url or _env_value("RUNPOD_ENDPOINT_URL")
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -146,10 +152,12 @@ class AsyncRunPodProvider(AsyncLlmProvider):
         data = {
             "input": {
                 "prompt": prompt,
-                "model_name": model_name,
                 **kwargs
             }
         }
+        if model_name:
+            data["input"]["model_name"] = model_name
+
         cache_key = hashlib.md5(f"runpod:{model_name}:{prompt}".encode("utf-8")).hexdigest()
         cached_val = GLOBAL_LLM_CACHE.get(cache_key, bypass=bypass)
         if cached_val:
@@ -183,20 +191,30 @@ class AsyncOpenAiProvider(AsyncLlmProvider):
         self.headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
+        bypass = kwargs.pop("bypass_cache", False)
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
             **kwargs
         }
+        
+        cache_key = hashlib.md5(f"openai:{model_name}:{prompt}".encode("utf-8")).hexdigest()
+        cached_val = GLOBAL_LLM_CACHE.get(cache_key, bypass=bypass)
+        if cached_val:
+            return cached_val
+
+        url = self.base_url.rstrip("/") + "/chat/completions"
         async with httpx.AsyncClient(timeout=60.0) as client:
-            res = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=self.headers)
+            res = await client.post(url, json=payload, headers=self.headers)
             res.raise_for_status()
-            return res.json()["choices"][0]["message"]["content"]
+            result = res.json()["choices"][0]["message"]["content"]
+            GLOBAL_LLM_CACHE.set(cache_key, result)
+            return result
 
 class AsyncClaudeProvider(AsyncLlmProvider):
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        self.api_key = api_key or _env_value("REVIEWOP_CLAUDE_API_KEY", "CLAUDE_API_KEY")
-        self.base_url = base_url or _env_value("REVIEWOP_CLAUDE_BASE_URL", "CLAUDE_BASE_URL", default="https://api.anthropic.com/v1")
+        self.api_key = api_key or _env_value("CLAUDE_API_KEY")
+        self.base_url = base_url or _env_value("CLAUDE_BASE_URL", default="https://api.anthropic.com/v1")
         self.headers = (
             {
                 "x-api-key": self.api_key,
@@ -208,18 +226,28 @@ class AsyncClaudeProvider(AsyncLlmProvider):
         )
 
     async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
+        bypass = kwargs.pop("bypass_cache", False)
         payload = {
             "model": model_name,
             "max_tokens": int(kwargs.pop("max_tokens", 1024)),
             "messages": [{"role": "user", "content": prompt}],
             **kwargs,
         }
+        
+        cache_key = hashlib.md5(f"claude:{model_name}:{prompt}".encode("utf-8")).hexdigest()
+        cached_val = GLOBAL_LLM_CACHE.get(cache_key, bypass=bypass)
+        if cached_val:
+            return cached_val
+
+        url = self.base_url.rstrip("/") + "/messages"
         async with httpx.AsyncClient(timeout=60.0) as client:
-            res = await client.post(f"{self.base_url}/messages", json=payload, headers=self.headers)
+            res = await client.post(url, json=payload, headers=self.headers)
             res.raise_for_status()
             content = res.json().get("content", [])
             if isinstance(content, list):
-                return "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+                result = "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+                GLOBAL_LLM_CACHE.set(cache_key, result)
+                return result
             return str(content)
 
 class AsyncOllamaProvider(AsyncLlmProvider):
@@ -358,14 +386,13 @@ def resolve_processor_async_provider(processor_name: str | None, model_name: str
 
 
 def discover_best_provider() -> Tuple[str, Optional[str], Optional[str]]:
-    runpod_key = _env_value("REVIEWOP_RUNPOD_API_KEY", "RUNPOD_API_KEY")
-    runpod_url = _env_value("REVIEWOP_RUNPOD_ENDPOINT_URL", "RUNPOD_ENDPOINT_URL")
+    runpod_key = _env_value("RUNPOD_API_KEY")
+    runpod_url = _env_value("RUNPOD_ENDPOINT_URL")
     if runpod_key and runpod_url:
         return "runpod", runpod_key, runpod_url
-    
-    claude_key = _env_value("REVIEWOP_CLAUDE_API_KEY", "CLAUDE_API_KEY")
+    claude_key = _env_value("CLAUDE_API_KEY")
     if claude_key:
-        return "claude", claude_key, _env_value("REVIEWOP_CLAUDE_BASE_URL", "CLAUDE_BASE_URL", default="https://api.anthropic.com/v1")
+        return "claude", claude_key, _env_value("CLAUDE_BASE_URL", default="https://api.anthropic.com/v1")
 
     openai_key = _env_value("OPENAI_API_KEY")
     if openai_key:

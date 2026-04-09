@@ -50,13 +50,15 @@ def to_jsonable(value: Any) -> Any:
         return to_jsonable(asdict(value))
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, (set, frozenset)):
+        return sorted([to_jsonable(item) for item in value])
     if isinstance(value, dict):
         return {str(k): to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [to_jsonable(item) for item in value]
-    if isinstance(value, tuple):
-        return [to_jsonable(item) for item in value]
-    return value
+    if isinstance(value, (int, float, str, bool, type(None))):
+        return value
+    return str(value)
 
 
 def write_json(path: Path, payload: Any) -> None:

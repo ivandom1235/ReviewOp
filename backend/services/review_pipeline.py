@@ -17,12 +17,9 @@ from services.open_aspect import extract_open_aspects
 
 
 def _safe_extract_aspects(text: str, max_aspects: int = 8) -> list[str]:
-    try:
-        aspects = extract_open_aspects(text, max_aspects=max_aspects)
-        if aspects:
-            return aspects
-    except Exception:
-        pass
+    aspects = extract_open_aspects(text, max_aspects=max_aspects)
+    if aspects:
+        return aspects
     return ["general"]
 
 

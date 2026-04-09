@@ -725,7 +725,7 @@ async def build_implicit_row(
         if not clause_matches and enable_llm_fallback and llm_provider:
             if llm_model_name is None or not str(llm_model_name).strip():
                 raise RuntimeError(
-                    "REVIEWOP_LLM_MODEL_NAME or provider-specific model env is required"
+                    "LLM_MODEL_NAME or provider-specific model env is required"
                 )
             llm_fallback_used = True
             paraphrases = await reason_implicit_signal_async(clause, candidate_aspects, llm_provider, llm_model_name, bypass_cache=bypass_cache)
@@ -968,6 +968,7 @@ def collect_diagnostics(rows: List[Dict[str, Any]], *, text_column: str, candida
     reasoned_recovery_count = 0
     reasoned_recovery_span_count = 0
     fallback_branch_counts: Counter[str] = Counter()
+    review_reason_counts: Counter[str] = Counter()
     gold_miss_counts: Counter[str] = Counter()
     total_gold_aspects = 0
     matched_gold_aspects = 0

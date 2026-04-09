@@ -49,6 +49,7 @@ python protonet\code\cli.py export --input-type benchmark --input-dir dataset_bu
 - `dataset_builder` uses its own RunPod LLM endpoint via `REVIEWOP_RUNPOD_API_KEY` and `REVIEWOP_RUNPOD_ENDPOINT_URL`
 - `protonet` and `backend` share one RunPod Flash endpoint via `PROTONET_FLASH_ENDPOINT_ID`
 - local fallback remains available through the exported Protonet bundle at `REVIEWOP_PROTONET_BUNDLE_PATH`
+- backend bootstrap installs the spaCy `en_core_web_sm` model because open-aspect extraction depends on it
 
 ## Root Commands And Options
 

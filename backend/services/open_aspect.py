@@ -153,7 +153,20 @@ def _valid_phrase(phrase: str) -> bool:
 
 @lru_cache(maxsize=1)
 def _nlp() -> Language:
-    return spacy.load("en_core_web_sm")
+    try:
+        return spacy.load("en_core_web_sm")
+    except OSError as exc:
+        raise RuntimeError(
+            "spaCy model 'en_core_web_sm' is required for open aspect extraction but is not installed."
+        ) from exc
+
+
+def open_aspect_model_status() -> dict[str, str | bool]:
+    try:
+        _nlp()
+    except RuntimeError as exc:
+        return {"available": False, "model": "en_core_web_sm", "error": str(exc)}
+    return {"available": True, "model": "en_core_web_sm"}
 
 
 @lru_cache(maxsize=1)

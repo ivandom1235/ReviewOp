@@ -85,6 +85,14 @@ try {
         exit 1
     }
     Write-Host '[ok] Backend dependencies installed.' -ForegroundColor $success
+
+    Write-Host 'Installing spaCy language model...' -ForegroundColor $info
+    python -m spacy download en_core_web_sm
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '[x] Failed to install spaCy language model en_core_web_sm.' -ForegroundColor $errorColor
+        exit 1
+    }
+    Write-Host '[ok] spaCy language model installed.' -ForegroundColor $success
 }
 finally {
     Pop-Location

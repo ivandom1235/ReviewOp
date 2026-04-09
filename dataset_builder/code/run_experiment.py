@@ -441,11 +441,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Backward-compatible alias for older scripts.
     parser.add_argument("--no-enable-reasoned_recovery", dest="enable_reasoned_recovery", action="store_false")
     parser.set_defaults(enable_reasoned_recovery=bool(runtime_defaults.get("enable_reasoned_recovery", True)))
-    parser.add_argument("--processor", type=str, default=_required_env("REVIEWOP_DATASET_BUILDER_PROCESSOR", "DATASET_BUILDER_PROCESSOR"), choices=["local", "runpod"])
+    parser.add_argument("--processor", type=str, default=_required_env("DATASET_BUILDER_PROCESSOR"), choices=["local", "runpod"])
     parser.add_argument(
         "--llm-model-name",
         type=str,
-        default=_required_env("REVIEWOP_LLM_MODEL_NAME", "LLM_MODEL_NAME", "GROQ_MODEL", "OPENAI_MODEL", "OLLAMA_MODEL"),
+        default=_required_env("LLM_MODEL_NAME", "GROQ_MODEL", "OPENAI_MODEL", "OLLAMA_MODEL"),
     )
     parser.add_argument("--llm-api-key", type=str, default=None)
     parser.add_argument("--llm-base-url", type=str, default=None)

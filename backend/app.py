@@ -22,6 +22,7 @@ from services.seq2seq_infer import Seq2SeqEngine
 from services.review_pipeline import _refresh_corpus_graph_task
 from services.hybrid_pipeline import run_single_review_hybrid_pipeline
 from services.implicit_client import ImplicitClient
+from services.open_aspect import open_aspect_model_status
 from services.responses import ContractMapper
 
 from routes.analytics import router as analytics_router
@@ -216,6 +217,7 @@ def health(db: Session = Depends(get_db)):
             "env": settings.app_env,
             "db": "connected",
             "explicit_model": settings.seq2seq_model_name,
+            "open_aspect_model": open_aspect_model_status(),
             "implicit_enabled": settings.enable_implicit,
             "llm_verifier_enabled": settings.enable_llm_verifier,
             "llm_model": settings.llm_model_name if settings.enable_llm_verifier else None,
