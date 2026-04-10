@@ -29,15 +29,16 @@ export default function MyReviewsPage() {
       product_id: review.product_id,
     });
     nav(`/create-review?${params.toString()}`, {
-      state: {
-        prefill: {
-          review_id: review.review_id,
-          product_id: review.product_id,
-          rating: review.rating,
-          review_title: review.review_title || "",
-          review_text: review.review_text || "",
-          recommendation: Boolean(review.recommendation),
-        },
+        state: {
+          prefill: {
+            review_id: review.review_id,
+            product_id: review.product_id,
+            reply_to_review_id: review.reply_to_review_id ?? null,
+            rating: review.rating,
+            review_title: review.review_title || "",
+            review_text: review.review_text || "",
+            recommendation: Boolean(review.recommendation),
+          },
       },
     });
   }
@@ -51,9 +52,12 @@ export default function MyReviewsPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="font-semibold text-slate-900 dark:text-slate-100">Product: {r.product_id}</p>
+                {r.is_reply ? (
+                  <p className="text-xs text-slate-500 dark:text-slate-300">Reply to {r.reply_to_review_title || `review #${r.reply_to_review_id}`}</p>
+                ) : null}
                 <p className="text-xs text-slate-500 dark:text-slate-300">{new Date(r.review_date).toLocaleString()}</p>
               </div>
-              <div className="text-amber-600">{r.rating} ?</div>
+              <div className="text-amber-600">{r.rating} {"\u2605"}</div>
             </div>
             {r.review_title ? <h3 className="mt-2 font-medium text-slate-900 dark:text-slate-100">{r.review_title}</h3> : null}
             <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{r.review_text}</p>

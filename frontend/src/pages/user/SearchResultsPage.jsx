@@ -28,6 +28,18 @@ export default function SearchResultsPage() {
   // Local state for the search input to allow debouncing
   const [searchInput, setSearchInput] = useState(q);
 
+  function updateParams(next) {
+    const current = new URLSearchParams(params);
+    Object.entries(next).forEach(([key, value]) => {
+      if (value === "" || value == null) {
+        current.delete(key);
+      } else {
+        current.set(key, String(value));
+      }
+    });
+    setParams(current, { replace: true });
+  }
+
   useEffect(() => {
     // Reset when keywords or filters change
     setError("");
@@ -47,11 +59,11 @@ export default function SearchResultsPage() {
 
   // Debounce the search input update to the URL params
   useEffect(() => {
-    const handler = setTimeout(() => {
-      if (searchInput !== q) {
-        setParams({ q: searchInput, min_rating: String(minRating), sort });
-      }
-    }, 400);
+      const handler = setTimeout(() => {
+        if (searchInput !== q) {
+          updateParams({ q: searchInput, min_rating: String(minRating), sort });
+        }
+      }, 400);
     return () => clearTimeout(handler);
   }, [searchInput, q, minRating, sort, setParams]);
 
@@ -83,13 +95,13 @@ export default function SearchResultsPage() {
             <div className="absolute right-3 top-2.5 h-4 w-4 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent"></div>
           )}
         </div>
-        <select value={minRating} onChange={(e) => setParams({ q, min_rating: e.target.value, sort })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
+        <select value={minRating} onChange={(e) => updateParams({ q, min_rating: e.target.value, sort })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
           <option value={4}>4 stars and above</option>
           <option value={3}>3 stars and above</option>
           <option value={2}>2 stars and above</option>
           <option value={1}>1 star and above</option>
         </select>
-        <select value={sort} onChange={(e) => setParams({ q, min_rating: String(minRating), sort: e.target.value })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
+        <select value={sort} onChange={(e) => updateParams({ q, min_rating: String(minRating), sort: e.target.value })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
           {SORT_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}

@@ -153,6 +153,7 @@ def _apply_schema_patches() -> None:
         add_column_if_missing("products", "cached_review_count", "ALTER TABLE products ADD COLUMN cached_review_count INTEGER NOT NULL DEFAULT 0")
         add_column_if_missing("products", "cached_latest_review_at", "ALTER TABLE products ADD COLUMN cached_latest_review_at DATETIME NULL")
         add_column_if_missing("products", "cached_helpful_count", "ALTER TABLE products ADD COLUMN cached_helpful_count INTEGER NOT NULL DEFAULT 0")
+        add_column_if_missing("user_product_reviews", "reply_to_review_id", "ALTER TABLE user_product_reviews ADD COLUMN reply_to_review_id INTEGER NULL")
 
         create_table_if_missing(
             "admin_dismissed_alerts",

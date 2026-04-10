@@ -262,6 +262,7 @@ class UserProductReview(Base):
     recommendation: Mapped[bool | None] = mapped_column(nullable=True)
     helpful_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     linked_review_id: Mapped[int | None] = mapped_column(ForeignKey("reviews.id"), nullable=True)
+    reply_to_review_id: Mapped[int | None] = mapped_column(ForeignKey("user_product_reviews.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 

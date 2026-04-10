@@ -6,6 +6,7 @@ import UserHomePage from "./pages/user/UserHomePage";
 import SearchResultsPage from "./pages/user/SearchResultsPage";
 import ProductPage from "./pages/user/ProductPage";
 import SubmitReviewPage from "./pages/user/SubmitReviewPage";
+import GiveReviewPage from "./pages/user/GiveReviewPage";
 import MyReviewsPage from "./pages/user/MyReviewsPage";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { AdminRoute, UserRoute } from "./auth/ProtectedRoute";
@@ -63,6 +64,14 @@ function AppRoutes() {
         element={
           <UserRoute>
             <SubmitReviewPage />
+          </UserRoute>
+        }
+      />
+      <Route
+        path="/give-review"
+        element={
+          <UserRoute>
+            <GiveReviewPage />
           </UserRoute>
         }
       />

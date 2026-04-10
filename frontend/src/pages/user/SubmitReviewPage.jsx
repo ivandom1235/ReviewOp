@@ -18,6 +18,7 @@ export default function SubmitReviewPage() {
 
   const [productRef, setProductRef] = useState(initialProductId);
   const [productName, setProductName] = useState(initialProductName);
+  const [replyToReviewId, setReplyToReviewId] = useState(prefill?.reply_to_review_id ?? null);
   const [rating, setRating] = useState(prefill?.rating ?? 5);
   const [reviewText, setReviewText] = useState(prefill?.review_text ?? "");
   const [reviewTitle, setReviewTitle] = useState(prefill?.review_title ?? "");
@@ -42,6 +43,7 @@ export default function SubmitReviewPage() {
           return;
         }
         setProductRef(row.product_id || "");
+        setReplyToReviewId(row.reply_to_review_id ?? null);
         setRating(row.rating ?? 5);
         setReviewTitle(row.review_title || "");
         setReviewText(row.review_text || "");
@@ -84,6 +86,7 @@ export default function SubmitReviewPage() {
       pros: pros || null,
       cons: cons || null,
       recommendation,
+      reply_to_review_id: replyToReviewId,
     };
 
     setLoading(true);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { getProductDetail, getProductReviews } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
 import UserShell from "../../components/user/UserShell";
@@ -7,6 +7,7 @@ import UserShell from "../../components/user/UserShell";
 export default function ProductPage() {
   const { productId } = useParams();
   const { token } = useAuth();
+  const nav = useNavigate();
   const [params, setParams] = useSearchParams();
   const [detail, setDetail] = useState(null);
   const [reviews, setReviews] = useState([]);
@@ -59,7 +60,7 @@ export default function ProductPage() {
               {detail.summary ? <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">{detail.summary}</p> : null}
             </div>
             <div className="text-right">
-              <div className="text-2xl font-bold text-amber-600">{Number(detail.average_rating).toFixed(1)} ★</div>
+              <div className="text-2xl font-bold text-amber-600">{Number(detail.average_rating).toFixed(1)} {"\u2605"}</div>
               <div className="text-sm text-slate-500 dark:text-slate-300">{detail.review_count} reviews</div>
             </div>
           </div>
@@ -110,8 +111,13 @@ export default function ProductPage() {
             <article key={r.review_id} className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
               <div className="flex items-center justify-between">
                 <div className="font-semibold text-slate-900 dark:text-slate-100">{r.reviewer_name}</div>
-                <div className="text-sm text-amber-600">{r.rating} ★</div>
+                <div className="text-sm text-amber-600">{r.rating} {"\u2605"}</div>
               </div>
+              {r.is_reply ? (
+                <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                  Replying to {r.reply_to_review_title || `review #${r.reply_to_review_id}`}
+                </div>
+              ) : null}
               {r.review_title ? <h3 className="mt-1 font-medium text-slate-900 dark:text-slate-100">{r.review_title}</h3> : null}
               <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{r.review_text}</p>
               <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">{new Date(r.review_date).toLocaleString()}</p>
@@ -124,6 +130,27 @@ export default function ProductPage() {
                   ))}
                 </div>
               ) : null}
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={() =>
+                    nav(
+                      `/give-review?reply_to_review_id=${encodeURIComponent(r.review_id)}&product_id=${encodeURIComponent(r.product_id)}`,
+                      {
+                        state: {
+                          replyToReviewId: r.review_id,
+                          productId: r.product_id,
+                          productName: detail?.name || "",
+                          parentReview: r,
+                        },
+                      },
+                    )
+                  }
+                  className="rounded-lg border border-indigo-300 px-3 py-1.5 text-sm text-indigo-700 hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950"
+                >
+                  Give Review
+                </button>
+              </div>
             </article>
           ))}
         </div>

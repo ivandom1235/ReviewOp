@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import logging
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -10,6 +12,11 @@ from core.config import settings
 
 ImplicitPrediction = Dict[str, Any]
 logger = logging.getLogger(__name__)
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = BACKEND_ROOT.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 class ImplicitClient:
     def __init__(self) -> None:

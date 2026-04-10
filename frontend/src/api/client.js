@@ -226,12 +226,28 @@ async function downloadFile(path, filename) {
   window.URL.revokeObjectURL(url);
 }
 
-export async function exportAdminJson() {
-  await downloadFile("/analytics/export/json", "reviewop-admin-export.json");
+export async function getAdminExport(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.domain) params.set("domain", filters.domain);
+  if (filters.limit) params.set("limit", String(filters.limit));
+  if (filters.offset) params.set("offset", String(filters.offset));
+  return request(`/analytics/export/json${params.toString() ? `?${params.toString()}` : ""}`);
 }
 
-export async function exportAdminPdf() {
-  await downloadFile("/analytics/export/pdf", "reviewop-admin-export.pdf");
+export async function exportAdminJson(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.domain) params.set("domain", filters.domain);
+  if (filters.limit) params.set("limit", String(filters.limit));
+  if (filters.offset) params.set("offset", String(filters.offset));
+  await downloadFile(`/analytics/export/json${params.toString() ? `?${params.toString()}` : ""}`, "reviewop-admin-export.json");
+}
+
+export async function exportAdminPdf(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.domain) params.set("domain", filters.domain);
+  if (filters.limit) params.set("limit", String(filters.limit));
+  if (filters.offset) params.set("offset", String(filters.offset));
+  await downloadFile(`/analytics/export/pdf${params.toString() ? `?${params.toString()}` : ""}`, "reviewop-admin-export.pdf");
 }
 
 function authHeaders(token) {

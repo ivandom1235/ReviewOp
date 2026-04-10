@@ -19,6 +19,7 @@ import {
   clearAlert,
   exportAdminJson,
   exportAdminPdf,
+  getAdminExport,
   getUserReviewsList,
   getUserReviewsSummary,
 } from "../../api/client";
@@ -29,6 +30,7 @@ import ReviewExplorer from "./ReviewExplorer";
 import AlertsPage from "./AlertsPage";
 import AlertDetailPage from "./AlertDetailPage";
 import UserReviewsInsights from "./UserReviewsInsights";
+import ExportsPage from "./ExportsPage";
 import { useAuth } from "../../auth/AuthContext";
 
 const initialGraphFilters = {
@@ -67,6 +69,9 @@ export default function AdminPortal() {
   const [weeklySummary, setWeeklySummary] = useState(null);
   const [userReviewSummary, setUserReviewSummary] = useState(null);
   const [userReviewList, setUserReviewList] = useState({ total: 0, limit: 50, offset: 0, rows: [] });
+  const [exportFilters, setExportFilters] = useState({ domain: "", limit: 100, offset: 0 });
+  const [exportPayload, setExportPayload] = useState(null);
+  const [exportLoading, setExportLoading] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -83,6 +88,7 @@ export default function AdminPortal() {
       try {
         await refreshAnalytics();
         await refreshBatchGraph(initialGraphFilters);
+        await refreshExportPreview({ domain: "", limit: 100, offset: 0 });
       } catch {
         // allow empty startup
       }
@@ -129,6 +135,16 @@ export default function AdminPortal() {
       setBatchGraph(graph);
     } finally {
       setGraphLoading(false);
+    }
+  }
+
+  async function refreshExportPreview(nextFilters = exportFilters) {
+    setExportLoading(true);
+    try {
+      const payload = await getAdminExport(nextFilters);
+      setExportPayload(payload);
+    } finally {
+      setExportLoading(false);
     }
   }
 
@@ -187,7 +203,7 @@ export default function AdminPortal() {
   }
 
   const leaderboardRows = useMemo(() => leaderboard.map((row, idx) => ({ id: `${row.aspect}-${idx}`, ...row })), [leaderboard]);
-  const pageNav = ["Dashboard", "AspectAnalytics", "GraphExplorer", "ReviewExplorer", "Alerts", "UserReviews"];
+  const pageNav = ["Dashboard", "AspectAnalytics", "GraphExplorer", "ReviewExplorer", "Alerts", "UserReviews", "Exports"];
 
   const handleAlertClick = (alert) => {
     setSelectedAlert(alert);
@@ -210,7 +226,7 @@ export default function AdminPortal() {
 
   async function handleExportJson() {
     try {
-      await exportAdminJson();
+      await exportAdminJson(exportFilters);
     } catch (ex) {
       setError(ex.message || "Failed to export JSON");
     }
@@ -218,7 +234,7 @@ export default function AdminPortal() {
 
   async function handleExportPdf() {
     try {
-      await exportAdminPdf();
+      await exportAdminPdf(exportFilters);
     } catch (ex) {
       setError(ex.message || "Failed to export PDF");
     }
@@ -330,11 +346,23 @@ export default function AdminPortal() {
               onAlertClear={handleAlertClear}
             />
           ) : null}
-          {activePage === "UserReviews" ? (
-            <UserReviewsInsights
-              summary={userReviewSummary}
-              list={userReviewList}
+            {activePage === "UserReviews" ? (
+              <UserReviewsInsights
+                summary={userReviewSummary}
+                list={userReviewList}
+                isDark={isDark}
+              />
+            ) : null}
+            {activePage === "Exports" ? (
+            <ExportsPage
               isDark={isDark}
+              onExportJson={handleExportJson}
+              onExportPdf={handleExportPdf}
+              exportPayload={exportPayload}
+              exportFilters={exportFilters}
+              setExportFilters={setExportFilters}
+              loading={exportLoading}
+              onRefreshExport={() => refreshExportPreview(exportFilters)}
             />
           ) : null}
           {activePage === "AlertDetail" ? (

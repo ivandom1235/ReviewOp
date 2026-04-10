@@ -383,6 +383,9 @@ class ProductReviewOut(BaseModel):
     review_date: str
     helpful_count: int = 0
     aspects: List[AspectSummaryOut] = Field(default_factory=list)
+    reply_to_review_id: Optional[int] = None
+    reply_to_review_title: Optional[str] = None
+    is_reply: bool = False
 
 
 class ProductDetailOut(BaseModel):
@@ -403,6 +406,7 @@ class ProductSuggestionOut(BaseModel):
 class SubmitReviewIn(BaseModel):
     product_id: str = Field(min_length=1, max_length=128)
     product_name: Optional[str] = Field(default=None, max_length=255)
+    reply_to_review_id: Optional[int] = None
     rating: int = Field(ge=1, le=5)
     review_text: str = Field(min_length=3)
     review_title: Optional[str] = Field(default=None, max_length=255)
@@ -415,3 +419,4 @@ class SubmitReviewOut(BaseModel):
     review_id: int
     product_id: str
     linked_review_id: Optional[int] = None
+    reply_to_review_id: Optional[int] = None

@@ -39,18 +39,18 @@ export default function AlertsPage({ alerts = [], isDark, onAlertClick, onAlertC
     { 
       field: "action", 
       headerName: "Action",
-      width: 180,
+      width: 240,
       renderCell: (params) => (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <button 
             onClick={() => onAlertClick(params.row)}
-            className="text-indigo-500 hover:text-indigo-400 font-semibold text-sm"
+            className="rounded-lg border border-indigo-300 px-3 py-1.5 text-sm font-semibold text-indigo-600 hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950"
           >
             View
           </button>
           <button
             onClick={() => onAlertClear?.(params.row)}
-            className="text-rose-500 hover:text-rose-400 font-semibold text-sm"
+            className="rounded-lg border border-rose-300 px-3 py-1.5 text-sm font-semibold text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-950"
           >
             Clear
           </button>
