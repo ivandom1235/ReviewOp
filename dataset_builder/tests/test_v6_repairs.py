@@ -94,6 +94,20 @@ class V6RepairTests(unittest.TestCase):
             self.assertIn("evidence_span", span)
             self.assertEqual(len(span["evidence_span"]), 2)
 
+    def test_load_inputs_infers_domain_from_filename_when_missing(self) -> None:
+        temp_dir = ROOT / "dataset_builder" / "tests" / "__tmp_domain_infer__"
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            path = temp_dir / "Laptop_train.csv"
+            path.write_text("id,review,aspect,polarity,from,to\n1,Great battery,battery,positive,0,13\n", encoding="utf-8")
+            frame = load_inputs(temp_dir)
+            self.assertIn("domain", frame.columns)
+            self.assertEqual(set(frame["domain"].dropna().unique()), {"laptop"})
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_vector_aspect_matcher_prefers_cuda_when_available(self) -> None:
         with patch("implicit_pipeline.torch.cuda.is_available", return_value=True), patch("implicit_pipeline.SentenceTransformer") as mocked_model:
             matcher = VectorAspectMatcher("mini")

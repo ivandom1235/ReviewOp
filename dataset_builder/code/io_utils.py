@@ -24,6 +24,35 @@ def flatten_dict(payload: dict) -> dict:
     return flat
 
 
+def _canonical_domain_from_source_file(source_file: str) -> str:
+    name = Path(str(source_file or "unknown")).stem.lower()
+    for suffix in ("_train", "_test", "_val", "-train", "-test", "-val"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    domain_map = {
+        "laptop": "laptop",
+        "restaurant": "restaurant",
+        "telecom": "telecom",
+        "electronics": "electronics",
+        "delivery": "delivery",
+        "ecommerce": "ecommerce",
+        "education": "education",
+        "entertainment": "entertainment",
+        "fashion": "fashion",
+        "finance": "finance",
+        "fitness": "fitness",
+        "gaming": "gaming",
+        "healthcare": "healthcare",
+        "home_appliances": "home_appliances",
+        "legal": "legal",
+        "news_media": "news_media",
+        "real_estate": "real_estate",
+        "synthetic_multi_domain": "synthetic_multi_domain",
+        "travel": "travel",
+    }
+    return domain_map.get(name, name or "unknown")
+
+
 def load_file(path: Path) -> pd.DataFrame:
     suffix = path.suffix.lower()
     if suffix in {".csv", ".tsv"}:
@@ -59,6 +88,8 @@ def load_file(path: Path) -> pd.DataFrame:
     if not frame.empty:
         frame = frame.copy()
         frame["source_file"] = path.name
+        if "domain" not in frame.columns:
+            frame["domain"] = _canonical_domain_from_source_file(path.name)
     return frame
 
 
