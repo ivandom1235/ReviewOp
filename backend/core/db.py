@@ -1,6 +1,6 @@
 # proto/backend/core/db.py
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import make_url, URL
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from core.config import settings
 
@@ -21,7 +21,14 @@ def ensure_database_exists() -> None:
     safe_db_name = db_name.replace("`", "``")
 
     # Connect to MySQL server without selecting a specific database.
-    admin_url = url.set(database=None)
+    admin_url = URL.create(
+        drivername=url.drivername,
+        username=url.username,
+        password=url.password,
+        host=url.host,
+        port=url.port,
+        query=url.query,
+    )
     admin_engine = create_engine(
         admin_url,
         pool_pre_ping=True,
