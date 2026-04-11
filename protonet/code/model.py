@@ -45,6 +45,7 @@ class ProtoNetModel(nn.Module):
             raise RuntimeError("Transformer encoder is required for this run, but no transformer backend was loaded.")
         self.projection = ProjectionHead(self.encoder.hidden_size, cfg.projection_dim, cfg.dropout)
         self.log_temperature = nn.Parameter(torch.log(torch.tensor(float(cfg.temperature_init), dtype=torch.float32)))
+        self.precomputed_embeddings: Dict[str, torch.Tensor] = {}
         self.to(cfg.device)
 
     @property
@@ -52,18 +53,46 @@ class ProtoNetModel(nn.Module):
         return self.log_temperature.exp().clamp(min=0.05, max=10.0)
 
     def encode_items(self, items: List[Dict[str, Any]]) -> torch.Tensor:
-        texts = [
-            format_input_text(
-                str(item.get("review_text", "")),
-                str(item.get("evidence_sentence") or item.get("review_text", "")),
-                str(item.get("domain", "unknown")),
-            )
-            for item in items
-        ]
-        embeddings = self.encoder(texts)
-        projection_dtype = next(self.projection.parameters()).dtype
-        embeddings = embeddings.to(device=self.cfg.device, dtype=projection_dtype)
-        return self.projection(embeddings)
+        if not items:
+            hidden = int(self.cfg.projection_dim)
+            return torch.empty((0, hidden), device=self.cfg.device)
+        cached_outputs: List[torch.Tensor | None] = [None] * len(items)
+        missing_indices: List[int] = []
+        missing_items: List[Dict[str, Any]] = []
+
+        for idx, item in enumerate(items):
+            key = str(item.get("example_id") or item.get("parent_review_id") or "")
+            if (not self.training) and key and key in self.precomputed_embeddings:
+                cached_outputs[idx] = self.precomputed_embeddings[key].to(self.cfg.device)
+            else:
+                missing_indices.append(idx)
+                missing_items.append(item)
+
+        if missing_items:
+            texts = [
+                format_input_text(
+                    str(item.get("review_text", "")),
+                    str(
+                        item.get("evidence_text")
+                        or item.get("evidence_sentence")
+                        or item.get("review_text", "")
+                    ),
+                    str(item.get("domain", "unknown")),
+                )
+                for item in missing_items
+            ]
+            embeddings = self.encoder(texts)
+            projection_dtype = next(self.projection.parameters()).dtype
+            embeddings = embeddings.to(device=self.cfg.device, dtype=projection_dtype)
+            projected = self.projection(embeddings)
+            for local_idx, global_idx in enumerate(missing_indices):
+                tensor = projected[local_idx]
+                cached_outputs[global_idx] = tensor
+                key = str(items[global_idx].get("example_id") or items[global_idx].get("parent_review_id") or "")
+                if key and (not self.training):
+                    self.precomputed_embeddings[key] = tensor.detach().cpu()
+
+        return torch.stack([tensor for tensor in cached_outputs if tensor is not None], dim=0)
 
     def episode_forward(self, episode: Dict[str, Any]) -> EpisodeForwardOutput:
         support = list(episode.get("support_set", []))

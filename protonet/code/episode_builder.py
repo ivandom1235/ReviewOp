@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import random
 from typing import Any, Dict, List
+import numpy as np
 
 try:
     from .config import ProtonetConfig
@@ -55,8 +56,13 @@ def validate_episode_row(episode: Dict[str, Any], cfg: ProtonetConfig) -> None:
 
 
 def _episode_cache_path(cfg: ProtonetConfig, split: str) -> Path:
+    return _episode_cache_path_with_protocol(cfg, split, protocol=None)
+
+
+def _episode_cache_path_with_protocol(cfg: ProtonetConfig, split: str, protocol: str | None) -> Path:
+    protocol_suffix = f"_p{protocol}" if protocol else ""
     return cfg.episode_cache_dir / (
-        f"{cfg.input_type}_{split}_n{cfg.n_way}_k{cfg.k_shot}_q{cfg.q_query}_"
+        f"{cfg.input_type}_{split}{protocol_suffix}_n{cfg.n_way}_k{cfg.k_shot}_q{cfg.q_query}_"
         f"seed{cfg.seed}_train{cfg.max_train_episodes}_eval{cfg.max_eval_episodes}.jsonl"
     )
 
@@ -77,6 +83,16 @@ def _load_cached_episodes(cfg: ProtonetConfig, split: str) -> List[Dict[str, Any
     if rows:
         return rows
     return None
+
+
+def _filter_rows_by_protocol(rows: List[Dict[str, Any]], split: str, protocol: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        payload = row.get("split_protocol") if isinstance(row.get("split_protocol"), dict) else {}
+        protocol_split = str(payload.get(protocol) or row.get("split") or split)
+        if protocol_split == split:
+            out.append(row)
+    return out
 
 
 def _dedupe_by_parent(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -121,6 +137,16 @@ def _episode_row_from_example(row: Dict[str, Any], role: str, cfg: ProtonetConfi
         "confidence": float(row.get("confidence", 1.0)),
         "joint_label": build_joint_label(row, cfg.joint_label_separator),
         "role": role,
+        "gold_joint_labels": list(row.get("gold_joint_labels") or []),
+        "gold_interpretations": list(row.get("gold_interpretations") or []),
+        "abstain_acceptable": bool(row.get("abstain_acceptable", False)),
+        "ambiguity_type": row.get("ambiguity_type"),
+        "novel_acceptable": bool(row.get("novel_acceptable", False)),
+        "novel_cluster_id": row.get("novel_cluster_id"),
+        "novel_alias": row.get("novel_alias"),
+        "novel_evidence_text": row.get("novel_evidence_text"),
+        "split_protocol": row.get("split_protocol") or {},
+        "benchmark_ambiguity_score": float(row.get("benchmark_ambiguity_score", 0.0)),
     }
 
 
@@ -160,9 +186,10 @@ def _build_episodes_for_split(split: str, rows: List[Dict[str, Any]], cfg: Proto
     rng = random.Random(cfg.seed + split_seed)
     max_attempts = max(max_episodes * 12, 24)
     attempt = 0
+    label_weights = _compute_label_weights(grouped, labels)
     while len(episodes) < max_episodes and attempt < max_attempts:
         attempt += 1
-        chosen_labels = rng.sample(labels, cfg.n_way)
+        chosen_labels = _sample_labels_weighted(labels, label_weights, cfg.n_way, rng)
         support_set: List[Dict[str, Any]] = []
         query_set: List[Dict[str, Any]] = []
         support_parent_ids: set[str] = set()
@@ -171,7 +198,7 @@ def _build_episodes_for_split(split: str, rows: List[Dict[str, Any]], cfg: Proto
         for label in chosen_labels:
             bucket = grouped[label]
             support_examples = _select_rows_excluding(
-                bucket,
+                _weighted_rows(bucket),
                 cfg.k_shot,
                 excluded_parent_ids=query_parent_ids,
                 seed=cfg.seed + attempt,
@@ -185,7 +212,7 @@ def _build_episodes_for_split(split: str, rows: List[Dict[str, Any]], cfg: Proto
                 for row in support_examples
             }
             query_examples = _select_rows_excluding(
-                bucket,
+                _weighted_rows(bucket),
                 cfg.q_query,
                 excluded_parent_ids=support_parent_ids.union(support_ids_for_label),
                 seed=cfg.seed + attempt,
@@ -221,6 +248,52 @@ def _build_episodes_for_split(split: str, rows: List[Dict[str, Any]], cfg: Proto
     return episodes
 
 
+def _hardness_score(row: Dict[str, Any]) -> float:
+    tier = str(row.get("hardness_tier") or "H0").strip().upper()
+    return {"H0": 0.0, "H1": 0.34, "H2": 0.67, "H3": 1.0}.get(tier, 0.0)
+
+
+def _compute_label_weights(grouped: Dict[str, List[Dict[str, Any]]], labels: List[str]) -> Dict[str, float]:
+    max_domains = max(
+        1,
+        max(len({str(row.get("domain") or "unknown") for row in rows}) for rows in grouped.values()),
+    )
+    out: Dict[str, float] = {}
+    for label in labels:
+        rows = grouped.get(label, [])
+        unique_parents = len({str(row.get("parent_review_id") or row.get("record_id") or row.get("example_id")) for row in rows})
+        rarity = 1.0 / max(1, unique_parents)
+        hard = float(np.mean([_hardness_score(row) for row in rows])) if rows else 0.0
+        diverse = len({str(row.get("domain") or "unknown") for row in rows}) / max_domains if rows else 0.0
+        out[label] = max(1e-6, 0.55 * rarity + 0.30 * hard + 0.15 * diverse)
+    return out
+
+
+def _sample_labels_weighted(labels: List[str], weights: Dict[str, float], n_way: int, rng: random.Random) -> List[str]:
+    chosen: List[str] = []
+    available = list(labels)
+    while available and len(chosen) < n_way:
+        mass = [float(weights.get(label, 1.0)) for label in available]
+        pick = rng.choices(available, weights=mass, k=1)[0]
+        chosen.append(pick)
+        available.remove(pick)
+    if len(chosen) < n_way:
+        return sorted(labels)[:n_way]
+    return chosen
+
+
+def _weighted_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def row_score(row: Dict[str, Any]) -> tuple[float, str]:
+        grounded = 1.0 if not bool(row.get("evidence_fallback_used", False)) else 0.0
+        hard = _hardness_score(row)
+        multi = 1.0 if len(list(row.get("gold_joint_labels") or [])) >= 2 else 0.0
+        boundary = 1.0 if bool(row.get("abstain_acceptable", False)) else 0.0
+        score = 0.35 * grounded + 0.30 * hard + 0.20 * multi + 0.15 * boundary
+        ident = str(row.get("example_id") or row.get("parent_review_id") or "")
+        return (-score, ident)
+    return sorted(rows, key=row_score)
+
+
 def build_or_load_episode_sets(
     rows_by_split: Dict[str, List[Dict[str, Any]]],
     cfg: ProtonetConfig,
@@ -247,4 +320,20 @@ def build_or_load_episode_sets(
             episodes = _build_episodes_for_split(split, rows, cfg)
         episodes_by_split[split] = episodes
         write_jsonl(_episode_cache_path(cfg, split), track(episodes, total=len(episodes), desc=f"save:{split}", enabled=cfg.progress_enabled))
+
+    if cfg.protocol_eval_enabled:
+        for protocol in cfg.protocol_eval_splits:
+            for split in ("val", "test"):
+                protocol_rows = _filter_rows_by_protocol(rows_by_split.get(split, []), split, protocol)
+                if not protocol_rows:
+                    continue
+                protocol_key = f"{split}__{protocol}"
+                cached_path = _episode_cache_path_with_protocol(cfg, split, protocol)
+                try:
+                    protocol_episodes = _build_episodes_for_split(split, protocol_rows, cfg)
+                except ValueError as exc:
+                    announce(f"Skipping protocol episode cache {protocol_key}: {exc}")
+                    continue
+                episodes_by_split[protocol_key] = protocol_episodes
+                write_jsonl(cached_path, track(protocol_episodes, total=len(protocol_episodes), desc=f"save:{protocol_key}", enabled=cfg.progress_enabled))
     return episodes_by_split

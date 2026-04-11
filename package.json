@@ -1,4 +1,11 @@
 {
+  "scripts": {
+    "test": "python tools/run_repo_tests.py",
+    "test:backend": "python tools/run_repo_tests.py backend",
+    "test:dataset-builder": "python tools/run_repo_tests.py dataset-builder",
+    "test:protonet": "python tools/run_repo_tests.py protonet",
+    "test:frontend": "python tools/run_repo_tests.py frontend"
+  },
   "dependencies": {
     "eslint": "^10.0.2",
     "uvicorn": "^0.0.1-security"

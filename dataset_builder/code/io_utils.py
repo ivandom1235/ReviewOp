@@ -5,9 +5,12 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import pandas as pd
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 
 
 SUPPORTED_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl", ".xlsx", ".xls", ".xml"}
+ANNOTATION_ID_KEYS = ("instance_id", "record_id", "review_id", "parent_review_id", "id")
 
 
 def flatten_dict(payload: dict) -> dict:
@@ -24,7 +27,10 @@ def flatten_dict(payload: dict) -> dict:
 def load_file(path: Path) -> pd.DataFrame:
     suffix = path.suffix.lower()
     if suffix in {".csv", ".tsv"}:
-        frame = pd.read_csv(path, sep="\t" if suffix == ".tsv" else None, engine="python")
+        if suffix == ".tsv":
+            frame = pd.read_csv(path, sep="\t")
+        else:
+            frame = pd.read_csv(path)
     elif suffix in {".xlsx", ".xls"}:
         frame = pd.read_excel(path)
     elif suffix == ".json":
@@ -34,7 +40,8 @@ def load_file(path: Path) -> pd.DataFrame:
         else:
             frame = pd.DataFrame([flatten_dict(payload if isinstance(payload, dict) else {"value": payload})])
     elif suffix == ".jsonl":
-        rows = [flatten_dict(json.loads(line)) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        with path.open("r", encoding="utf-8") as f:
+            rows = [flatten_dict(json.loads(line)) for line in f if line.strip()]
         frame = pd.DataFrame(rows)
     elif suffix == ".xml":
         root = ET.parse(path).getroot()
@@ -56,37 +63,75 @@ def load_file(path: Path) -> pd.DataFrame:
 
 
 _REVIEW_COLUMN_ALIASES = [
-    "ReviewText", "review_text", "text", "Text", "text_",
+    "review", "Review", "ReviewText", "review_text", "text", "Text", "text_",
     "comment", "Comment", "body", "Body",
     "content", "Content", "review_body", "ReviewBody",
 ]
 
 
 def _normalize_review_columns(frame: pd.DataFrame) -> pd.DataFrame:
-    if "review" in frame.columns:
-        return frame
+    # We copy the frame to ensure a separate object for every process.
+    frame = frame.copy()
     for alias in _REVIEW_COLUMN_ALIASES:
-        if alias in frame.columns:
-            # Keep source schema intact for text_column_override compatibility.
-            frame = frame.copy()
-            frame["review"] = frame[alias]
-            return frame
+        if alias in frame.columns and "text" not in frame.columns:
+            frame["text"] = frame[alias]
+            if alias != "text":
+                frame.drop(columns=[alias], inplace=True)
+            break
+    # Default column name for the primary review text
+    if "text" not in frame.columns and not frame.empty:
+        # Fallback to the first object-type column if no alias matches
+        object_cols = frame.select_dtypes(include=["object", "string"]).columns
+        if len(object_cols) > 0:
+            frame["text"] = frame[object_cols[0]]
+            
+    # Ensure source_text is also populated as it's used in some downstream logic
+    if "text" in frame.columns:
+        frame["source_text"] = frame["text"]
     return frame
 
 
+def _load_and_normalize(path: Path) -> pd.DataFrame:
+    # This helper must be at module level for ProcessPoolExecutor to pickle it.
+    try:
+        frame = load_file(path)
+        if not frame.empty:
+            return _normalize_review_columns(frame)
+        return frame
+    except Exception as e:
+        print(f"[!] Error loading {path.name}: {e}")
+        return pd.DataFrame()
+
+
 def load_inputs(input_dir: Path) -> pd.DataFrame:
-    frames = []
     if not input_dir.exists():
         return pd.DataFrame()
-    for path in sorted(input_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES:
-            frame = load_file(path)
-            if not frame.empty:
-                frame = _normalize_review_columns(frame)
-                frames.append(frame)
-    if not frames:
+        
+    files = [
+        path for path in sorted(input_dir.iterdir())
+        if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
+    ]
+    
+    if not files:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True, sort=False)
+
+    # Use multiprocessing only for multiple files to avoid overhead
+    if len(files) > 2:
+        # We use a reasonable worker count to avoid over-saturating the user's "slow" system
+        num_workers = min(len(files), multiprocessing.cpu_count())
+        try:
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                frames = list(executor.map(_load_and_normalize, files))
+        except Exception as e:
+            print(f"[!] Parallel input loading failed, falling back to serial mode: {e}")
+            frames = [_load_and_normalize(f) for f in files]
+    else:
+        frames = [_load_and_normalize(f) for f in files]
+        
+    valid_frames = [f for f in frames if not f.empty]
+    if not valid_frames:
+        return pd.DataFrame()
+    return pd.concat(valid_frames, ignore_index=True, sort=False)
 
 
 def load_gold_annotations(path: Path) -> list[dict]:
@@ -96,7 +141,8 @@ def load_gold_annotations(path: Path) -> list[dict]:
     if suffix not in {".jsonl", ".json"}:
         raise ValueError(f"Unsupported gold annotation file type: {path}")
     if suffix == ".jsonl":
-        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        with path.open("r", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
     else:
         payload = json.loads(path.read_text(encoding="utf-8"))
         rows = payload if isinstance(payload, list) else [payload]
@@ -105,12 +151,40 @@ def load_gold_annotations(path: Path) -> list[dict]:
         if not isinstance(row, dict):
             continue
         labels = row.get("gold_labels")
+        interpretations = row.get("gold_interpretations")
+        annotation_source = str(
+            row.get("annotation_source")
+            or row.get("review_status")
+            or row.get("source")
+            or "imported"
+        ).strip() or "imported"
+        normalized_interpretations: list[dict] = []
+        if isinstance(interpretations, list):
+            for item in interpretations:
+                if not isinstance(item, dict):
+                    continue
+                payload = dict(item)
+                payload.setdefault("source", annotation_source)
+                payload.setdefault("annotation_source", annotation_source)
+                normalized_interpretations.append(payload)
         cleaned.append({
+            "instance_id": row.get("instance_id"),
             "record_id": row.get("record_id"),
+            "review_id": row.get("review_id"),
+            "parent_review_id": row.get("parent_review_id"),
             "domain": row.get("domain"),
-            "text": row.get("text"),
+            "text": row.get("text") or row.get("review_text"),
+            "review_text": row.get("review_text") or row.get("text"),
             "gold_labels": labels if isinstance(labels, list) else [],
+            "gold_interpretations": normalized_interpretations,
+            "abstain_acceptable": bool(row.get("abstain_acceptable", False)),
+            "novel_acceptable": bool(row.get("novel_acceptable", False)),
+            "novel_cluster_id": row.get("novel_cluster_id"),
+            "novel_alias": row.get("novel_alias"),
+            "novel_evidence_text": row.get("novel_evidence_text"),
             "annotator_id": row.get("annotator_id"),
+            "annotator_support": row.get("annotator_support"),
             "review_status": row.get("review_status", "pending"),
+            "annotation_source": annotation_source,
         })
     return cleaned

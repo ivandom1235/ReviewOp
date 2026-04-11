@@ -4,6 +4,7 @@ import argparse
 from dataclasses import asdict, replace
 import itertools
 import json
+import os
 from pathlib import Path
 from typing import Any
 from dotenv import load_dotenv
@@ -21,6 +22,15 @@ try:
 except Exception:  # pragma: no cover
     def flush_llm_cache() -> None:
         return None
+
+
+def _required_env(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    primary = names[0] if names else "environment variable"
+    raise RuntimeError(f"{primary} is required in .env for dataset_builder")
 
 QUALITY_GATES = {
     "fallback_only_rate_max": 0.22,
@@ -43,11 +53,21 @@ QUALITY_GATES = {
     "gold_aspect_f1_min": 0.55,
     "gold_sentiment_f1_min": 0.55,
     "gold_span_overlap_f1_min": 0.4,
+    "benchmark_implicit_purity_rate_min": 0.7,
+    "benchmark_ontology_compatibility_rate_min": 0.9,
+    "worst_domain_f1_min": 0.4,
 }
 NOVELTY_GATES = {
-    "required_ablations": ["explicit-only", "implicit-only", "no-grounding", "no-domain-conditioning", "llm-direct", "v5-full"],
+    "required_ablations": ["explicit-only", "implicit-only", "no-grounding", "no-domain-conditioning", "llm-direct", "v6-full"],
     "full_model_must_outperform_count": 4,
 }
+
+
+def _resolve_artifact_mode(*, run_profile: str, artifact_mode: str | None) -> str:
+    raw = str(artifact_mode or "auto").strip().lower()
+    if raw in {"debug_artifacts", "research_release"}:
+        return raw
+    return "debug_artifacts" if str(run_profile).strip().lower() == "debug" else "research_release"
 
 
 def _parse_bounded_int_list(raw: str, *, minimum: int, maximum: int, fallback: list[int]) -> list[int]:
@@ -81,6 +101,8 @@ def _load_runtime_defaults() -> dict[str, Any]:
 def _metrics_from_report(report: dict[str, Any]) -> dict[str, Any]:
     quality = report.get("output_quality", {})
     gold = report.get("gold_eval", {})
+    benchmark_gold = report.get("benchmark_gold_eval", {})
+    has_benchmark_gold = bool(benchmark_gold.get("has_gold_interpretations", False))
     return {
         "fallback_only_rate": float(quality.get("fallback_only_rate", 1.0)),
         "needs_review_rows": int(quality.get("needs_review_rows", 10**9)),
@@ -98,21 +120,41 @@ def _metrics_from_report(report: dict[str, Any]) -> dict[str, Any]:
         "unseen_implicit_not_ready_rate": float(report.get("unseen_domain_metrics", {}).get("unseen_implicit_not_ready_rate", 1.0)),
         "unseen_domain_leakage_row_rate": float(report.get("unseen_domain_metrics", {}).get("unseen_domain_leakage_row_rate", 1.0)),
         "ungrounded_non_general_count": int(report.get("ungrounded_non_general_count", 10**9)),
-        "has_gold_eval": bool(gold.get("has_gold_labels", False)),
-        "gold_rows": int(gold.get("num_rows_with_gold", 0) or 0),
+        "has_gold_eval": bool(gold.get("has_gold_labels", False) or has_benchmark_gold),
+        "has_benchmark_gold_eval": has_benchmark_gold,
+        "gold_rows": int(gold.get("num_rows_with_gold", 0) or benchmark_gold.get("num_rows_with_gold_interpretations", 0) or 0),
         "gold_aspect_f1": float(gold.get("aspect_f1", 0.0)),
         "gold_sentiment_f1": float(gold.get("sentiment_f1", 0.0)),
         "gold_span_overlap_f1": float(gold.get("span_overlap_f1", 0.0)),
+        "benchmark_gold_rows": int(benchmark_gold.get("num_rows_with_gold_interpretations", 0) or 0),
+        "benchmark_average_gold_interpretations": float(benchmark_gold.get("average_gold_interpretations", 0.0)),
+        "benchmark_multi_gold_label_rate": float(benchmark_gold.get("multi_gold_label_rate", 0.0)),
+        "benchmark_grounded_evidence_rate": float(benchmark_gold.get("grounded_evidence_rate", 0.0)),
+        "benchmark_duplicate_interpretation_rate": float(benchmark_gold.get("duplicate_interpretation_rate", 0.0)),
+        "benchmark_implicit_purity_rate": float(benchmark_gold.get("implicit_purity_rate", 0.0)),
+        "benchmark_ontology_compatibility_rate": float(benchmark_gold.get("ontology_compatibility_rate", 0.0)),
+        "worst_domain_f1": float(report.get("robust_training_eval", {}).get("groupdro", {}).get("worst_domain_f1", 0.0)),
+        "promotion_guard_blocked": bool(report.get("promotion_guard", {}).get("blocked", False)),
     }
 
 
 def _core_score(metrics: dict[str, Any]) -> float:
     if metrics.get("has_gold_eval") and metrics.get("gold_rows", 0) > 0:
+        if any(float(metrics.get(key, 0.0)) > 0.0 for key in ("gold_aspect_f1", "gold_sentiment_f1", "gold_span_overlap_f1")):
+            return round(
+                (
+                    metrics.get("gold_aspect_f1", 0.0)
+                    + metrics.get("gold_sentiment_f1", 0.0)
+                    + metrics.get("gold_span_overlap_f1", 0.0)
+                ) / 3.0,
+                4,
+            )
+    if metrics.get("has_benchmark_gold_eval") and metrics.get("benchmark_gold_rows", 0) > 0:
         return round(
             (
-                metrics.get("gold_aspect_f1", 0.0)
-                + metrics.get("gold_sentiment_f1", 0.0)
-                + metrics.get("gold_span_overlap_f1", 0.0)
+                float(metrics.get("benchmark_grounded_evidence_rate", 0.0))
+                + max(0.0, 1.0 - float(metrics.get("benchmark_duplicate_interpretation_rate", 1.0)))
+                + float(metrics.get("benchmark_multi_gold_label_rate", 0.0))
             ) / 3.0,
             4,
         )
@@ -158,6 +200,10 @@ def _meets_quality_gates(metrics: dict[str, Any], *, quality_gates: dict[str, An
         metrics["gold_aspect_f1"] >= quality_gates["gold_aspect_f1_min"]
         and metrics["gold_sentiment_f1"] >= quality_gates["gold_sentiment_f1_min"]
         and metrics["gold_span_overlap_f1"] >= quality_gates["gold_span_overlap_f1_min"]
+        and metrics["benchmark_implicit_purity_rate"] >= quality_gates["benchmark_implicit_purity_rate_min"]
+        and metrics["benchmark_ontology_compatibility_rate"] >= quality_gates["benchmark_ontology_compatibility_rate_min"]
+        and metrics["worst_domain_f1"] >= quality_gates["worst_domain_f1_min"]
+        and not metrics["promotion_guard_blocked"]
     )
 
 
@@ -179,6 +225,8 @@ def _rank_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
         0 if candidate["metrics"]["train_target_size_compliant"] else 1,
         candidate["metrics"]["train_general_dominance_rate"],
         -candidate["metrics"]["grounded_prediction_rate"],
+        -candidate["metrics"]["worst_domain_f1"],
+        1 if candidate["metrics"]["promotion_guard_blocked"] else 0,
         0 if candidate["metrics"]["has_gold_eval"] else 1,
         -candidate["metrics"]["gold_aspect_f1"],
         -candidate["metrics"]["gold_sentiment_f1"],
@@ -189,7 +237,7 @@ def _rank_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
 
 def _run_ablation_matrix(cfg: BuilderConfig, run_dir: Path) -> dict[str, Any]:
     ablation_configs: list[tuple[str, BuilderConfig]] = [
-        ("v5-full", replace(cfg, enable_reasoned_recovery=True)),
+        ("v6-full", replace(cfg, enable_reasoned_recovery=True)),
         ("no-grounding", replace(cfg, enable_reasoned_recovery=True, enforce_grounding=False)),
         ("no-domain-conditioning", replace(cfg, enable_reasoned_recovery=True, use_domain_conditioning=False)),
         ("implicit-only", replace(cfg, enable_reasoned_recovery=True, use_domain_conditioning=True, enforce_grounding=True)),
@@ -209,7 +257,7 @@ def _run_ablation_matrix(cfg: BuilderConfig, run_dir: Path) -> dict[str, Any]:
             "core_score": _core_score(metrics),
         })
     by_name = {row["name"]: row for row in rows}
-    full = by_name.get("v5-full")
+    full = by_name.get("v6-full")
     outperform = 0
     if full:
         for name, row in by_name.items():
@@ -351,6 +399,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chunk-size", type=int, default=None)
     parser.add_argument("--chunk-offset", type=int, default=0)
     parser.add_argument("--run-profile", type=str, default="research", choices=["research", "debug"])
+    parser.add_argument("--artifact-mode", type=str, default="auto", choices=["auto", "debug_artifacts", "research_release"])
     parser.add_argument("--confidence-threshold", type=float, default=float(runtime_defaults.get("confidence_threshold", 0.6)))
     parser.add_argument("--max-aspects", type=int, default=20)
     parser.add_argument("--min-text-tokens", type=int, default=4)
@@ -392,8 +441,12 @@ def build_parser() -> argparse.ArgumentParser:
     # Backward-compatible alias for older scripts.
     parser.add_argument("--no-enable-reasoned_recovery", dest="enable_reasoned_recovery", action="store_false")
     parser.set_defaults(enable_reasoned_recovery=bool(runtime_defaults.get("enable_reasoned_recovery", True)))
-    parser.add_argument("--llm-provider", type=str, default=str(runtime_defaults.get("llm_provider", "runpod")), choices=["runpod", "openai", "anthropic", "ollama"])
-    parser.add_argument("--llm-model-name", type=str, default=str(runtime_defaults.get("llm_model_name", "llama3-8b-instruct")))
+    parser.add_argument("--processor", type=str, default=_required_env("DATASET_BUILDER_PROCESSOR"), choices=["local", "runpod"])
+    parser.add_argument(
+        "--llm-model-name",
+        type=str,
+        default=_required_env("LLM_MODEL_NAME", "GROQ_MODEL", "OPENAI_MODEL", "OLLAMA_MODEL"),
+    )
     parser.add_argument("--llm-api-key", type=str, default=None)
     parser.add_argument("--llm-base-url", type=str, default=None)
     parser.add_argument("--llm-max-retries", type=int, default=3)
@@ -440,6 +493,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     args = build_parser().parse_args(argv)
+    artifact_mode = _resolve_artifact_mode(run_profile=args.run_profile, artifact_mode=args.artifact_mode)
+    processor = str(args.processor or "").strip().lower()
+    if processor not in {"local", "runpod"}:
+        raise ValueError(f"Unsupported processor: {args.processor}")
+    llm_provider = "runpod" if processor == "runpod" else None
     domain_conditioning_mode = str(args.domain_conditioning_mode or "").strip().lower()
     if not args.use_domain_conditioning:
         domain_conditioning_mode = "off"
@@ -466,6 +524,7 @@ def main(argv: list[str] | None = None) -> int:
         chunk_size=args.chunk_size,
         chunk_offset=args.chunk_offset,
         run_profile=args.run_profile,
+        artifact_mode=artifact_mode,
         confidence_threshold=args.confidence_threshold,
         max_aspects=args.max_aspects,
         min_text_tokens=args.min_text_tokens,
@@ -497,7 +556,8 @@ def main(argv: list[str] | None = None) -> int:
         unseen_implicit_not_ready_rate_max=args.unseen_implicit_not_ready_rate_max,
         unseen_domain_leakage_row_rate_max=args.unseen_domain_leakage_row_rate_max,
         enable_reasoned_recovery=args.enable_reasoned_recovery,
-        llm_provider=args.llm_provider,
+        processor=processor,
+        llm_provider=llm_provider,
         llm_model_name=args.llm_model_name,
         llm_api_key=args.llm_api_key,
         llm_base_url=args.llm_base_url,

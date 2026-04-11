@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Dict, List
 
 import torch
@@ -76,6 +77,7 @@ class HybridTextEncoder(nn.Module):
         self.tokenizer = None
         self.model = None
         self.vectorizer = None
+        self._cache: "OrderedDict[str, torch.Tensor]" = OrderedDict()  # Text -> Embedding
 
         backend = cfg.encoder_backend.lower().strip()
         wants_transformer = backend in {"auto", "transformer"}
@@ -128,9 +130,30 @@ class HybridTextEncoder(nn.Module):
             self.hidden_size = cfg.bow_dim
 
     def encode(self, texts: List[str]) -> torch.Tensor:
-        if self.backend == "transformer":
-            return self._encode_transformer(texts)
-        return self._encode_bow(texts)
+        # Check cache first for massive ProtoNet speedup
+        results = [None] * len(texts)
+        to_encode_indices = []
+        to_encode_texts = []
+        
+        for i, text in enumerate(texts):
+            if text in self._cache:
+                cached = self._cache.pop(text)
+                self._cache[text] = cached
+                results[i] = cached.to(self.cfg.device)
+            else:
+                to_encode_indices.append(i)
+                to_encode_texts.append(text)
+        
+        if to_encode_texts:
+            encoded_tensors = self._encode_transformer(to_encode_texts) if self.backend == "transformer" else self._encode_bow(to_encode_texts)
+            for idx, i in enumerate(to_encode_indices):
+                # We store on CPU to avoid OOM for large caches, moving to device on hit
+                self._cache[to_encode_texts[idx]] = encoded_tensors[idx].detach().cpu()
+                if len(self._cache) > int(self.cfg.runtime_cache_max_items):
+                    self._cache.popitem(last=False)
+                results[i] = encoded_tensors[idx]
+                
+        return torch.stack(results)
 
     def _encode_bow(self, texts: List[str]) -> torch.Tensor:
         assert self.vectorizer is not None

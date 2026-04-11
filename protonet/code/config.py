@@ -1,34 +1,48 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import os
 from pathlib import Path
 import random
 from typing import Any, Dict
 
 import numpy as np
 import torch
+from dotenv import load_dotenv
 
 
 PROTONET_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PROTONET_ROOT.parent
+
+# Load .env from workspace root
+load_dotenv(REPO_ROOT / ".env")
 CODE_ROOT = PROTONET_ROOT / "code"
 INPUT_ROOT = PROTONET_ROOT / "input"
 OUTPUT_ROOT = PROTONET_ROOT / "output"
 METADATA_ROOT = PROTONET_ROOT / "metadata"
-COMPAT_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output" / "compat" / "protonet"
+BENCHMARK_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output" / "benchmark" / "ambiguity_grounded"
+
+
+def _env_value(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
 
 
 def resolve_default_input_dir(input_type: str) -> Path:
-    compat_dir = COMPAT_INPUT_ROOT / input_type
-    if compat_dir.exists():
-        return compat_dir
+    if input_type == "benchmark":
+        if BENCHMARK_INPUT_ROOT.exists():
+            return BENCHMARK_INPUT_ROOT
+        return BENCHMARK_INPUT_ROOT
     return INPUT_ROOT / input_type
 
 
 @dataclass
 class ProtonetConfig:
-    input_type: str = "episodic"
-    input_dir: Path = INPUT_ROOT / "episodic"
+    input_type: str = "benchmark"
+    input_dir: Path = BENCHMARK_INPUT_ROOT
     output_dir: Path = OUTPUT_ROOT
     metadata_dir: Path = METADATA_ROOT
     checkpoint_dir: Path = OUTPUT_ROOT / "checkpoints"
@@ -36,7 +50,8 @@ class ProtonetConfig:
     predictions_dir: Path = OUTPUT_ROOT / "predictions"
 
     encoder_backend: str = "auto"
-    encoder_model_name: str = "microsoft/deberta-v3-base"
+    # Fast options: "microsoft/deberta-v3-small" (44M params) or "distilbert-base-uncased" (66M params)
+    encoder_model_name: str = _env_value("REVIEWOP_PROTONET_ENCODER_MODEL", "PROTONET_ENCODER_MODEL", default="microsoft/deberta-v3-base") or "microsoft/deberta-v3-base"
     bow_dim: int = 512
     max_length: int = 160
     projection_dim: int = 256
@@ -48,6 +63,8 @@ class ProtonetConfig:
     q_query: int = 2
     max_train_episodes: int = 120
     max_eval_episodes: int = 48
+    protocol_eval_enabled: bool = True
+    protocol_eval_splits: tuple[str, ...] = ("random", "grouped", "domain_holdout")
 
     warmup_epochs: int = 1
     epochs: int = 12
@@ -62,6 +79,18 @@ class ProtonetConfig:
     prototype_smoothing: float = 0.05
     low_confidence_threshold: float = 0.55
     top_k_debug: int = 3
+    selective_alpha: float = 0.6
+    selective_beta: float = 0.25
+    selective_gamma: float = 0.1
+    selective_delta: float = 0.05
+    abstain_threshold: float = 0.55
+    multi_label_margin: float = 0.08
+    sentiment_pipeline: str = "both"
+    novelty_threshold: float = 0.45
+    novelty_known_threshold: float = 0.35
+    novelty_novel_threshold: float = 0.65
+    novelty_calibration_path: Path = METADATA_ROOT / "novelty_calibration_v2.json"
+    runtime_cache_max_items: int = 20000
 
     seed: int = 42
     no_progress: bool = False
@@ -78,8 +107,7 @@ class ProtonetConfig:
 
     def ensure_dirs(self) -> None:
         for path in [
-            PROTONET_ROOT / "input" / "reviewlevel",
-            PROTONET_ROOT / "input" / "episodic",
+            PROTONET_ROOT / "input" / "benchmark",
             self.output_dir,
             self.checkpoint_dir,
             self.episode_cache_dir,

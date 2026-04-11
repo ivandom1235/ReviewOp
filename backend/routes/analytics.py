@@ -6,12 +6,24 @@ from sqlalchemy.orm import Session
 from core.db import get_db
 from models.schemas import (
     AdminExportOut,
-    OverviewOut,
-    TopAspectOut,
+    AlertOut,
+    AspectDetailOut,
+    AspectLeaderboardRowOut,
     AspectSentimentDistOut,
+    AspectTrendPointOut,
+    CentralityOut,
+    CommunityOut,
+    DashboardKpiOut,
+    EdgeOut,
+    EvidenceRowOut,
+    ImpactMatrixRowOut,
+    OverviewOut,
+    SegmentDrilldownOut,
+    TopAspectOut,
     TrendPointOut,
     UserReviewListOut,
     UserReviewSummaryOut,
+    WeeklySummaryOut,
 )
 from services.analytics import (
     overview,
@@ -35,20 +47,8 @@ from services.analytics import (
     user_reviews_summary,
 )
 
-# add imports
-from models.schemas import CentralityOut, CommunityOut, EdgeOut
-from models.schemas import (
-    DashboardKpiOut,
-    AspectLeaderboardRowOut,
-    EvidenceRowOut,
-    AspectTrendPointOut,
-    AspectDetailOut,
-    AlertOut,
-    ImpactMatrixRowOut,
-    SegmentDrilldownOut,
-    WeeklySummaryOut,
-)
 from services.kg_analytics import centrality_leaderboard, edges as kg_edges, communities as kg_communities
+
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
@@ -136,6 +136,9 @@ def analytics_aspect_trends(
     limit: int = 500,
     db: Session = Depends(get_db),
 ):
+    interval = interval.lower().strip()
+    if interval not in {"day", "week"}:
+        interval = "day"
     return aspect_trends(db, interval=interval, domain=domain, limit=limit)
 
 
@@ -146,6 +149,9 @@ def analytics_emerging_aspects(
     domain: str | None = None,
     db: Session = Depends(get_db),
 ):
+    interval = interval.lower().strip()
+    if interval not in {"day", "week"}:
+        interval = "day"
     return emerging_aspects(db, interval=interval, lookback_buckets=lookback_buckets, domain=domain)
 
 

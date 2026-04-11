@@ -4,18 +4,21 @@ import DataGridTable from "../components/DataGridTable";
 export default function AlertsPage({ alerts = [], isDark, onAlertClick, onAlertClear }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [severityFilter, setSeverityFilter] = useState("All");
+  const [statusFilter, setStatusFilter] = useState("All");
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter((a) => {
       const message = String(a?.message || "").toLowerCase();
       const aspect = String(a?.aspect || "").toLowerCase();
+      const status = String(a?.status || "open").toLowerCase();
       const matchesSearch = 
         message.includes(searchTerm.toLowerCase()) || 
         aspect.includes(searchTerm.toLowerCase());
       const matchesSeverity = severityFilter === "All" || String(a?.severity || "").toLowerCase() === severityFilter.toLowerCase();
-      return matchesSearch && matchesSeverity;
+      const matchesStatus = statusFilter === "All" || status === statusFilter.toLowerCase();
+      return matchesSearch && matchesSeverity && matchesStatus;
     });
-  }, [alerts, searchTerm, severityFilter]);
+  }, [alerts, searchTerm, severityFilter, statusFilter]);
 
   const rows = filteredAlerts.map((a, idx) => ({
     id: a.id ?? `${a.aspect}-${idx}`,
@@ -39,18 +42,18 @@ export default function AlertsPage({ alerts = [], isDark, onAlertClick, onAlertC
     { 
       field: "action", 
       headerName: "Action",
-      width: 180,
+      width: 240,
       renderCell: (params) => (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <button 
             onClick={() => onAlertClick(params.row)}
-            className="text-indigo-500 hover:text-indigo-400 font-semibold text-sm"
+            className="rounded-lg border border-indigo-300 px-3 py-1.5 text-sm font-semibold text-indigo-600 hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950"
           >
             View
           </button>
           <button
             onClick={() => onAlertClear?.(params.row)}
-            className="text-rose-500 hover:text-rose-400 font-semibold text-sm"
+            className="rounded-lg border border-rose-300 px-3 py-1.5 text-sm font-semibold text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-950"
           >
             Clear
           </button>
@@ -81,6 +84,16 @@ export default function AlertsPage({ alerts = [], isDark, onAlertClick, onAlertC
               <option value="high">high</option>
               <option value="medium">medium</option>
               <option value="low">low</option>
+            </select>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className={`rounded-xl border px-3 py-2 ${isDark ? "border-slate-700 bg-slate-900 text-slate-100" : "border-slate-200 bg-slate-50 text-slate-800"}`}
+            >
+              <option value="All">All Statuses</option>
+              <option value="open">Open</option>
+              <option value="acknowledged">Acknowledged</option>
+              <option value="resolved">Resolved</option>
             </select>
           </div>
         </div>

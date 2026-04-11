@@ -3,6 +3,17 @@ import { useLocation, useNavigate, useParams, useSearchParams } from "react-rout
 import { getMyReviewById, getProductDetail, submitReview, updateMyReview } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
 import UserShell from "../../components/user/UserShell";
+import { getComposerMode, isComposerLocked } from "./reviewComposerState";
+
+const DRAFT_KEY = "reviewop-review-draft";
+
+function loadDraft() {
+  try {
+    return JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
 
 export default function SubmitReviewPage() {
   const { productId } = useParams();
@@ -15,23 +26,45 @@ export default function SubmitReviewPage() {
   const prefill = location.state?.prefill || null;
   const initialProductId = productId || params.get("product_id") || prefill?.product_id || "";
   const initialProductName = params.get("product_name") || location.state?.productName || "";
+  const draft = loadDraft();
 
-  const [productRef, setProductRef] = useState(initialProductId);
-  const [productName, setProductName] = useState(initialProductName);
-  const [rating, setRating] = useState(prefill?.rating ?? 5);
-  const [reviewText, setReviewText] = useState(prefill?.review_text ?? "");
-  const [reviewTitle, setReviewTitle] = useState(prefill?.review_title ?? "");
-  const [pros, setPros] = useState(prefill?.pros ?? "");
-  const [cons, setCons] = useState(prefill?.cons ?? "");
-  const [recommendation, setRecommendation] = useState(prefill?.recommendation ?? false);
+  const [productRef, setProductRef] = useState(prefill?.product_id || draft?.productRef || initialProductId);
+  const [productName, setProductName] = useState(prefill?.product_name || draft?.productName || initialProductName);
+  const [replyToReviewId, setReplyToReviewId] = useState(prefill?.reply_to_review_id ?? draft?.replyToReviewId ?? null);
+  const [rating, setRating] = useState(prefill?.rating ?? draft?.rating ?? 5);
+  const [reviewText, setReviewText] = useState(prefill?.review_text ?? draft?.reviewText ?? "");
+  const [reviewTitle, setReviewTitle] = useState(prefill?.review_title ?? draft?.reviewTitle ?? "");
+  const [pros, setPros] = useState(prefill?.pros ?? draft?.pros ?? "");
+  const [cons, setCons] = useState(prefill?.cons ?? draft?.cons ?? "");
+  const [recommendation, setRecommendation] = useState(prefill?.recommendation ?? draft?.recommendation ?? false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const isEditMode = useMemo(() => Boolean(editReviewId), [editReviewId]);
+  const composerMode = getComposerMode({ isEditMode, replyToReviewId });
+  const productLocked = isComposerLocked({ isEditMode, replyToReviewId });
 
   useEffect(() => {
     if (productId) setProductRef(productId);
   }, [productId]);
+
+  useEffect(() => {
+    if (prefill || isEditMode) return;
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        productRef,
+        productName,
+        replyToReviewId,
+        rating,
+        reviewText,
+        reviewTitle,
+        pros,
+        cons,
+        recommendation,
+      }),
+    );
+  }, [productRef, productName, replyToReviewId, rating, reviewText, reviewTitle, pros, cons, recommendation, prefill, isEditMode]);
 
   useEffect(() => {
     if (!editReviewId || prefill) return;
@@ -42,6 +75,7 @@ export default function SubmitReviewPage() {
           return;
         }
         setProductRef(row.product_id || "");
+        setReplyToReviewId(row.reply_to_review_id ?? null);
         setRating(row.rating ?? 5);
         setReviewTitle(row.review_title || "");
         setReviewText(row.review_text || "");
@@ -84,15 +118,18 @@ export default function SubmitReviewPage() {
       pros: pros || null,
       cons: cons || null,
       recommendation,
+      reply_to_review_id: replyToReviewId,
     };
 
     setLoading(true);
     try {
       if (isEditMode) {
         await updateMyReview(token, Number(editReviewId), payload);
+        localStorage.removeItem(DRAFT_KEY);
         nav("/my-reviews");
       } else {
         await submitReview(token, payload);
+        localStorage.removeItem(DRAFT_KEY);
         nav(`/products/${encodeURIComponent(cleanProductId)}`);
       }
     } catch (ex) {
@@ -106,10 +143,30 @@ export default function SubmitReviewPage() {
     <UserShell title={isEditMode ? "Edit Review" : "Write Review"}>
       <form onSubmit={onSubmit} className="mx-auto w-full max-w-3xl space-y-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
         {error ? <div className="rounded-lg bg-red-100 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-200">{error}</div> : null}
-        <div className="grid gap-3 md:grid-cols-2">
-          <input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="Product name (e.g. iPhone 14)" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" />
-          <input value={productRef} onChange={(e) => setProductRef(e.target.value)} placeholder="Product ID (e.g. SKU-1001)" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" />
-        </div>
+        {productLocked ? (
+          <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm dark:border-slate-700 dark:bg-slate-800">
+            <div className="grid gap-1 md:grid-cols-2">
+              <div>
+                <p className="text-xs uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Product name</p>
+                <p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{productName || "Unknown product"}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Product ID</p>
+                <p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{productRef || "Unknown"}</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {composerMode === "reply"
+                ? "This reply is locked to the selected review and product."
+                : "This review is locked to your original product choice."}
+            </p>
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2">
+            <input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="Product name (e.g. iPhone 14)" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" />
+            <input value={productRef} onChange={(e) => setProductRef(e.target.value)} placeholder="Product ID (e.g. SKU-1001)" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" />
+          </div>
+        )}
         <select value={rating} onChange={(e) => setRating(Number(e.target.value))} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
           <option value={5}>5 stars</option>
           <option value={4}>4 stars</option>

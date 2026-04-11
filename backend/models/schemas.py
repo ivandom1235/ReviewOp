@@ -11,19 +11,63 @@ class EvidenceSpanOut(BaseModel):
 
 
 class PredictionOut(BaseModel):
-    aspect_raw: str
-    aspect_cluster: str
-    sentiment: str  # positive|neutral|negative
-    confidence: float
+    aspect_raw: str = Field(..., description="The original aspect text extracted from the review", example="battery life")
+    aspect_cluster: str = Field(..., description="The canonical cluster or normalized aspect name", example="Battery")
+    sentiment: str = Field(..., description="Sentiment label: positive, neutral, or negative", example="negative")
+    confidence: float = Field(..., description="Confidence score of the prediction (0.0 to 1.0)", example=0.85)
 
-    aspect_weight: Optional[float] = None
-    aspect_score: Optional[float] = None
+    aspect_weight: Optional[float] = Field(None, description="Impact weight of this aspect")
+    aspect_score: Optional[float] = Field(None, description="Numeric sentiment score")
 
-    evidence_spans: List[EvidenceSpanOut] = Field(default_factory=list)
-    rationale: Optional[str] = None
-    source: Optional[str] = None
-    is_implicit: Optional[bool] = None
+    evidence_spans: List[EvidenceSpanOut] = Field(default_factory=list, description="Text spans in the review supporting this prediction")
+    rationale: Optional[str] = Field(None, description="Explanation for the prediction")
+    source: Optional[str] = Field(None, description="Engine source: explicit, implicit, or verified")
+    is_implicit: Optional[bool] = Field(None, description="Whether this aspect was inferred implicitly")
     verification_status: Optional[str] = None
+    decision: Optional[str] = Field(None, description="Selective inference decision (accepted/rejected/abstain)")
+    routing: Optional[str] = None
+    ambiguity_score: Optional[float] = None
+    novelty_score: Optional[float] = None
+    decision_band: Optional[Literal["known", "boundary", "novel"]] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
+
+
+class SelectivePredictionOut(BaseModel):
+    aspect: str
+    sentiment: str = "neutral"
+    confidence: float
+    routing: str = "known"
+    evidence: Optional[str] = None
+    evidence_start: Optional[int] = None
+    evidence_end: Optional[int] = None
+    decision_band: Optional[Literal["known", "boundary", "novel"]] = None
+    novelty_score: Optional[float] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
+
+
+class AbstainedPredictionOut(BaseModel):
+    reason: str
+    confidence: float
+    ambiguity_score: float
+
+
+class NovelCandidateOut(BaseModel):
+    aspect: str
+    novelty_score: float
+    confidence: Optional[float] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
+    evidence_text: Optional[str] = None
+
+
+class OverviewOut(BaseModel):
+    total_reviews: int
+    total_aspect_mentions: int
+    unique_aspects_raw: int
+    avg_confidence: float
+    sentiment_counts: dict
 
 
 class InferReviewIn(BaseModel):
@@ -37,11 +81,12 @@ class InferReviewOut(BaseModel):
     domain: Optional[str] = None
     product_id: Optional[str] = None
     predictions: List[PredictionOut]
-
-    # NEW:
     overall_sentiment: Optional[str] = None
     overall_score: Optional[float] = None
     overall_confidence: Optional[float] = None
+    accepted_predictions: List[SelectivePredictionOut] = Field(default_factory=list)
+    abstained_predictions: List[AbstainedPredictionOut] = Field(default_factory=list)
+    novel_candidates: List[NovelCandidateOut] = Field(default_factory=list)
 
 
 class JobCreateOut(BaseModel):
@@ -57,14 +102,6 @@ class JobStatusOut(BaseModel):
     processed: int
     failed: int
     error: Optional[str] = None
-
-
-class OverviewOut(BaseModel):
-    total_reviews: int
-    total_aspect_mentions: int
-    unique_aspects_raw: int
-    avg_confidence: float
-    sentiment_counts: dict
 
 
 class TopAspectOut(BaseModel):
@@ -345,7 +382,11 @@ class ProductReviewOut(BaseModel):
     review_text: str
     review_date: str
     helpful_count: int = 0
+    recommendation: Optional[bool] = None
     aspects: List[AspectSummaryOut] = Field(default_factory=list)
+    reply_to_review_id: Optional[int] = None
+    reply_to_review_title: Optional[str] = None
+    is_reply: bool = False
 
 
 class ProductDetailOut(BaseModel):
@@ -366,6 +407,7 @@ class ProductSuggestionOut(BaseModel):
 class SubmitReviewIn(BaseModel):
     product_id: str = Field(min_length=1, max_length=128)
     product_name: Optional[str] = Field(default=None, max_length=255)
+    reply_to_review_id: Optional[int] = None
     rating: int = Field(ge=1, le=5)
     review_text: str = Field(min_length=3)
     review_title: Optional[str] = Field(default=None, max_length=255)
@@ -378,3 +420,4 @@ class SubmitReviewOut(BaseModel):
     review_id: int
     product_id: str
     linked_review_id: Optional[int] = None
+    reply_to_review_id: Optional[int] = None

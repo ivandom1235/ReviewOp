@@ -1,27 +1,36 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 
 try:
     from .config import METADATA_ROOT, OUTPUT_ROOT, ProtonetConfig, resolve_default_input_dir, seed_everything
-    from .dataset_reader import load_input_dataset, write_jsonl
+    from .dataset_reader import load_input_dataset, write_json, write_jsonl
     from .episode_builder import build_or_load_episode_sets
     from .evaluator import evaluate_episodes
     from .export_bundle import export_model_bundle, export_report
     from .model import ProtoNetModel
-    from .reviewlevel_adapter import adapt_reviewlevel_rows
     from .trainer import load_checkpoint, train_model
+    from .calibrate_novelty import calibrate_thresholds
 except ImportError:
     from config import METADATA_ROOT, OUTPUT_ROOT, ProtonetConfig, resolve_default_input_dir, seed_everything
-    from dataset_reader import load_input_dataset, write_jsonl
+    from dataset_reader import load_input_dataset, write_json, write_jsonl
     from episode_builder import build_or_load_episode_sets
     from evaluator import evaluate_episodes
     from export_bundle import export_model_bundle, export_report
     from model import ProtoNetModel
-    from reviewlevel_adapter import adapt_reviewlevel_rows
     from trainer import load_checkpoint, train_model
+    from calibrate_novelty import calibrate_thresholds
+
+
+def _env_value(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
 
 
 def _build_config(args: argparse.Namespace) -> ProtonetConfig:
@@ -42,6 +51,8 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         k_shot=args.k_shot,
         q_query=args.q_query,
         epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        encoder_learning_rate=args.encoder_learning_rate,
         warmup_epochs=args.warmup_epochs,
         patience=args.patience,
         max_train_episodes=args.max_train_episodes,
@@ -49,6 +60,17 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         contrastive_weight=args.contrastive_weight,
         prototype_smoothing=args.prototype_smoothing,
         low_confidence_threshold=args.low_confidence_threshold,
+        selective_alpha=args.selective_alpha,
+        selective_beta=args.selective_beta,
+        selective_gamma=args.selective_gamma,
+        selective_delta=args.selective_delta,
+        abstain_threshold=args.abstain_threshold,
+        multi_label_margin=args.multi_label_margin,
+        sentiment_pipeline=args.sentiment_pipeline,
+        novelty_threshold=args.novelty_threshold,
+        novelty_known_threshold=args.novelty_known_threshold,
+        novelty_novel_threshold=args.novelty_novel_threshold,
+        novelty_calibration_path=Path(args.novelty_calibration_path) if args.novelty_calibration_path else (metadata_dir / "novelty_calibration_v2.json"),
         seed=args.seed,
         no_progress=args.no_progress,
         force_rebuild_episodes=args.force_rebuild_episodes,
@@ -61,12 +83,18 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
 
 def _prepare_examples(cfg: ProtonetConfig):
     rows_by_split, summary = load_input_dataset(cfg)
-    if cfg.input_type == "reviewlevel":
-        rows_by_split = adapt_reviewlevel_rows(rows_by_split, progress_enabled=cfg.progress_enabled)
     return rows_by_split, summary
 
 
-def run_train(args: argparse.Namespace) -> int:
+def namespace_from_payload(command: str, payload: dict[str, object]) -> argparse.Namespace:
+    parser = build_parser()
+    defaults = parser.parse_args([command])
+    for key, value in payload.items():
+        setattr(defaults, key, value)
+    return defaults
+
+
+def run_train_local(args: argparse.Namespace) -> dict[str, object]:
     cfg = _build_config(args)
     cfg.ensure_dirs()
     seed_everything(cfg.seed)
@@ -75,6 +103,11 @@ def run_train(args: argparse.Namespace) -> int:
     result = train_model(cfg, episodes_by_split)
 
     if cfg.save_predictions:
+        _, val_predictions = evaluate_episodes(result.model, episodes_by_split["val"], cfg, "val")
+        novelty_calibration = calibrate_thresholds(val_predictions)
+        cfg.novelty_known_threshold = float(novelty_calibration.get("thresholds", {}).get("T_known", cfg.novelty_known_threshold))
+        cfg.novelty_novel_threshold = float(novelty_calibration.get("thresholds", {}).get("T_novel", cfg.novelty_novel_threshold))
+        write_json(cfg.novelty_calibration_path, novelty_calibration)
         val_metrics, val_predictions = evaluate_episodes(result.model, episodes_by_split["val"], cfg, "val")
         test_metrics, test_predictions = evaluate_episodes(result.model, episodes_by_split["test"], cfg, "test")
         write_jsonl(cfg.predictions_dir / "val_predictions.jsonl", val_predictions)
@@ -82,6 +115,7 @@ def run_train(args: argparse.Namespace) -> int:
     else:
         val_metrics = result.val_metrics
         test_metrics = result.test_metrics
+        novelty_calibration = {}
 
     bundle_path = export_model_bundle(
         cfg=cfg,
@@ -90,6 +124,7 @@ def run_train(args: argparse.Namespace) -> int:
         checkpoint_path=result.checkpoint_path,
         metrics={"val": val_metrics, "test": test_metrics},
         history=result.history,
+        novelty_calibration=novelty_calibration,
     )
     report_path = export_report(
         cfg=cfg,
@@ -105,12 +140,12 @@ def run_train(args: argparse.Namespace) -> int:
         bundle_path=bundle_path,
         checkpoint_path=result.checkpoint_path,
         history=result.history,
+        novelty_calibration=novelty_calibration,
     )
-    print(f"Training complete. Report: {report_path}")
-    return 0
+    return {"report_path": str(report_path), "bundle_path": str(bundle_path), "checkpoint_path": str(result.checkpoint_path)}
 
 
-def run_eval(args: argparse.Namespace) -> int:
+def run_eval_local(args: argparse.Namespace) -> dict[str, object]:
     cfg = _build_config(args)
     cfg.ensure_dirs()
     seed_everything(cfg.seed)
@@ -122,7 +157,19 @@ def run_eval(args: argparse.Namespace) -> int:
     split = args.split
     metrics, predictions = evaluate_episodes(model, episodes_by_split[split], cfg, split)
     write_jsonl(cfg.predictions_dir / f"{split}_predictions.jsonl", predictions)
-    print(metrics)
+    return {"metrics": metrics, "prediction_count": len(predictions), "checkpoint_path": str(checkpoint_path)}
+
+
+def run_train(args: argparse.Namespace) -> int:
+    payload = run_train_local(args)
+    report_path = payload.get("report_path", "<unknown>")
+    print(f"Training complete. Report: {report_path}")
+    return 0
+
+
+def run_eval(args: argparse.Namespace) -> int:
+    payload = run_eval_local(args)
+    print(payload.get("metrics", payload))
     return 0
 
 
@@ -156,16 +203,18 @@ def run_export(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Standalone ProtoNet training pipeline")
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--input-type", choices=["episodic", "reviewlevel"], default="episodic")
+    common.add_argument("--input-type", choices=["benchmark"], default="benchmark")
     common.add_argument("--input-dir", type=str, default=None)
     common.add_argument("--output-dir", type=str, default=None)
     common.add_argument("--metadata-dir", type=str, default=None)
     common.add_argument("--encoder-backend", choices=["auto", "transformer", "bow"], default="auto")
-    common.add_argument("--encoder-model-name", type=str, default="microsoft/deberta-v3-base")
+    common.add_argument("--encoder-model-name", type=str, default=_env_value("REVIEWOP_PROTONET_ENCODER_MODEL", "PROTONET_ENCODER_MODEL", default="microsoft/deberta-v3-base") or "microsoft/deberta-v3-base")
     common.add_argument("--n-way", type=int, default=3)
     common.add_argument("--k-shot", type=int, default=2)
     common.add_argument("--q-query", type=int, default=2)
     common.add_argument("--epochs", type=int, default=8)
+    common.add_argument("--learning-rate", type=float, default=5e-4)
+    common.add_argument("--encoder-learning-rate", type=float, default=1e-5)
     common.add_argument("--warmup-epochs", type=int, default=1)
     common.add_argument("--patience", type=int, default=3)
     common.add_argument("--max-train-episodes", type=int, default=120)
@@ -173,6 +222,17 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--contrastive-weight", type=float, default=0.15)
     common.add_argument("--prototype-smoothing", type=float, default=0.05)
     common.add_argument("--low-confidence-threshold", type=float, default=0.55)
+    common.add_argument("--selective-alpha", type=float, default=0.6)
+    common.add_argument("--selective-beta", type=float, default=0.25)
+    common.add_argument("--selective-gamma", type=float, default=0.1)
+    common.add_argument("--selective-delta", type=float, default=0.05)
+    common.add_argument("--abstain-threshold", type=float, default=0.55)
+    common.add_argument("--multi-label-margin", type=float, default=0.08)
+    common.add_argument("--sentiment-pipeline", type=str, default="both", choices=["joint", "post_aspect", "both"])
+    common.add_argument("--novelty-threshold", type=float, default=0.45)
+    common.add_argument("--novelty-known-threshold", type=float, default=0.35)
+    common.add_argument("--novelty-novel-threshold", type=float, default=0.65)
+    common.add_argument("--novelty-calibration-path", type=str, default=None)
     common.add_argument("--seed", type=int, default=42)
     common.add_argument("--no-progress", action="store_true")
     common.add_argument("--force-rebuild-episodes", action="store_true")

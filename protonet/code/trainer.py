@@ -35,6 +35,18 @@ class TrainingResult:
     prototype_bank: PrototypeBank
 
 
+def _composite_selection_score(metrics: Dict[str, Any]) -> float:
+    return float(
+        0.25 * float(metrics.get("macro_f1", 0.0))
+        + 0.20 * float(metrics.get("protocol_breakdown", {}).get("grouped", {}).get("accuracy", metrics.get("accuracy", 0.0)))
+        + 0.15 * float(metrics.get("protocol_breakdown", {}).get("grouped", {}).get("macro_f1", metrics.get("macro_f1", 0.0)))
+        + 0.15 * float(metrics.get("known_vs_novel_f1_macro", metrics.get("abstention_f1", 0.0)))
+        + 0.10 * float(metrics.get("abstention_f1", 0.0))
+        + 0.10 * float(1.0 - metrics.get("calibration_ece", 1.0))
+        + 0.05 * float(metrics.get("coverage", 0.0))
+    )
+
+
 def _joint_label_from_item(item: Dict[str, Any], separator: str) -> str:
     label = item.get("joint_label")
     if label:
@@ -57,10 +69,38 @@ def _collect_unique_items(episodes: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return items
 
 
+def _build_offline_embedding_cache(model: ProtoNetModel, episodes_by_split: Dict[str, List[Dict[str, Any]]], cfg: ProtonetConfig) -> Dict[str, Any]:
+    # Safe only when encoder is frozen; otherwise embeddings drift each update.
+    if model.encoder.trainable:
+        return {"enabled": False, "reason": "encoder_trainable"}
+    all_items: List[Dict[str, Any]] = []
+    for split in ("train", "val", "test"):
+        all_items.extend(_collect_unique_items(episodes_by_split.get(split, [])))
+    if not all_items:
+        return {"enabled": False, "reason": "no_items"}
+
+    model.eval()
+    batch_size = 128 if cfg.device.type == "cuda" else 48
+    chunks = [all_items[idx : idx + batch_size] for idx in range(0, len(all_items), batch_size)]
+    with torch.no_grad():
+        for chunk in chunks:
+            _ = model.encode_items(chunk)
+    cache_dir = cfg.output_dir / "embedding_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = {
+        "enabled": True,
+        "items": len(model.precomputed_embeddings),
+        "splits": {split: len(episodes_by_split.get(split, [])) for split in ("train", "val", "test")},
+    }
+    (cache_dir / "summary.json").write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    return snapshot
+
+
 def _supervised_contrastive_loss(embeddings: torch.Tensor, labels: List[str], temperature: float = 0.2) -> torch.Tensor:
     if len(labels) < 2:
         return embeddings.new_tensor(0.0)
-    label_tensor = torch.tensor([hash(label) % 10_000_019 for label in labels], device=embeddings.device)
+    label_to_id = {label: idx for idx, label in enumerate(sorted(set(labels)))}
+    label_tensor = torch.tensor([label_to_id[label] for label in labels], device=embeddings.device)
     similarity = torch.matmul(embeddings, embeddings.T) / temperature
     mask = torch.eye(similarity.size(0), device=embeddings.device, dtype=torch.bool)
     similarity = similarity.masked_fill(mask, -1e9)
@@ -168,15 +208,54 @@ def _trainable_parameter_groups(model: ProtoNetModel, cfg: ProtonetConfig) -> Li
 
 
 def _episode_loss(model: ProtoNetModel, episode: Dict[str, Any], cfg: ProtonetConfig) -> tuple[torch.Tensor, float]:
+    return _episode_loss_with_weights(model, episode, cfg, {})
+
+
+def _class_balanced_ce_weights(train_episodes: List[Dict[str, Any]], cfg: ProtonetConfig, beta: float = 0.9999) -> Dict[str, float]:
+    counts: Dict[str, int] = {}
+    for episode in train_episodes:
+        for item in list(episode.get("query_set", [])) + list(episode.get("support_set", [])):
+            label = _joint_label_from_item(item, cfg.joint_label_separator)
+            counts[label] = counts.get(label, 0) + 1
+    if not counts:
+        return {}
+    raw: Dict[str, float] = {}
+    for label, n in counts.items():
+        effective = (1.0 - (beta ** max(1, n))) / max(1e-8, 1.0 - beta)
+        raw[label] = 1.0 / max(1e-8, effective)
+    scale = sum(raw.values()) / max(1, len(raw))
+    return {label: float(value / max(1e-8, scale)) for label, value in raw.items()}
+
+
+def _focal_loss(logits: torch.Tensor, targets: torch.Tensor, alpha: torch.Tensor | None = None, gamma: float = 2.0) -> torch.Tensor:
+    ce_loss = F.cross_entropy(logits, targets, reduction='none', weight=alpha)
+    pt = torch.exp(-ce_loss)
+    focal_loss = ((1 - pt) ** gamma * ce_loss).mean()
+    return focal_loss
+
+
+def _episode_loss_with_weights(
+    model: ProtoNetModel,
+    episode: Dict[str, Any],
+    cfg: ProtonetConfig,
+    class_weight_lookup: Dict[str, float],
+) -> tuple[torch.Tensor, float]:
     use_amp = cfg.use_amp and cfg.device == "cuda"
     with autocast(device_type="cuda", enabled=use_amp):
         out = model.episode_forward(episode)
-        loss = F.cross_entropy(out.logits, out.targets)
+        ce_weights = torch.ones(len(out.ordered_labels), device=out.logits.device, dtype=out.logits.dtype)
+        for idx, label in enumerate(out.ordered_labels):
+            ce_weights[idx] = float(class_weight_lookup.get(label, 1.0))
+        
+        # Change 17: Focal Loss
+        gamma = cfg.focal_gamma if hasattr(cfg, "focal_gamma") else 2.0
+        loss = _focal_loss(out.logits, out.targets, alpha=ce_weights, gamma=gamma)
+        
         if cfg.contrastive_weight > 0:
-            combined = list(episode.get("support_set", [])) + list(episode.get("query_set", []))
-            embeddings = model.encode_items(combined)
-            labels = [_joint_label_from_item(item, cfg.joint_label_separator) for item in combined]
+            embeddings = torch.cat([out.support_embeddings, out.query_embeddings], dim=0)
+            labels = [_joint_label_from_item(item, cfg.joint_label_separator) for item in (list(episode.get("support_set", [])) + list(episode.get("query_set", [])))]
             loss = loss + cfg.contrastive_weight * _supervised_contrastive_loss(embeddings, labels)
+            
     preds = out.probabilities.argmax(dim=-1).tolist()
     targets = out.targets.detach().cpu().tolist()
     correct = sum(int(p == t) for p, t in zip(preds, targets))
@@ -215,6 +294,9 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
     wait = 0
     checkpoint_path = cfg.checkpoint_dir / "best.pt"
     train_episodes = episodes_by_split["train"]
+    embedding_cache_summary = _build_offline_embedding_cache(model, episodes_by_split, cfg)
+    announce(f"[train] embedding_cache={embedding_cache_summary}")
+    class_weight_lookup = _class_balanced_ce_weights(train_episodes, cfg)
     _warmup_representations(model, cfg, optimizer, train_episodes)
 
     for epoch in range(1, cfg.epochs + 1):
@@ -229,12 +311,9 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
         
         desc = f"train:{epoch}/{cfg.epochs}"
         with task_bar(total=len(train_episodes), desc=desc, enabled=cfg.progress_enabled) as bar:
-            # Refresh bar immediately to show it's active even before the first episode finishes
             bar.set_postfix(status="initializing...")
             for step_index, episode in enumerate(train_episodes, start=1):
-                if step_index == 1:
-                    bar.set_postfix(status="running forward pass...")
-                loss, accuracy = _episode_loss(model, episode, cfg)
+                loss, accuracy = _episode_loss_with_weights(model, episode, cfg, class_weight_lookup)
                 scaled_loss = loss / max(1, cfg.gradient_accumulation_steps)
                 if scaler.is_enabled():
                     scaler.scale(scaled_loss).backward()
@@ -278,30 +357,37 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
             }
         )
         history.append(train_metrics)
-        # Summary for researchers to track progress in terminal
         announce(f"[report] Epoch {epoch} summary: loss={train_metrics['train_loss']:.4f}, acc={train_metrics['train_accuracy']:.4f} | val_acc={val_metrics['accuracy']:.4f}")
-        announce(
-            f"[train] epoch {epoch} complete "
-            f"loss={train_metrics['train_loss']:.3f} "
-            f"acc={train_metrics['train_accuracy']:.3f} "
-            f"val_acc={train_metrics['val_accuracy']:.3f} "
-            f"val_f1={train_metrics['val_macro_f1']:.3f}"
-        )
 
-        if val_metrics["accuracy"] > best_val:
-            best_val = val_metrics["accuracy"]
+        selection_score = _composite_selection_score(val_metrics)
+        if selection_score > best_val:
+            best_val = selection_score
             wait = 0
             _save_checkpoint(model, cfg, history, checkpoint_path)
-            announce(f"[train] new best checkpoint val_acc={best_val:.3f}")
+            announce(f"[train] new best checkpoint composite_score={best_val:.3f}")
         else:
             wait += 1
             if wait >= cfg.patience:
                 announce(f"[train] early stopping at epoch {epoch} (patience={cfg.patience})")
                 break
 
+    # Final comprehensive evaluation including protocol-specific sets
     load_checkpoint(model, checkpoint_path)
+    
     val_metrics, _ = evaluate_episodes(model, episodes_by_split["val"], cfg, "val")
     test_metrics, _ = evaluate_episodes(model, episodes_by_split["test"], cfg, "test")
+    
+    # Change 15: Protocol-specific evaluation
+    protocol_metrics: Dict[str, Any] = {}
+    for key, episodes in episodes_by_split.items():
+        if "__" in key and (key.startswith("val") or key.startswith("test")):
+            m, _ = evaluate_episodes(model, episodes, cfg, key)
+            protocol_metrics[key] = m
+    
+    if protocol_metrics:
+        val_metrics["protocol_full_eval"] = {k: v for k, v in protocol_metrics.items() if k.startswith("val")}
+        test_metrics["protocol_full_eval"] = {k: v for k, v in protocol_metrics.items() if k.startswith("test")}
+
     prototype_bank = build_global_prototype_bank(model, episodes_by_split["train"], cfg)
 
     history_path = cfg.output_dir / "training_history.json"

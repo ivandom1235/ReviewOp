@@ -1,20 +1,11 @@
-# ReviewOp (V5.5 Research-Grade)
+# ReviewOp (V6)
 
-ReviewOp is a monorepo for aspect-based sentiment analysis with a **Reasoning-Augmented Hybrid** architecture:
+ReviewOp is a monorepo for aspect-based sentiment analysis.
 
-- `backend/`: FastAPI + MySQL APIs for inference, analytics, graph, and user flows
-- `frontend/`: React + Vite UI (Performance-optimized, native fetch)
-- `dataset_builder/`: High-throughput **Symbolic-Neural Synthesis** pipeline (async)
-- `protonet/`: Few-shot Prototypical training/eval/export pipeline
-
-## Technical Vision (V5.5)
-
-ReviewOp V5.5 bridges the "Implicit Aspect Gap" by combining the reliability of symbolic matching with the reasoning power of neural models.
-
-1.  **Stage A (Symbolic):** Heuristic keyword grounding to ensure zero-hallucination.
-2.  **Stage B (Neural):** LLM-mediated reasoned recovery for ambiguous or implicit clausal signals.
-
-For more technical depth, see the [Research Overview](SEARCH_OVERVIEW.md).
+- `dataset_builder/`: builds benchmark datasets
+- `protonet/`: trains/evaluates/exports ProtoNet
+- `backend/`: FastAPI APIs
+- `frontend/`: React + Vite UI
 
 ## Repo Layout
 
@@ -26,52 +17,90 @@ ReviewOp/
 |-- protonet/
 |-- run-project.ps1
 |-- run-services.ps1
-`-- RESEARCH_OVERVIEW.md
+`-- SEARCH_OVERVIEW.md
 ```
 
-## Prerequisites
+## Quick Start (Root)
 
-- Python `3.10` to `3.13`
-- Node.js `18+`
-- MySQL running locally (or reachable from this machine)
-
-## Quick Start (Windows PowerShell)
-
-### 1. One-time setup
+Run from repository root in PowerShell.
 
 ```powershell
-Copy-Item .env.example .env
+# 1) Prepare backend/frontend dependencies
 .\run-project.ps1
-```
 
-`run-project.ps1` installs backend and frontend dependencies and prepares `backend/venv`.
+# 2) Build dataset
+python dataset_builder\code\build_dataset.py --input-dir dataset_builder\input --output-dir dataset_builder\output
 
-### 2. Start backend + frontend
+# 3) Train model
+python protonet\code\cli.py train --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded
 
-```powershell
+# 4) Evaluate best checkpoint
+python protonet\code\cli.py eval --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded --split test --checkpoint protonet\output\checkpoints\best.pt
+
+# 5) Export runtime bundle
+python protonet\code\cli.py export --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded --checkpoint protonet\output\checkpoints\best.pt
+
+# 6) Start backend + frontend (new terminals)
 .\run-services.ps1
 ```
 
-### 3. Verify
+## RunPod Topology
 
-- Backend health: `http://127.0.0.1:8000/health`
-- API docs: `http://127.0.0.1:8000/docs`
-- Frontend: URL printed by Vite (usually `http://127.0.0.1:5173`)
+- `dataset_builder` uses its own RunPod LLM endpoint via `REVIEWOP_RUNPOD_API_KEY` and `REVIEWOP_RUNPOD_ENDPOINT_URL`
+- `protonet` and `backend` share one RunPod Flash endpoint via `PROTONET_FLASH_ENDPOINT_ID`
+- local fallback remains available through the exported Protonet bundle at `REVIEWOP_PROTONET_BUNDLE_PATH`
+- backend bootstrap installs the spaCy `en_core_web_sm` model because open-aspect extraction depends on it
 
-## Performance & Scaling
+## Root Commands And Options
 
-ReviewOp is designed for large-scale research trials:
+### `run-project.ps1`
 
-- **Async Pipeline:** Truly parallel LLM calls in the dataset builder.
-- **Vectorized Centroids:** Faster prototypical clustering.
-- **AMP Support:** Automatic Mixed Precision for NVIDIA H100/A100.
+Purpose: setup helper (checks Python/Node, creates backend venv, installs backend/frontend deps).
 
-## Security & Ethics
+Options: none.
 
-- **No Axios:** Standardized on `httpx` (Python) and `fetch` (JS) for security.
-- **Grounding-First:** Neural models are restricted to preprocessing; decision logic is symbolic and observable.
+### `run-services.ps1`
 
-## Module Docs
+Purpose: starts backend (`uvicorn`) and frontend (`npm run dev`) in new PowerShell windows.
 
-- `dataset_builder/README.md`
-- `protonet/README.md`
+Options: none.
+
+### `npm test`
+
+Purpose: runs the repo-wide test suite from the root.
+
+Steps:
+
+- backend unittest discovery
+- dataset_builder unittest discovery
+- protonet unittest discovery
+- frontend production build
+
+Individual entries:
+
+- `npm run test:backend`
+- `npm run test:dataset-builder`
+- `npm run test:protonet`
+- `npm run test:frontend`
+
+### `dataset_builder` CLI
+
+Command:
+
+```powershell
+python dataset_builder\code\build_dataset.py [options]
+```
+
+Full options: `dataset_builder/README.md`
+
+### `protonet` CLI
+
+Commands:
+
+```powershell
+python protonet\code\cli.py train [options]
+python protonet\code\cli.py eval [common options] [eval options]
+python protonet\code\cli.py export [common options] [export options]
+```
+
+Full options: `protonet/README.md`

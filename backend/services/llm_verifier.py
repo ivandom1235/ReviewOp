@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, List
 
 from openai import OpenAI
+import httpx
 
 from core.config import settings
 
@@ -17,11 +18,9 @@ logger = logging.getLogger(__name__)
 
 class LLMVerifier:
     def __init__(self) -> None:
-        self.client = OpenAI(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url.rstrip("/"),
-            timeout=settings.llm_timeout_seconds,
-        )
+        self.provider = str(settings.llm_provider or "groq").strip().lower()
+        self.api_key = settings.llm_api_key
+        self.base_url = settings.llm_base_url.rstrip("/")
         self.model = settings.llm_model_name
 
     def verify(
@@ -81,13 +80,7 @@ class LLMVerifier:
         ]
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.0,
-                response_format={"type": "json_object"},
-            )
-            content = response.choices[0].message.content or "{}"
+            content = self._call_model(messages)
             parsed = json.loads(content)
             predictions = parsed.get("predictions", [])
         except Exception as exc:
@@ -115,3 +108,38 @@ class LLMVerifier:
 
         # Fallback if model returns nothing
         return [x for x in final_rows if x["aspect_raw"]] or merged_predictions
+
+    def _call_model(self, messages: List[Dict[str, str]]) -> str:
+        if self.provider in {"claude", "anthropic"}:
+            headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+            payload = {
+                "model": self.model,
+                "max_tokens": 1024,
+                "messages": messages,
+                "temperature": 0.0,
+            }
+            with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
+                response = client.post(f"{self.base_url}/messages", json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+            content = data.get("content", [])
+            if isinstance(content, list):
+                return "".join(str(item.get("text", "")) for item in content if isinstance(item, dict)) or "{}"
+            return str(content or "{}")
+
+        client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=settings.llm_timeout_seconds,
+        )
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+        return response.choices[0].message.content or "{}"

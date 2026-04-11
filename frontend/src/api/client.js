@@ -1,35 +1,11 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
-const DEFAULT_TIMEOUT_MS = 15000;
-
-function withTimeout(options = {}) {
-  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS);
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
-  return {
-    fetchOptions: {
-      ...options,
-      headers: {
-        Accept: "application/json",
-        ...(options.headers || {}),
-      },
-      signal: controller.signal,
-    },
-    timeoutId,
-  };
-}
 
 async function request(path, options = {}) {
-  const { fetchOptions, timeoutId } = withTimeout(options);
   let response;
   try {
-    response = await fetch(`${API_BASE}${path}`, fetchOptions);
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw new Error("Request timed out. Please retry.");
-    }
+    response = await fetch(`${API_BASE}${path}`, options);
+  } catch {
     throw new Error("Backend is unreachable. Start backend API and check VITE_PROXY_TARGET/VITE_API_BASE_URL.");
-  } finally {
-    window.clearTimeout(timeoutId);
   }
 
   const text = await response.text();
@@ -234,18 +210,7 @@ export async function getUserReviewsList({
 }
 
 async function downloadFile(path, filename) {
-  const { fetchOptions, timeoutId } = withTimeout();
-  let response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, fetchOptions);
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw new Error("Download timed out. Please retry.");
-    }
-    throw new Error("Download failed because backend is unreachable.");
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
+  const response = await fetch(`${API_BASE}${path}`);
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || `Download failed: ${response.status}`);
@@ -261,12 +226,28 @@ async function downloadFile(path, filename) {
   window.URL.revokeObjectURL(url);
 }
 
-export async function exportAdminJson() {
-  await downloadFile("/analytics/export/json", "reviewop-admin-export.json");
+export async function getAdminExport(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.domain) params.set("domain", filters.domain);
+  if (filters.limit) params.set("limit", String(filters.limit));
+  if (filters.offset) params.set("offset", String(filters.offset));
+  return request(`/analytics/export/json${params.toString() ? `?${params.toString()}` : ""}`);
 }
 
-export async function exportAdminPdf() {
-  await downloadFile("/analytics/export/pdf", "reviewop-admin-export.pdf");
+export async function exportAdminJson(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.domain) params.set("domain", filters.domain);
+  if (filters.limit) params.set("limit", String(filters.limit));
+  if (filters.offset) params.set("offset", String(filters.offset));
+  await downloadFile(`/analytics/export/json${params.toString() ? `?${params.toString()}` : ""}`, "reviewop-admin-export.json");
+}
+
+export async function exportAdminPdf(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.domain) params.set("domain", filters.domain);
+  if (filters.limit) params.set("limit", String(filters.limit));
+  if (filters.offset) params.set("offset", String(filters.offset));
+  await downloadFile(`/analytics/export/pdf${params.toString() ? `?${params.toString()}` : ""}`, "reviewop-admin-export.pdf");
 }
 
 function authHeaders(token) {

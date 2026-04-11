@@ -10,6 +10,7 @@ from typing import Any
 class BuilderConfig:
     input_dir: Path = Path(__file__).resolve().parents[1] / "input"
     output_dir: Path = Path(__file__).resolve().parents[1] / "output"
+    state_dir: Path = Path(__file__).resolve().parents[1] / "state"
     reports_subdir: str = "reports"
     random_seed: int = 42
     train_ratio: float = 0.7
@@ -22,10 +23,12 @@ class BuilderConfig:
     dry_run: bool = False
     preview_only: bool = False
     run_profile: str = "research"
+    artifact_mode: str = "auto"
+    debug_benchmark_max_rows: int = 180
     confidence_threshold: float = 0.6
     max_aspects: int = 20
     min_text_tokens: int = 4
-    implicit_min_tokens: int = 5
+    implicit_min_tokens: int = 8
     implicit_mode: str = "zeroshot"
     multilingual_mode: str = "shared_vocab"
     use_coref: bool = False
@@ -35,8 +38,8 @@ class BuilderConfig:
     enable_llm_fallback: bool = True
     llm_fallback_threshold: float = 0.65
     enable_reasoned_recovery: bool = True
-    llm_provider: str | None = None  # options: runpod, openai, anthropic, ollama
-    llm_model_name: str = "llama3-8b-instruct"
+    llm_provider: str | None = None  # options: runpod, openai, claude, anthropic, ollama
+    llm_model_name: str | None = None
     llm_api_key: str | None = None
     llm_base_url: str | None = None
     llm_max_retries: int = 3
@@ -44,7 +47,7 @@ class BuilderConfig:
     model_family: str = "heuristic_latent"
     augmentation_mode: str = "none"
     prompt_mode: str = "constrained"
-    output_version: str = "v4"
+    output_version: str = "v6"
     reset_output: bool = True
     high_difficulty: bool = False
     adversarial_refine: bool = False
@@ -95,7 +98,12 @@ class BuilderConfig:
     strict_h2_h3_ratio_min: float = 0.35
     strict_multi_aspect_ratio_min: float = 0.12
     strict_challenge_macro_f1_min: float = 0.5
+    processor: str | None = None
     max_workers: int = 10
+    no_llm_cache: bool = False
+    discovery_mode: bool = True
+    discovery_min_confidence: float = 0.55
+    discovery_stability_threshold: int = 5
 
     @property
     def explicit_dir(self) -> Path:
@@ -113,13 +121,17 @@ class BuilderConfig:
     def implicit_strict_dir(self) -> Path:
         return self.output_dir / "implicit_strict"
 
+    @property
+    def benchmark_dir(self) -> Path:
+        return self.output_dir / "benchmark" / "ambiguity_grounded"
+
     def ensure_dirs(self, *, reset_output: bool | None = None) -> None:
         should_reset = self.reset_output if reset_output is None else reset_output
         if self.dry_run or self.preview_only:
             should_reset = False
         if should_reset and self.output_dir.exists():
             shutil.rmtree(self.output_dir)
-        for path in (self.output_dir, self.explicit_dir, self.implicit_dir, self.implicit_strict_dir, self.reports_dir):
+        for path in (self.output_dir, self.benchmark_dir, self.reports_dir):
             path.mkdir(parents=True, exist_ok=True)
 
 
@@ -135,3 +147,38 @@ class ReviewRecord:
     explicit: dict[str, Any] = field(default_factory=dict)
     implicit: dict[str, Any] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GoldInterpretation:
+    aspect_label: str
+    sentiment: str
+    evidence_text: str
+    annotator_support: int = 1
+    evidence_span: tuple[int, int] | None = None
+    conformal_set: list[str] = field(default_factory=list)
+    label_source: str = "hybrid"
+    ambiguity_type: str | None = None
+
+
+@dataclass
+class SplitProtocolAssignment:
+    random: str
+    grouped: str
+    domain_holdout: str
+
+
+@dataclass
+class BenchmarkInstance:
+    instance_id: str
+    review_text: str
+    domain: str
+    gold_interpretations: list[GoldInterpretation] = field(default_factory=list)
+    abstain_acceptable: bool = False
+    novel_acceptable: bool = False
+    novel_cluster_id: str | None = None
+    novel_alias: str | None = None
+    novel_evidence_text: str | None = None
+    ambiguity_score: float = 0.0
+    split_protocol: SplitProtocolAssignment | None = None
+    group_id: str = "unknown"

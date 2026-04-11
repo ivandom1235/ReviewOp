@@ -1,33 +1,42 @@
-# proto/backend/services/implicit_client.py
 from __future__ import annotations
 
 import importlib
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import requests
+import httpx
 
 from core.config import settings
 
-
 ImplicitPrediction = Dict[str, Any]
+logger = logging.getLogger(__name__)
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = BACKEND_ROOT.parent
 
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 class ImplicitClient:
     def __init__(self) -> None:
         self.mode = settings.protonet_mode
-        self.base_url = settings.protonet_url.rstrip("/")
         self._predict_fn = None
-
         if self.mode == "import":
             self._setup_import_mode()
+        elif self.mode == "http":
+            self._setup_http_mode()
+
+    def _setup_http_mode(self) -> None:
+        """Verify http configuration and prepare local fallback."""
+        if not settings.protonet_url:
+            raise RuntimeError("protonet_url is not configured for http mode")
+        try:
+            self._setup_import_mode()
+        except Exception:
+            self._predict_fn = None
 
     def _setup_import_mode(self) -> None:
-        project_root = Path(__file__).resolve().parents[2]  # proto/
-        if str(project_root) not in sys.path:
-            sys.path.insert(0, str(project_root))
-
         try:
             module = importlib.import_module("protonet.infer_api")
             self._predict_fn = getattr(module, "predict_implicit_aspects")
@@ -36,6 +45,25 @@ class ImplicitClient:
                 "Failed to import protonet.infer_api.predict_implicit_aspects. "
                 "Make sure protonet/metadata/model_bundle.pt exists and protonet inference dependencies are installed."
             ) from exc
+
+    def _predict_http(self, review_text: str, domain: Optional[str], top_k: int) -> List[ImplicitPrediction]:
+        payload = {"text": review_text, "domain": domain, "top_k": top_k}
+        try:
+            with httpx.Client(timeout=settings.protonet_request_timeout_seconds) as client:
+                response = client.post(f"{settings.protonet_url}/infer/implicit", json=payload)
+                response.raise_for_status()
+                data = response.json()
+                return list(data.get("predictions", []))
+        except Exception as exc:
+            if self._predict_fn:
+                logger.warning("ProtoNet HTTP request failed, falling back to local: %s", exc)
+                return self._predict_fn(
+                    review_text=review_text,
+                    domain=domain,
+                    top_k=top_k,
+                    bundle_path=settings.protonet_bundle_path,
+                )
+            raise RuntimeError(f"ProtoNet HTTP request failed: {exc}") from exc
 
     def predict(
         self,
@@ -49,16 +77,16 @@ class ImplicitClient:
         top_k = top_k or settings.max_implicit_candidates
 
         if self.mode == "import":
-            results = self._predict_fn(review_text=review_text, domain=domain, top_k=top_k)
-        else:
-            response = requests.post(
-                f"{self.base_url}/infer/implicit",
-                json={"text": review_text, "domain": domain, "top_k": top_k},
-                timeout=30,
+            results = self._predict_fn(
+                review_text=review_text,
+                domain=domain,
+                top_k=top_k,
+                bundle_path=settings.protonet_bundle_path,
             )
-            response.raise_for_status()
-            payload = response.json()
-            results = payload.get("predictions", [])
+        elif self.mode == "http":
+            results = self._predict_http(review_text=review_text, domain=domain, top_k=top_k)
+        else:
+            raise RuntimeError(f"Unsupported protonet_mode: {self.mode}")
 
         cleaned: List[ImplicitPrediction] = []
         for row in results or []:
@@ -80,7 +108,24 @@ class ImplicitClient:
                     "evidence_spans": row.get("evidence_spans") or [],
                     "rationale": row.get("rationale") or "",
                     "source": "implicit",
+                    "decision": row.get("decision") or "single_label",
+                    "abstain": bool(row.get("abstain", False)),
+                    "ambiguity_score": float(row.get("ambiguity_score", 0.0)),
+                    "novelty_score": float(row.get("novelty_score", 0.0)),
+                    "routing": row.get("routing") or "known",
+                    "decision_band": row.get("decision_band") or "known",
+                    "novel_cluster_id": row.get("novel_cluster_id"),
+                    "novel_alias": row.get("novel_alias"),
+                    "novel_candidates": row.get("novel_candidates") or [],
+                    "abstained_predictions": row.get("abstained_predictions") or [],
                 }
             )
 
-        return [x for x in cleaned if x["aspect_raw"]]
+        return [
+            x
+            for x in cleaned
+            if x["aspect_raw"]
+            or bool(x.get("abstain"))
+            or str(x.get("decision") or "").lower() == "abstain"
+            or bool(x.get("abstained_predictions"))
+        ]

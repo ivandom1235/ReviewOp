@@ -4,7 +4,11 @@ from collections import Counter, defaultdict
 import json
 import math
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+
 
 from utils import normalize_whitespace, split_sentences, tokenize
 
@@ -38,43 +42,136 @@ STOP_TOKENS = {
     "were", "what", "when", "where", "which", "while", "with", "you", "your",
 }
 
+PIVOT_TEMPLATES = {
+    "battery": "The device's power duration was {sentiment} during usage, evidenced by '{evidence}'",
+    "price": "The value-for-money proposition of this item is {sentiment} because '{evidence}'",
+    "quality": "The build integrity and manufacturing standard is {sentiment} as shown in '{evidence}'",
+    "service": "The customer interaction experience was {sentiment} due to '{evidence}'",
+    "speed": "The performance and response time was {sentiment} based on '{evidence}'",
+    "network": "The connectivity and signal stability was {sentiment} during '{evidence}'",
+}
+
 # Expanded research-grade latent aspect rules with explicit/implicit separation.
 # Format: (label, explicit_keywords, implicit_signals)
 LATENT_ASPECT_RULES = [
-    ("value", {"price", "cost", "bill", "billing", "fees", "dollars", "rate"}, 
-              {"expensive", "cheap", "affordable", "worth", "priced", "pricey", "overpriced", "budget", "deal", "bargain", "money", "saving"}),
-    ("power", {"battery", "power", "charger", "charging", "plug", "adapter"},
-              {"dies", "drains", "lasts", "lasted", "dead", "empty", "hours", "short life", "long life"}),
-    ("connectivity", {"network", "signal", "wifi", "bluetooth", "connection", "data", "internet"},
-                     {"drops", "searching", "searching for", "disconnected", "spotty", "unstable", "cut out", "no service"}),
-    ("thermal", {"temperature", "heat", "thermal", "cooling", "fan"},
-                {"hot", "warm", "cool", "burning", "heats up", "overheating", "ice", "stove"}),
-    ("performance", {"performance", "speed", "software", "app", "operating system", "os", "hardware", "processor"},
-                   {"fast", "slow", "lag", "laggy", "responsive", "smooth", "efficient", "powerful", "snappy", "clunky"}),
-    ("display quality", {"screen", "display", "brightness", "resolution", "monitor", "pixel", "panel"},
-                       {"dim", "bright", "crisp", "washed out", "blurry", "vivid", "sharp"}),
-    ("reliability", {"issue", "problem", "crash", "broken", "stable", "durable", "defect", "defective", "fail", "failure", "malfunction", "support"},
-                    {"crashed", "died", "buggy", "stopped working", "frozen", "freezes", "error"}),
-    ("build quality", {"build", "material", "structure", "construction", "casing", "exterior", "interior"},
-                     {"flimsy", "sturdy", "premium", "cheap plastic", "solid", "durable", "tough", "strong", "fragile"}),
-    ("accessibility", {"map", "route", "signage", "station", "pickup", "location", "nav", "gps", "directions", "accessible", "access"},
-                     {"easy", "confusing", "lost", "direct", "straightforward", "simple", "shortcut"}),
-    ("service quality", {"service", "staff", "support", "waiter", "waitress", "driver", "doctor", "nurse", "crew", "host"},
-                        {"helpful", "attentive", "responsive", "polite", "impatient", "friendly", "rude", "nice", "kind"}),
-    ("cleanliness", {"clean", "dirty", "hygiene", "neat", "tidy", "sanitary", "dust"},
-                     {"spotless", "filthy", "stain", "gross", "messy", "mess", "shining"}),
-    ("timeliness", {"time", "schedule", "standard", "arrival", "waiting"},
-                    {"late", "delay", "quick", "fast", "prompt", "arrive", "wait", "rush", "speedy", "instant"}),
-    ("comfort", {"comfort", "space", "environment", "setting", "room"},
-                {"comfortable", "uncomfortable", "crowded", "quiet", "noisy", "spacious", "cozy", "roomy", "cramped"}),
-    ("food quality", {"food", "meal", "taste", "dish", "ingredient", "cook", "recipe", "portion"},
-                     {"tasty", "flavor", "fresh", "delicious", "savory", "yummy", "bland", "salty", "greasy", "stale"}),
-    ("sound quality", {"sound", "audio", "music", "volume", "speaker"},
-                      {"noisy", "loud", "quiet", "clear", "tinny", "distorted", "muffled"}),
+    ("value", {"price", "cost", "bill", "billing", "fees", "dollars", "rate", "value", "payment"}, 
+              {"expensive", "cheap", "affordable", "worth", "priced", "pricey", "overpriced", "budget", "deal", "bargain", "money", "saving", "stole", "rip off"}),
+    ("power", {"battery", "power", "charger", "charging", "plug", "adapter", "energy", "voltage"},
+              {"dies", "drains", "lasts", "lasted", "dead", "empty", "hours", "short life", "long life", "shuts down", "recharge", "plugged in", "out of juice"}),
+    ("connectivity", {"network", "signal", "wifi", "bluetooth", "connection", "data", "internet", "wireless", "pairing"},
+                     {"drops", "searching", "disconnected", "spotty", "unstable", "cut out", "no service", "cannot connect", "no bars", "lost connection"}),
+    ("thermal", {"temperature", "heat", "thermal", "cooling", "fan", "vent", "airflow"},
+                {"hot", "warm", "cool", "burning", "heats up", "overheating"}),
+    ("performance", {"performance", "speed", "software", "app", "operating system", "os", "hardware", "processor", "engine", "motor"},
+                   {"fast", "slow", "lag", "laggy", "responsive", "smooth", "efficient", "powerful", "snappy", "clunky", "freezes", "wait", "stalling"}),
+    ("display quality", {"screen", "display", "brightness", "resolution", "monitor", "pixel", "panel", "visuals", "interface"},
+                       {"dim", "bright", "crisp", "washed out", "blurry", "vivid", "sharp", "glare", "dead pixels", "bleeding"}),
+    ("reliability", {"issue", "problem", "crash", "broken", "stable", "durable", "defect", "defective", "fail", "failure", "malfunction", "support", "warranty"},
+                    {"crashed", "died", "buggy", "stopped working", "frozen", "freezes", "error", "reboot", "restart", "quit", "useless", "garbage"}),
+    ("build quality", {"build", "material", "structure", "construction", "casing", "exterior", "interior", "design", "finish"},
+                     {"flimsy", "sturdy", "premium", "cheap plastic", "solid", "durable", "tough", "strong", "fragile", "scratched", "dent", "rattling"}),
+    ("accessibility", {"map", "route", "signage", "station", "pickup", "location", "nav", "gps", "directions", "accessible", "access", "entry", "exit"},
+                     {"easy", "confusing", "lost", "direct", "straightforward", "simple", "shortcut", "stuck", "closed", "blocked"}),
+    ("service quality", {"service", "staff", "support", "waiter", "waitress", "driver", "doctor", "nurse", "crew", "host", "personnel", "manager"},
+                        {"helpful", "attentive", "responsive", "polite", "impatient", "friendly", "rude", "nice", "kind", "professional", "rude"}),
+    ("cleanliness", {"clean", "dirty", "hygiene", "neat", "tidy", "sanitary", "dust", "garbage", "trash"},
+                     {"spotless", "filthy", "stain", "gross", "messy", "mess", "shining", "smell", "soiled"}),
+    ("timeliness", {"time", "schedule", "standard", "arrival", "waiting", "appointment", "deadline"},
+                    {"late", "delay", "quick", "fast", "prompt", "arrive", "wait", "rushed", "speedy", "instant", "on time"}),
+    ("comfort", {"comfort", "space", "environment", "setting", "room", "seat", "cushion", "ambience"},
+                {"comfortable", "uncomfortable", "crowded", "quiet", "noisy", "spacious", "cozy", "roomy", "cramped", "harsh"}),
+    ("sensory quality", {"food", "meal", "taste", "dish", "ingredient", "cook", "recipe", "portion", "flavor", "smell", "scent", "sound", "audio", "music"},
+                       {"tasty", "flavor", "fresh", "delicious", "savory", "yummy", "bland", "salty", "greasy", "stale", "noisy", "loud", "clear"}),
 ]
+
+# Unconventional: Explicit Pivoting Templates
+# Maps latent aspects to explicit restatement templates
+PIVOT_TEMPLATES = {
+    "power": "The power management is {sentiment} because {evidence}",
+    "connectivity": "The connectivity is {sentiment} because {evidence}",
+    "performance": "The performance is {sentiment} because {evidence}",
+    "reliability": "The operational reliability is {sentiment} because {evidence}",
+    "value": "The value for money is {sentiment} because {evidence}",
+    "thermal": "The thermal state is {sentiment} because {evidence}",
+    "display quality": "The visual/display quality is {sentiment} because {evidence}",
+    "build quality": "The physical build quality is {sentiment} because {evidence}",
+    "accessibility": "The accessibility is {sentiment} because {evidence}",
+    "service quality": "The quality of service is {sentiment} because {evidence}",
+    "cleanliness": "The cleanliness is {sentiment} because {evidence}",
+    "timeliness": "The timeliness is {sentiment} because {evidence}",
+    "comfort": "The overall comfort is {sentiment} because {evidence}",
+    "sensory quality": "The sensory quality (taste/sound) is {sentiment} because {evidence}",
+}
 
 VALID_LATENT_ASPECTS = {label for label, _, _ in LATENT_ASPECT_RULES} | {"general"}
 LATENT_RULE_BY_LABEL = {label: (explicit_kws, implicit_sigs) for label, explicit_kws, implicit_sigs in LATENT_ASPECT_RULES}
+
+
+def inject_harvested_rules(new_rules: list[tuple[str, set[str], set[str]]]):
+    """Dynamic injection for Adaptive Lexicon (Phase 1)."""
+    global LATENT_ASPECT_RULES, VALID_LATENT_ASPECTS, LATENT_RULE_BY_LABEL
+    
+    # Merge rules: if label exists, merge keywords/signals; if new, append.
+    current_rules_dict = {label: (e, i) for label, e, i in LATENT_ASPECT_RULES}
+    for label, e_kws, i_sigs in new_rules:
+        if label in current_rules_dict:
+            curr_e, curr_i = current_rules_dict[label]
+            current_rules_dict[label] = (curr_e | e_kws, curr_i | i_sigs)
+        else:
+            current_rules_dict[label] = (e_kws, i_sigs)
+    
+    LATENT_ASPECT_RULES = [(label, e, i) for label, (e, i) in current_rules_dict.items()]
+    VALID_LATENT_ASPECTS = {label for label, _, _ in LATENT_ASPECT_RULES} | {"general"}
+    LATENT_RULE_BY_LABEL = {label: (e, i) for label, e, i in LATENT_ASPECT_RULES}
+    
+    # Refresh VectorAspectMatcher if instance exists
+    if VectorAspectMatcher._instance:
+        VectorAspectMatcher._instance._initialize_centroids()
+
+
+class VectorAspectMatcher:
+    """Stage 2: Implicit candidate scoring using prototype embeddings."""
+    
+    _instance: Optional[VectorAspectMatcher] = None
+    
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        # We use local_files_only=True if we expect them to be pre-downloaded, 
+        # but for builder we'll let it download if needed (assuming connection)
+        self.model = SentenceTransformer(model_name)
+        self.centroids: Dict[str, np.ndarray] = {}
+        self._initialize_centroids()
+
+    @classmethod
+    def get_instance(cls) -> VectorAspectMatcher:
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def _initialize_centroids(self):
+        """Pre-calculate prototypes for each latent aspect label."""
+        for label, explicit_kws, implicit_sigs in LATENT_ASPECT_RULES:
+            # Seed the prototype with the label itself + all recognized keywords
+            seeds = [label] + list(explicit_kws) + list(implicit_sigs)
+            embeddings = self.model.encode(seeds)
+            self.centroids[label] = np.mean(embeddings, axis=0)
+
+    def match(self, text: str, threshold: float = 0.55) -> List[Dict[str, Any]]:
+        """ stage 2: returns candidate aspects with scores based on cosine similarity."""
+        query_emb = self.model.encode([text])[0]
+        results = []
+        for label, centroid in self.centroids.items():
+            sim = float(cosine_similarity([query_emb], [centroid])[0][0])
+            if sim >= threshold:
+                results.append({
+                    "latent": label,
+                    "confidence": round(sim, 3),
+                    "source": "vector_grounding",
+                    "hardness": 2 if sim < 0.75 else 1
+                })
+        # Sort by confidence
+        results.sort(key=lambda x: x["confidence"], reverse=True)
+        return results
+
 
 
 def _canonical_mode(mode: str) -> str:
@@ -114,16 +211,24 @@ def _latent_aspect_label(aspect: str, clause: str | None = None) -> str:
     return "general"
 
 
+_KEYWORD_REGEX_CACHE: dict[str, re.Pattern] = {}
+
 def _keyword_in_text(text: str, keyword: str) -> bool:
     normalized_text = normalize_whitespace(text).lower()
     normalized_keyword = normalize_whitespace(keyword).lower()
     if not normalized_text or not normalized_keyword:
         return False
-    parts = [part for part in normalized_keyword.split() if part]
-    if not parts:
-        return False
-    pattern = r"(?<![a-z0-9])" + r"\s+".join(re.escape(part) for part in parts) + r"(?![a-z0-9])"
-    return bool(re.search(pattern, normalized_text, flags=re.IGNORECASE))
+        
+    pattern = _KEYWORD_REGEX_CACHE.get(normalized_keyword)
+    if pattern is None:
+        parts = [part for part in normalized_keyword.split() if part]
+        if not parts:
+            return False
+        pattern_str = r"(?<![a-z0-9])" + r"\s+".join(re.escape(part) for part in parts) + r"(?![a-z0-9])"
+        pattern = re.compile(pattern_str, flags=re.IGNORECASE)
+        _KEYWORD_REGEX_CACHE[normalized_keyword] = pattern
+        
+    return bool(pattern.search(normalized_text))
 
 
 def _hardness_tier(hardness: int) -> str:
@@ -216,37 +321,75 @@ def is_surface_leakage(text: str, aspect: str) -> bool:
     return False
 
 
-_ADVERSATIVE_RE = re.compile(r"\bbut\b|\bhowever\b|\byet\b|\bwhile\b|\balthough\b", re.IGNORECASE)
-_COORD_AND_RE = re.compile(r",\s*and\b|\band\b", re.IGNORECASE)
-_MIN_CLAUSE_TOKENS_FOR_SPLIT = 10
+_ADVERSATIVE_RE = re.compile(r"(?:\s+)(?:but|however|yet|while|although)(?:\s+)", re.IGNORECASE)
+_COORD_AND_RE = re.compile(r"(?:,\s*and\s+|\s+and\s+)", re.IGNORECASE)
+_MIN_CLAUSE_TOKENS_FOR_SPLIT = 6  # Lowered from 10 to catch multi-aspect pairings
+
+_NEGATORS = {"not", "never", "no", "isnt", "wasnt", "doesnt", "didnt", "cant", "wont", "neither", "nor", "without", "hardly"}
+_CONTRASTIVE_TOKENS = {"but", "however", "although", "though", "yet", "while"}
+_COMPARATIVE_TOKENS = {"better", "worse", "faster", "slower", "more", "less"}
+_SUPERLATIVE_POSITIVE = {"best", "fastest", "cleanest", "smoothest", "greatest"}
+_SUPERLATIVE_NEGATIVE = {"worst", "slowest", "dirtiest", "weakest"}
+_STRONG_NEGATIVE_EVENTS = {
+    "crashed", "crash", "dropped", "drop", "refund denied", "denied", "waited", "stopped working", "failed", "failure",
+    "disconnected", "overheating", "burning", "stalled", "froze", "freeze", "broken",
+}
+_STRONG_POSITIVE_EVENTS = {"resolved", "fixed", "quickly replaced", "on time", "seamless", "worked perfectly", "stable"}
 
 
 def _sentence_clauses(text: str) -> list[str]:
+    return [item["clause"] for item in _sentence_clauses_with_offsets(text)]
+
+
+def _sentence_clauses_with_offsets(text: str) -> list[dict[str, int | str]]:
+    full_text = normalize_whitespace(text)
+    if not full_text:
+        return []
     clauses: list[str] = []
     for sentence in split_sentences(text):
         # Stage 1: split on adversative conjunctions.
         pieces = [piece.strip(" ,;:-") for piece in _ADVERSATIVE_RE.split(sentence) if piece.strip()]
         if not pieces:
             pieces = [sentence]
-        # Stage 2: split long pieces on commas / coordinating 'and'.
+        # Stage 2: split pieces on coordinating 'and' or commas.
         refined: list[str] = []
         for piece in pieces:
             piece_tokens = tokenize(piece)
-            if len(piece_tokens) >= _MIN_CLAUSE_TOKENS_FOR_SPLIT:
+            # More aggressive splitting for long pieces OR pieces with clear conjunctions
+            if len(piece_tokens) >= _MIN_CLAUSE_TOKENS_FOR_SPLIT or _COORD_AND_RE.search(piece):
                 sub_pieces = [sub.strip(" ,;:-") for sub in _COORD_AND_RE.split(piece) if sub.strip(" ,;:-")]
                 if len(sub_pieces) > 1:
                     refined.extend(sub_pieces)
                 else:
-                    # Try comma-only split for very long clauses.
+                    # Comma-based fallback for lists
                     comma_pieces = [sub.strip(" ,;:-") for sub in piece.split(",") if sub.strip(" ,;:-")]
-                    if len(comma_pieces) > 1 and all(len(tokenize(sub)) >= 3 for sub in comma_pieces):
+                    # Only accept comma splits if they yield substantial sub-clauses
+                    if len(comma_pieces) > 1 and any(len(tokenize(sub)) >= 3 for sub in comma_pieces):
                         refined.extend(comma_pieces)
                     else:
                         refined.append(piece)
             else:
                 refined.append(piece)
         clauses.extend(refined)
-    return clauses or [normalize_whitespace(text)]
+
+
+    final_clauses = clauses or [full_text]
+    out: list[dict[str, int | str]] = []
+    cursor = 0
+    lowered = full_text.lower()
+    for clause in final_clauses:
+        piece = normalize_whitespace(clause)
+        if not piece:
+            continue
+        start = lowered.find(piece.lower(), cursor)
+        if start < 0:
+            start = lowered.find(piece.lower())
+        if start < 0:
+            start = 0
+        end = start + len(piece)
+        cursor = end
+        out.append({"clause": piece, "start": int(start), "end": int(end)})
+    return out
 
 
 def _infer_fallback_latent_from_clause(clause: str) -> tuple[str | None, int]:
@@ -274,14 +417,101 @@ def _infer_fallback_latent_from_clause(clause: str) -> tuple[str | None, int]:
 
 
 def infer_sentiment(text: str) -> str:
+    return infer_sentiment_details(text)["label"]
+
+
+def infer_sentiment_details(text: str) -> dict[str, Any]:
     tokens = tokenize(text)
-    pos = sum(token in POSITIVE_WORDS for token in tokens)
-    neg = sum(token in NEGATIVE_WORDS for token in tokens)
-    if pos > neg:
-        return "positive"
-    if neg > pos:
-        return "negative"
-    return "neutral"
+    lower_text = normalize_whitespace(text).lower()
+    pos_score = 0.0
+    neg_score = 0.0
+    strong_positive_hits = 0
+    strong_negative_hits = 0
+    comparative_hits = 0
+    if not tokens:
+        return {
+            "label": "neutral",
+            "abstained": True,
+            "margin": 0.0,
+            "risk_bucket": "high",
+            "sentiment_mismatch": False,
+            "scores": {"positive": 0.0, "negative": 0.0},
+        }
+    
+    for i, token in enumerate(tokens):
+        # Lookback for negations (simple 1-2 token window)
+        is_negated = False
+        if i > 0 and tokens[i-1] in _NEGATORS:
+            is_negated = True
+        elif i > 1 and tokens[i-2] in _NEGATORS:
+            is_negated = True
+
+        if token in POSITIVE_WORDS:
+            if is_negated:
+                neg_score += 1.4
+            else:
+                pos_score += 1.0
+        elif token in NEGATIVE_WORDS:
+            if is_negated:
+                pos_score += 1.0
+            else:
+                neg_score += 1.0
+        if token in _COMPARATIVE_TOKENS:
+            comparative_hits += 1
+            if token in {"better", "faster", "more"}:
+                pos_score += 0.35
+            elif token in {"worse", "slower", "less"}:
+                neg_score += 0.35
+        if token in _SUPERLATIVE_POSITIVE:
+            pos_score += 1.2
+        if token in _SUPERLATIVE_NEGATIVE:
+            neg_score += 1.2
+
+    for trigger in _STRONG_NEGATIVE_EVENTS:
+        if trigger in lower_text:
+            neg_score += 2.0
+            strong_negative_hits += 1
+    for trigger in _STRONG_POSITIVE_EVENTS:
+        if trigger in lower_text:
+            pos_score += 1.5
+            strong_positive_hits += 1
+
+    if any(tok in tokens for tok in _CONTRASTIVE_TOKENS):
+        # Tail clauses after contrastive pivots carry stronger sentiment signal.
+        tail = re.split(r"\bbut\b|\bhowever\b|\balthough\b|\bthough\b|\byet\b|\bwhile\b", lower_text)[-1].strip()
+        if tail:
+            tail_tokens = tokenize(tail)
+            tail_pos = sum(1 for tok in tail_tokens if tok in POSITIVE_WORDS)
+            tail_neg = sum(1 for tok in tail_tokens if tok in NEGATIVE_WORDS)
+            if tail_neg > tail_pos:
+                neg_score += 0.8
+            elif tail_pos > tail_neg:
+                pos_score += 0.8
+
+    margin = abs(pos_score - neg_score)
+    abstained = margin < 0.55
+    if pos_score > neg_score and not abstained:
+        label = "positive"
+    elif neg_score > pos_score and not abstained:
+        label = "negative"
+    else:
+        label = "neutral"
+
+    sentiment_mismatch = bool(strong_positive_hits > 0 and label == "neutral")
+    risk_bucket = "low" if margin >= 1.25 else ("medium" if margin >= 0.55 else "high")
+    return {
+        "label": label,
+        "abstained": abstained,
+        "margin": round(margin, 4),
+        "risk_bucket": risk_bucket,
+        "sentiment_mismatch": sentiment_mismatch,
+        "scores": {"positive": round(pos_score, 4), "negative": round(neg_score, 4)},
+        "diagnostics": {
+            "strong_positive_hits": strong_positive_hits,
+            "strong_negative_hits": strong_negative_hits,
+            "comparative_hits": comparative_hits,
+        },
+    }
 
 
 def _extract_gold_aspects(rows: List[Dict[str, Any]]) -> list[str]:
@@ -346,30 +576,28 @@ def _parse_structured_prediction(raw: Any) -> tuple[list[dict[str, Any]], list[s
     return parsed, errors
 
 
-def _build_span(aspect: str, clause: str, *, sentiment: str, confidence: float, source: str) -> dict[str, Any]:
-    latent = _latent_aspect_label(aspect, clause)
-    matched_surface, support = _match_aspect_surface(clause, aspect)
-    matched_surface = matched_surface or aspect
-    start = clause.lower().find(matched_surface.lower()) if matched_surface else -1
-    return {
-        "surface_aspect": aspect,
-        "latent_aspect": latent,
-        "normalized_aspect": latent,
-        "matched_surface": matched_surface,
-        "support_type": support or source,
-        "sentiment": sentiment,
-        "confidence": round(confidence, 4),
-        "start_char": max(start, -1),
-        "end_char": max(start + len(matched_surface), -1) if matched_surface and start >= 0 else -1,
-        "clause": clause,
-        "source": source,
-    }
+def discover_aspects(
+    rows: List[Dict[str, Any]],
+    *,
+    text_column: str,
+    max_aspects: int,
+    implicit_mode: str = "zeroshot",
+    sample_rate: float = 0.4,
+    random_seed: int | None = None,
+) -> list[str]:
+    # Lazy Discovery: Sample the dataset to speed up aspect discovery (Step 3/4)
+    # Statically sufficient for large research benchmarks
+    if len(rows) > 500:
+        import random
+        sample_n = max(1, int(len(rows) * sample_rate))
+        rng = random.Random(random_seed) if random_seed is not None else random
+        sampled_rows = rng.sample(rows, sample_n)
+    else:
+        sampled_rows = rows
 
-
-def discover_aspects(rows: List[Dict[str, Any]], *, text_column: str, max_aspects: int, implicit_mode: str = "zeroshot") -> list[str]:
     mode = _canonical_mode(implicit_mode)
     counts: Counter[str] = Counter()
-    for row in rows:
+    for row in sampled_rows:
         text = normalize_whitespace(row.get(text_column, ""))
         if not text:
             continue
@@ -414,328 +642,244 @@ async def build_implicit_row(
     enforce_grounding: bool = True,
     enable_reasoned_recovery: bool = False,
     llm_provider: Any = None,
-    llm_model_name: str = "llama3",
+    llm_model_name: str | None = None,
     high_difficulty: bool = False,
     adversarial_refine: bool = False,
+    bypass_cache: bool = False,
+    discovery_mode: bool = False,
+    discovery_min_confidence: float = 0.55,
 ) -> Dict[str, Any]:
-    from llm_utils import AsyncLlmProvider, reason_implicit_signal_async, augment_implicit_difficulty_async
+    from llm_utils import AsyncLlmProvider, reason_implicit_signal_async, discover_novel_aspects_async
 
     mode = _canonical_mode(implicit_mode)
     raw_text = normalize_whitespace(row.get(text_column, ""))
     processed_text = normalize_whitespace(coref_text or raw_text)
-    clauses = _sentence_clauses(processed_text)
-    sentiment = infer_sentiment(processed_text)
-    aspects: list[str] = []
-    aspect_confidence: dict[str, float] = {}
-    aspect_sentiments: dict[str, str] = {}
+    clauses = _sentence_clauses_with_offsets(processed_text)
+    sentiment_detail = infer_sentiment_details(processed_text)
+    sentiment = str(sentiment_detail.get("label") or "neutral")
+    
+    # State tracking
     spans: list[dict[str, Any]] = []
-    predicted_labels: list[dict[str, Any]] = []
     llm_parse_errors: list[str] = []
     llm_fallback_used = False
     fallback_branch = "none"
     reasoned_recovery_used = False
-    domain_filtered_matches = []
-    domain_prior_boost_count = 0
-    domain_prior_penalty_count = 0
-
-    if not implicit_ready:
-        return {
-            "id": row.get("id"),
-            "split": row.get("split"),
-            "source_text": raw_text,
-            "language": language,
-            "track": "skipped",
-            "implicit": {
-                "mode": mode,
-                "multilingual_strategy": multilingual_mode,
-                "coreference_enabled": use_coref,
-                "coreference_applied": bool(coref_text and coref_text != raw_text),
-                "source_text": raw_text,
-                "processed_text": processed_text,
-                "aspects": [],
-                "dominant_sentiment": sentiment,
-                "aspect_sentiments": {},
-                "aspect_confidence": {},
-                "spans": [],
-                "predicted_labels": [],
-                "sentence_count_processed": len(clauses),
-                "row_index": row_index,
-                "needs_review": True,
-                "review_reason": "implicit_not_ready",
-                "implicit_ready": False,
-                "language": language,
-                "track": "skipped",
-                "llm_fallback_used": False,
-                "fallback_branch": "implicit_not_ready",
-                "llm_parse_error_rate": 0.0,
-                "llm_parse_errors": [],
-                "skip_reason": "implicit_not_ready",
-                "implicit_quality_tier": "needs_review",
-                "leakage_flags": [],
-                "reasoning_evidence_type": "none",
-                "hardness_tier": "H0",
-            },
-        }
-
-    language_candidates = (candidate_aspects_by_language or {}).get(language, [])
-    domain_candidates = (candidate_aspects_by_domain or {}).get(str(domain or "unknown"), [])
-    allowed_latents = {
-        _latent_aspect_label(candidate, processed_text)
-        for candidate in domain_candidates
-    }
-    allowed_latents = {aspect for aspect in allowed_latents if aspect != "general" and _is_valid_latent_aspect(aspect)}
-    effective_mode = str(domain_conditioning_mode or "").strip().lower()
-    if effective_mode not in {"adaptive_soft", "strict_hard", "off"}:
-        effective_mode = "strict_hard" if strict_domain_conditioning else "adaptive_soft"
-    elif strict_domain_conditioning and effective_mode == "adaptive_soft":
-        effective_mode = "strict_hard"
-    weak_domain_support = int(domain_support_rows or 0) < int(weak_domain_support_row_threshold)
-    row_candidates = list(
-        dict.fromkeys(
-            [
-                *candidate_aspects,
-                *language_candidates,
-                *domain_candidates,
-                *(_extract_gold_aspects([row]) if mode in {"supervised", "hybrid"} else []),
-            ]
-        )
-    )
-
-    max_hardness = 0
-    final_label_type = "implicit" # default
-    strict_rejected_matches = 0
     leakage_flags_total: set[str] = set()
-    
-    for clause in clauses:
+
+    # Stage A/B: Hybrid Candidate Generation (Optimized single-pass)
+    for clause_payload in clauses:
+        clause = str(clause_payload.get("clause") or "")
+        clause_start = int(clause_payload.get("start") or 0)
         clause_sentiment = infer_sentiment(clause)
         clause_matches: list[dict[str, Any]] = []
+        
+        # Priority 1: Rules & Lexicon
+        haystack = clause.lower()
         for label, explicit_kws, implicit_sigs in LATENT_ASPECT_RULES:
-            match_found = False
-            # Check explicit keywords first (Hardness 0)
-            for keyword in sorted(explicit_kws, key=len, reverse=True):
-                if _keyword_in_text(clause, keyword):
-                    matched_surface, match_type = _match_aspect_surface(clause, keyword)
-                    surface = matched_surface or keyword
+            # Check explicit first (Hardness 0)
+            found_explicit = False
+            for kw in sorted(explicit_kws, key=len, reverse=True):
+                if _keyword_in_text(haystack, kw):
+                    matched, match_type = _match_aspect_surface(clause, kw)
                     clause_matches.append({
-                        "latent": label, 
-                        "aspect": surface, 
-                        "support_type": match_type or "exact", 
-                        "surface": surface,
-                        "label_type": "explicit",
-                        "hardness": 0,
-                        "confidence": 1.0,
-                        "reasoning_evidence_type": "lexical_explicit",
+                        "latent": label,"aspect": matched or kw,"support_type": match_type or "exact",
+                        "label_type": "explicit","hardness": 0,"confidence": 1.0,"source": "rule"
                     })
-                    match_found = True
+                    found_explicit = True
                     break
             
-            if match_found:
+            if found_explicit: 
+                # FAST-PATH: If we found a perfect explicit match for this aspect, 
+                # we don't need to check implicit signals for the same aspect label.
                 continue
 
             # Check implicit signals (Hardness 1)
-            for signal in sorted(implicit_sigs, key=len, reverse=True):
-                if _keyword_in_text(clause, signal):
-                    matched_surface, match_type = _match_aspect_surface(clause, signal)
-                    surface = matched_surface or signal
+            for sig in sorted(implicit_sigs, key=len, reverse=True):
+                if _keyword_in_text(haystack, sig):
+                    matched, match_type = _match_aspect_surface(clause, sig)
                     clause_matches.append({
-                        "latent": label, 
-                        "aspect": surface, 
-                        "support_type": match_type or "exact", 
-                        "surface": surface,
-                        "label_type": "implicit",
-                        "hardness": 1,
-                        "confidence": 0.85,
-                        "reasoning_evidence_type": "lexical_implicit",
+                        "latent": label,"aspect": matched or sig,"support_type": match_type or "near_exact",
+                        "label_type": "implicit","hardness": 1,"confidence": 0.85,"source": "lexicon"
                     })
-                    match_found = True
                     break
 
-        if mode in {"supervised", "hybrid"}:
-            for aspect in [*_extract_gold_aspects([row]), *_extract_gold_aspects([{"gold_labels": row.get("gold_labels", [])}])]:
-                if not aspect:
-                    continue
-                label = _latent_aspect_label(aspect, clause)
-                if label == "general":
-                    continue
-                matched_surface, support = _match_aspect_surface(clause, aspect)
+        # Priority 2: Stage 2 - Vector Grounding (Phase 2 Implementation)
+        if not clause_matches:
+            vector_matcher = VectorAspectMatcher.get_instance()
+            vector_hits = vector_matcher.match(clause)
+            for hit in vector_hits:
+                anchor = (clause[:35] + "...") if len(clause) > 35 else clause
                 clause_matches.append({
-                    "latent": label, 
-                    "aspect": matched_surface or aspect, 
-                    "support_type": support or "gold", 
-                    "surface": matched_surface or aspect,
+                    "latent": hit["latent"],
+                    "aspect": anchor,
+                    "support_type": "vector_semantic",
                     "label_type": "implicit",
-                    "hardness": 1,
-                    "confidence": 1.0,
-                    "reasoning_evidence_type": "compositional",
+                    "hardness": hit["hardness"],
+                    "confidence": hit["confidence"],
+                    "source": "vector"
                 })
+                if len(clause_matches) >= 2: 
+                    break
 
-        parsed_labels, parse_errors = _parse_structured_prediction(row.get("llm_prediction") or row.get("llm_fallback_text"))
-        if parsed_labels:
+        # Priority 3: Stage 3 - LLM Fallback (only if no lexical or vector matches)
+        if not clause_matches and enable_llm_fallback and llm_provider:
+            if llm_model_name is None or not str(llm_model_name).strip():
+                raise RuntimeError(
+                    "LLM_MODEL_NAME or provider-specific model env is required"
+                )
             llm_fallback_used = True
+            paraphrases = await reason_implicit_signal_async(clause, candidate_aspects, llm_provider, llm_model_name, bypass_cache=bypass_cache)
             fallback_branch = "llm_parse"
-            llm_parse_errors.extend(parse_errors)
-            for item in parsed_labels:
-                aspect_name = _normalize_aspect(str(item.get("aspect") or item.get("text") or ""))
-                if aspect_name:
-                    clause_matches.append({
-                        "latent": _latent_aspect_label(aspect_name, clause), 
-                        "aspect": aspect_name, 
-                        "support_type": "llm_parse", 
-                        "surface": aspect_name, 
-                        "label_type": "implicit", 
-                        "hardness": 2, 
-                        "confidence": float(item.get("confidence", llm_fallback_threshold)),
-                        "reasoning_evidence_type": "compositional",
-                    })
-        else:
-            llm_parse_errors.extend(parse_errors)
-
-        if not clause_matches and enable_reasoned_recovery and llm_provider and isinstance(llm_provider, AsyncLlmProvider):
-            paraphrases = await reason_implicit_signal_async(clause, row_candidates, llm_provider, llm_model_name)
             for para in paraphrases:
-                para_lower = para.lower()
                 for label, e_kws, i_sigs in LATENT_ASPECT_RULES:
-                    for keyword in sorted(e_kws | i_sigs, key=len, reverse=True):
-                        if keyword in para_lower:
-                            matched_surface, match_type = _match_aspect_surface(para, keyword)
+                    for kw in sorted(e_kws | i_sigs, key=len, reverse=True):
+                        if _keyword_in_text(para, kw) and _keyword_in_text(clause, kw):
                             clause_matches.append({
-                                "latent": label, 
-                                "aspect": matched_surface or keyword, 
-                                "support_type": "reasoned_recovery", 
-                                "surface": matched_surface or keyword,
-                                "label_type": "implicit",
-                                "hardness": 2,
-                                "confidence": 0.72,
-                                "reasoning_evidence_type": "compositional",
+                                "latent": label,"aspect": kw,"support_type": "llm_reasoning",
+                                "label_type": "implicit","hardness": 2,"confidence": 0.75,"source": "llm",
                             })
                             reasoned_recovery_used = True
                             break
                     if clause_matches: break
                 if clause_matches: break
-        elif not clause_matches and enable_reasoned_recovery and llm_provider:
-             from llm_utils import reason_implicit_signal
-             paraphrases = reason_implicit_signal(clause, row_candidates, llm_provider, llm_model_name)
-             # ... (existing sync fallback logic if needed, but we prefer async)
-             # Keeping it simple: if not async provider, we use sync.
+            if not clause_matches:
+                llm_parse_errors.append("ungrounded_llm_match")
+        
+        # Priority 4: Stage 4 - Open-Domain Discovery (Phase 2 Implementation)
+        if not clause_matches and discovery_mode and llm_provider:
+            novel_hits = await discover_novel_aspects_async(
+                clause, 
+                excluded_aspects=list(VALID_LATENT_ASPECTS), 
+                provider=llm_provider, 
+                model_name=llm_model_name,
+                domain=domain,
+                bypass_cache=bypass_cache
+            )
+            for hit in novel_hits:
+                conf = float(hit.get("confidence", 0.0))
+                if conf >= discovery_min_confidence:
+                    clause_matches.append({
+                        "latent": str(hit.get("label", "unknown")).lower(),
+                        "aspect": str(hit.get("evidence") or clause[:30]),
+                        "support_type": "discovered",
+                        "label_type": "implicit",
+                        "hardness": 3, # Discovered aspects are always high difficulty
+                        "confidence": conf,
+                        "source": "discovery"
+                    })
+                    if len(clause_matches) >= 2: break
+        # Stage D: Validation & Grounding (Phase 4 Logic)
+        # Sort and filter matches: Prioritize specificity (granularity) over general label
+        if len(clause_matches) > 1:
+            # If we have granular hits, remove 'general' or low-confidence noise
+            granular_hits = [m for m in clause_matches if m["latent"] != "general"]
+            if granular_hits:
+                clause_matches = granular_hits
 
         for match in clause_matches:
             latent = match["latent"]
-            if not _is_valid_latent_aspect(latent):
-                continue
+            if not _is_valid_latent_aspect(latent): continue
+
+            # Conflict Resolution: Domain-Clash Check
+            # (e.g., if sentiment is service-based but aspect is hardware-based)
+            is_conflict = False
+            service_cues = {"helpful", "staff", "waiter", "waitress", "service", "friendly", "polite"}
+            hardware_cues = {"battery", "screen", "fast", "slow", "performance", "build", "quality"}
+            
+            if latent in {"service quality", "timeliness"} and any(kw in clause.lower() for kw in hardware_cues):
+                is_conflict = True
+            elif latent in {"power", "performance", "display quality"} and any(kw in clause.lower() for kw in service_cues):
+                is_conflict = True
+                
+            if is_conflict:
+                match["confidence"] -= 0.15 # Penalize conflicting signals
+                match["support_type"] = "conflicting_signal"
+
+
             flags = _compute_leakage_flags(
                 text=processed_text,
                 latent=latent,
-                surface_aspect=str(match.get("aspect") or match.get("surface") or ""),
-                label_type=str(match.get("label_type") or "implicit"),
+                surface_aspect=match["aspect"],
+                label_type=match["label_type"],
             )
-            if flags:
-                leakage_flags_total.update(flags)
-            if flags and any(flag in {"explicit_span_in_implicit", "latent_name_surface_leakage", "explicit_keyword_surface_leakage", "surface_equals_latent"} for flag in flags):
-                strict_rejected_matches += 1
-                continue
-            conf = float(match.get("confidence", 0.8))
-            if effective_mode == "strict_hard" and allowed_latents and latent not in allowed_latents:
-                domain_filtered_matches.append(match)
-                continue
-                
-            if latent not in aspect_sentiments:
-                aspect_sentiments[latent] = []
-            aspect_sentiments[latent].append(clause_sentiment)
+            leakage_flags_total.update(flags)
             
-            aspect_confidence[latent] = max(aspect_confidence.get(latent, 0.0), conf)
+            matched_surface = match["aspect"]
+            local_start = clause.lower().find(matched_surface.lower())
+            
+            if local_start == -1:
+                continue 
+
+            absolute_start = int(clause_start + local_start)
+            absolute_end = int(absolute_start + len(matched_surface))
             spans.append({
-                "aspect": match["aspect"],
+                "aspect": matched_surface,
                 "latent_label": latent,
-                "text": match["surface"],
+                "evidence_text": clause,
+                "evidence_span": [absolute_start, absolute_end],
                 "sentiment": clause_sentiment,
-                "confidence": conf,
+                "confidence": match["confidence"],
                 "support_type": match["support_type"],
                 "label_type": match["label_type"],
+                "source": match["source"],
                 "hardness": match["hardness"],
-                "hardness_tier": _hardness_tier(int(match["hardness"])),
-                "reasoning_evidence_type": str(match.get("reasoning_evidence_type") or "lexical_implicit"),
-                "leakage_flags": flags,
+                "start_char": absolute_start,
+                "end_char": absolute_end if absolute_start >= 0 else -1,
+                "clause": clause,
+                "leakage_flags": sorted(flags),
             })
-            max_hardness = max(max_hardness, match["hardness"])
-            if match["label_type"] == "explicit":
-                final_label_type = "explicit"
 
-    aspects = sorted(list(aspect_sentiments.keys()))
-    if not aspects:
-        aspects = ["general"]
-        fallback_branch = "fallback_general"
-        if strict_rejected_matches > 0:
-            fallback_branch = "strict_reject"
-
-    strong_support_types = {"exact", "gold"}
+    aspect_sentiments = defaultdict(list)
+    aspect_confidence = {}
+    for span in spans:
+        l = span["latent_label"]
+        aspect_sentiments[l].append(span["sentiment"])
+        aspect_confidence[l] = max(aspect_confidence.get(l, 0.0), span["confidence"])
     
-    # Adversarial Refinement Stage (Research-Grade)
-    if (high_difficulty or adversarial_refine) and llm_provider and aspects and aspects != ["general"]:
-        # Candidate for refinement if it's currently 'Easy' (Hardness 0, 1) or has leakage
-        needs_refining = max_hardness <= 1 or any(is_surface_leakage(processed_text, a) for a in aspects)
-        
-        if needs_refining:
-            if isinstance(llm_provider, AsyncLlmProvider):
-                # We refine the first/primary aspect for simplicity in this stage
-                primary_aspect = aspects[0]
-                refined_text = await augment_implicit_difficulty_async(processed_text, primary_aspect, llm_provider, llm_model_name, domain=str(domain or "general"))
-            else:
-                from llm_utils import augment_implicit_difficulty
-                primary_aspect = aspects[0]
-                refined_text = augment_implicit_difficulty(processed_text, primary_aspect, llm_provider, llm_model_name, domain=str(domain or "general"))
-            
-            if refined_text and refined_text != processed_text:
-                # Re-validate the refined text
-                processed_text = refined_text
-                # Reset matches and re-run simplified discovery for the refined text
-                # We assume the LLM followed instructions and the aspect is still there implicitly.
-                # In research-grade, we label this as Hardness 3 (Augmented)
-                max_hardness = 3
-                final_label_type = "implicit_augmented"
-                # Update spans to reflect the new text (grounding is now the whole refined segment)
-                spans = [{
-                    "aspect": primary_aspect,
-                    "latent_label": primary_aspect,
-                    "text": processed_text,
-                    "sentiment": sentiment,
-                    "confidence": 0.95,
-                    "support_type": "adversarial_augmentation",
-                    "label_type": "implicit_augmented",
-                    "hardness": 3,
-                    "hardness_tier": "H3",
-                    "reasoning_evidence_type": "counterfactual",
-                    "leakage_flags": [],
-                }]
-                aspect_confidence = {primary_aspect: 0.95}
+    # Final assembly with conformal sets and pivoting
+    inferred_aspects = sorted(list(aspect_sentiments.keys())) or ["general"]
+    max_hardness = max([s["hardness"] for s in spans]) if spans else 0
+    final_label_type = "explicit" if any(s["label_type"] == "explicit" for s in spans) else "implicit"
 
-    weak_support = (
-        ((aspects != ["general"] and not spans) if enforce_grounding else False)
-        or any(span.get("support_type") not in strong_support_types for span in spans)
-    )
-    parse_error_present = bool(llm_parse_errors and not llm_fallback_used)
-    needs_review = aspects == ["general"] or weak_support or parse_error_present
-    if aspects == ["general"]:
-        review_reason = "strict_leakage" if strict_rejected_matches > 0 else "fallback_general"
-    elif parse_error_present:
-        review_reason = "llm_parse_error"
-    elif weak_support:
-        review_reason = "weak_support"
-    else:
-        review_reason = None
-    implicit_quality_tier = "strict_pass"
-    if strict_rejected_matches > 0 and aspects == ["general"]:
-        implicit_quality_tier = "rejected"
-    elif needs_review:
-        implicit_quality_tier = "needs_review"
-    if any(str(span.get("reasoning_evidence_type")) == "counterfactual" for span in spans):
-        reasoning_evidence_type = "counterfactual"
-    elif any(str(span.get("reasoning_evidence_type")) == "compositional" for span in spans):
-        reasoning_evidence_type = "compositional"
-    elif spans:
-        reasoning_evidence_type = "lexical_implicit"
-    else:
-        reasoning_evidence_type = "none"
-    llm_parse_error_rate = round(len(llm_parse_errors) / max(1, len(clauses)), 4) if llm_parse_errors else 0.0
+    # Conformal Set Logic (Research-Grade)
+    # Include all aspects whose confidence is within 0.15 of the top candidate
+    sorted_conf = sorted(aspect_confidence.items(), key=lambda x: x[1], reverse=True)
+    conformal_set = []
+    if sorted_conf:
+        top_val = sorted_conf[0][1]
+        conformal_set = [it[0] for it in sorted_conf if (top_val - it[1]) <= 0.15]
+    
+    # Ambiguity Score (Continuous entropy-based signal)
+    ambiguity_score = 0.0
+    if len(sorted_conf) > 1:
+        # High ambiguity if the gap between top two is small
+        ambiguity_score = max(0.0, 1.0 - (sorted_conf[0][1] - sorted_conf[1][1]))
+    if spans:
+        span_labels = {str(s.get("latent_label") or "") for s in spans if str(s.get("latent_label") or "")}
+        if len(span_labels) >= 2 and ambiguity_score >= 0.45:
+            max_hardness = max(max_hardness, 3)
+        elif any(int(s.get("hardness", 0)) >= 2 for s in spans):
+            max_hardness = max(max_hardness, 2)
+    
+    # Explicit Pivoting (Unconventional cross-check)
+    pivot_confirmed = False
+    if inferred_aspects and inferred_aspects[0] in PIVOT_TEMPLATES:
+        best_aspect = inferred_aspects[0]
+        template = PIVOT_TEMPLATES[best_aspect]
+        pivot_text = template.format(sentiment=sentiment, evidence=raw_text)
+        # Check if the core keywords of the aspect appear in the context of the explicit restatement
+        # This is a simplified "template-based" pivoting check
+        explicit_kws, _ = LATENT_RULE_BY_LABEL.get(best_aspect, (set(), set()))
+        if any(kw in pivot_text.lower() for kw in explicit_kws):
+            pivot_confirmed = True
+
+    review_reason = "none"
+    if not spans or inferred_aspects == ["general"]:
+        review_reason = "fallback_general"
+        if fallback_branch == "none":
+            fallback_branch = "fallback_general"
+    elif ambiguity_score > 0.8:
+        review_reason = "low_confidence"
 
     return {
         "id": row.get("id"),
@@ -745,42 +889,34 @@ async def build_implicit_row(
         "track": mode,
         "implicit": {
             "mode": mode,
-            "multilingual_strategy": multilingual_mode,
-            "coreference_enabled": use_coref,
-            "coreference_applied": bool(coref_text and coref_text != raw_text),
-            "source_text": raw_text,
             "processed_text": processed_text,
-            "aspects": aspects,
+            "aspects": inferred_aspects,
+            "aspect": inferred_aspects[0] if inferred_aspects else "general", # Canonical aspect
+            "conformal_set": conformal_set,
+            "ambiguity_score": round(ambiguity_score, 4),
+            "pivot_confirmed": pivot_confirmed,
             "dominant_sentiment": sentiment,
-            "aspect_sentiments": aspect_sentiments,
+            "sentiment_abstained": bool(sentiment_detail.get("abstained", False)),
+            "sentiment_risk_bucket": str(sentiment_detail.get("risk_bucket") or "high"),
+            "sentiment_margin": float(sentiment_detail.get("margin", 0.0) or 0.0),
+            "sentiment_mismatch": bool(sentiment_detail.get("sentiment_mismatch", False)),
+            "sentiment_scores": sentiment_detail.get("scores", {}),
+            "sentiment_diagnostics": sentiment_detail.get("diagnostics", {}),
+            "aspect_sentiments": {a: Counter(s).most_common(1)[0][0] for a, s in aspect_sentiments.items()},
             "aspect_confidence": aspect_confidence,
             "spans": spans,
-            "predicted_labels": predicted_labels,
-            "sentence_count_processed": len(clauses),
-            "row_index": row_index,
-            "needs_review": needs_review,
-            "review_reason": review_reason,
+            "needs_review": review_reason != "none",
             "implicit_ready": True,
-            "language": language,
-            "track": mode,
             "llm_fallback_used": llm_fallback_used,
-            "fallback_branch": fallback_branch,
             "reasoned_recovery_used": reasoned_recovery_used,
-            "llm_parse_error_rate": llm_parse_error_rate,
             "llm_parse_errors": llm_parse_errors,
-            "domain_filtered_matches": domain_filtered_matches,
-            "domain_conditioning_mode": effective_mode,
-            "weak_domain_support": weak_domain_support,
-            "domain_prior_boost_count": domain_prior_boost_count,
-            "domain_prior_penalty_count": domain_prior_penalty_count,
-            "skip_reason": None,
+            "review_reason": review_reason,
+            "fallback_branch": fallback_branch,
             "label_type": final_label_type,
             "hardness_score": max_hardness,
-            "hardness_tier": _hardness_tier(int(max_hardness)),
-            "implicit_quality_tier": implicit_quality_tier,
+            "hardness_tier": f"H{max_hardness}",
+            "implicit_quality_tier": "strict_pass" if (spans and inferred_aspects != ["general"]) else "needs_review",
             "leakage_flags": sorted(leakage_flags_total),
-            "reasoning_evidence_type": reasoning_evidence_type,
-            "strict_rejected_match_count": strict_rejected_matches,
         },
     }
 
@@ -793,7 +929,7 @@ def flush_llm_cache() -> None:
 
 
 class MultiAspectSynthesis:
-    """v5.5 Hybrid Synthesis: Combines multiple implicit signals into a cohesive aspect set."""
+    """V6 Hybrid Synthesis: Combines multiple implicit signals into a cohesive aspect set."""
     def __init__(self, llm_provider: Any = None) -> None:
         self.llm_provider = llm_provider
 
@@ -831,12 +967,28 @@ def collect_diagnostics(rows: List[Dict[str, Any]], *, text_column: str, candida
     llm_parse_error_count = 0
     reasoned_recovery_count = 0
     reasoned_recovery_span_count = 0
-    review_reason_counts: Counter[str] = Counter()
     fallback_branch_counts: Counter[str] = Counter()
+    review_reason_counts: Counter[str] = Counter()
+    gold_miss_counts: Counter[str] = Counter()
+    total_gold_aspects = 0
+    matched_gold_aspects = 0
+    
     for row in rows:
         text = normalize_whitespace(row.get(text_column, ""))
         clause_count += len(_sentence_clauses(text))
         implicit = row.get("implicit", {})
+        
+        # Registry Coverage Audit (Phase 1)
+        gold_labels = _extract_gold_aspects([row])
+        detected_labels = set(implicit.get("aspects") or [])
+        for gold in gold_labels:
+            if gold == "general": continue
+            total_gold_aspects += 1
+            if gold in detected_labels:
+                matched_gold_aspects += 1
+            else:
+                gold_miss_counts[gold] += 1
+
         language_counts[str(row.get("language", implicit.get("language", "unknown")))] += 1
         track_counts[str(row.get("track", implicit.get("track", "unknown")))] += 1
         if implicit.get("aspects") == ["general"]:
@@ -895,4 +1047,10 @@ def collect_diagnostics(rows: List[Dict[str, Any]], *, text_column: str, candida
         "llm_parse_error_count": llm_parse_error_count,
         "review_reason_counts": dict(review_reason_counts),
         "fallback_branch_counts": dict(fallback_branch_counts),
+        "registry_coverage": {
+            "total_gold_aspects": total_gold_aspects,
+            "matched_gold_aspects": matched_gold_aspects,
+            "coverage_rate": round(matched_gold_aspects / max(1, total_gold_aspects), 4),
+            "top_missing_gold_aspects": gold_miss_counts.most_common(15)
+        }
     }

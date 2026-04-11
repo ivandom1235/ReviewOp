@@ -57,7 +57,7 @@ export default function UserHomePage() {
           <section className="mt-8">
             <h2 className="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Products You Reviewed</h2>
             <div className="grid gap-3 md:grid-cols-2">
-              {suggestions.recently_reviewed.length ? (
+              {suggestions.recently_reviewed?.length ? (
                 suggestions.recently_reviewed.map((p) => <ProductCard key={`recent-${p.product_id}`} product={p} />)
               ) : (
                 <p className="text-sm text-slate-600 dark:text-slate-300">No reviewed products yet.</p>
@@ -68,7 +68,7 @@ export default function UserHomePage() {
           <section className="mt-8">
             <h2 className="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Suggested Products</h2>
             <div className="grid gap-3 md:grid-cols-2">
-              {suggestions.similar_products.length ? (
+              {suggestions.similar_products?.length ? (
                 suggestions.similar_products.map((p) => <ProductCard key={`sim-${p.product_id}`} product={p} />)
               ) : (
                 <p className="text-sm text-slate-600 dark:text-slate-300">No suggestions available.</p>

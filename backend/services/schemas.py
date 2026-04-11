@@ -22,12 +22,50 @@ class ImplicitCandidateSchema(BaseModel):
     sentence_index: int
     domain_hint: Optional[str] = None
     support_count: Optional[int] = 1
+    decision: Optional[str] = None
+    routing: Optional[str] = None
+    ambiguity_score: Optional[float] = None
+    novelty_score: Optional[float] = None
+    decision_band: Optional[Literal["known", "boundary", "novel"]] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
+
+
+class SelectivePredictionSchema(BaseModel):
+    aspect: str
+    sentiment: str = "neutral"
+    confidence: float
+    routing: Literal["known", "novel"] = "known"
+    evidence_text: Optional[str] = None
+    evidence_span: Optional[List[int]] = None
+    decision_band: Optional[Literal["known", "boundary", "novel"]] = None
+    novelty_score: Optional[float] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
+
+
+class AbstainedPredictionSchema(BaseModel):
+    reason: str
+    confidence: float
+    ambiguity_score: float
+
+
+class NovelCandidateSchema(BaseModel):
+    aspect: str
+    novelty_score: float
+    confidence: Optional[float] = None
+    novel_cluster_id: Optional[str] = None
+    novel_alias: Optional[str] = None
+    evidence_text: Optional[str] = None
 
 
 class ImplicitPredictResponse(BaseModel):
     review_text: str
     sentences: List[str]
     implicit_predictions: List[ImplicitCandidateSchema]
+    accepted_predictions: List[SelectivePredictionSchema] = Field(default_factory=list)
+    abstained_predictions: List[AbstainedPredictionSchema] = Field(default_factory=list)
+    novel_candidates: List[NovelCandidateSchema] = Field(default_factory=list)
 
 
 class ExplicitEvidenceSpanSchema(BaseModel):

@@ -42,6 +42,16 @@ class Review(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    abstained_predictions: Mapped[list["AbstainedPrediction"]] = relationship(
+        back_populates="review",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    novel_candidates: Mapped[list["NovelCandidate"]] = relationship(
+        back_populates="review",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
 
 class Prediction(Base):
@@ -80,6 +90,35 @@ class EvidenceSpan(Base):
     snippet: Mapped[str] = mapped_column(Text, nullable=False)
 
     prediction: Mapped["Prediction"] = relationship(back_populates="evidence_spans")
+
+
+class AbstainedPrediction(Base):
+    __tablename__ = "abstained_predictions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    review_id: Mapped[int] = mapped_column(ForeignKey("reviews.id"), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(String(128), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    ambiguity_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    review: Mapped["Review"] = relationship(back_populates="abstained_predictions")
+
+
+class NovelCandidate(Base):
+    __tablename__ = "novel_candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    review_id: Mapped[int] = mapped_column(ForeignKey("reviews.id"), nullable=False, index=True)
+    aspect: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    novelty_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    review: Mapped["Review"] = relationship(back_populates="novel_candidates")
 
 
 class Job(Base):
@@ -223,6 +262,7 @@ class UserProductReview(Base):
     recommendation: Mapped[bool | None] = mapped_column(nullable=True)
     helpful_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     linked_review_id: Mapped[int | None] = mapped_column(ForeignKey("reviews.id"), nullable=True)
+    reply_to_review_id: Mapped[int | None] = mapped_column(ForeignKey("user_product_reviews.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 

@@ -1,0 +1,44 @@
+{
+  "food quality": {
+    "occurrences": 3,
+    "max_confidence": 0.9,
+    "promoted": false,
+    "aliases": []
+  },
+  "noise level": {
+    "occurrences": 2,
+    "max_confidence": 0.9,
+    "promoted": false,
+    "aliases": []
+  },
+  "value": {
+    "occurrences": 1,
+    "max_confidence": 0.9,
+    "promoted": false,
+    "aliases": []
+  },
+  "taste": {
+    "occurrences": 1,
+    "max_confidence": 0.9,
+    "promoted": false,
+    "aliases": []
+  },
+  "quality": {
+    "occurrences": 1,
+    "max_confidence": 0.9,
+    "promoted": false,
+    "aliases": []
+  },
+  "affordability": {
+    "occurrences": 1,
+    "max_confidence": 0.9,
+    "promoted": false,
+    "aliases": []
+  },
+  "service": {
+    "occurrences": 1,
+    "max_confidence": 0.95,
+    "promoted": false,
+    "aliases": []
+  }
+}

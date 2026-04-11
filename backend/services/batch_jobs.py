@@ -8,7 +8,6 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from models.tables import Job, JobItem, Review, Prediction, EvidenceSpan
-from services.parse_output import parse_lines
 from services.evidence import find_evidence_for_aspect
 from services.seq2seq_infer import Seq2SeqEngine
 from services.open_aspect import extract_open_aspects

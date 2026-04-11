@@ -12,6 +12,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from spacy.language import Language
 from spacy.tokens import Doc, Span, Token
 
+from core.config import settings
+
 ARTICLE_PREFIX_RE = re.compile(r"^(the|a|an|this|that|these|those)\s+", flags=re.I)
 TRAILING_PUNCT_RE = re.compile(r"[^\w\s\-]+$")
 ALPHA_RE = re.compile(r"[a-zA-Z]")
@@ -151,12 +153,25 @@ def _valid_phrase(phrase: str) -> bool:
 
 @lru_cache(maxsize=1)
 def _nlp() -> Language:
-    return spacy.load("en_core_web_sm")
+    try:
+        return spacy.load("en_core_web_sm")
+    except OSError as exc:
+        raise RuntimeError(
+            "spaCy model 'en_core_web_sm' is required for open aspect extraction but is not installed."
+        ) from exc
+
+
+def open_aspect_model_status() -> dict[str, str | bool]:
+    try:
+        _nlp()
+    except RuntimeError as exc:
+        return {"available": False, "model": "en_core_web_sm", "error": str(exc)}
+    return {"available": True, "model": "en_core_web_sm"}
 
 
 @lru_cache(maxsize=1)
 def _embedder() -> SentenceTransformer:
-    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    return SentenceTransformer(settings.open_aspect_model_name, local_files_only=True)
 
 
 def _span_text(span: Span) -> str:

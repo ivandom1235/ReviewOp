@@ -31,6 +31,22 @@ def _normalize_sentiment(value: Any, fallback: str = "neutral") -> str:
     return sentiment or fallback
 
 
+def _normalize_evidence_span(evidence_span: Any, review_text: str, evidence_text: str) -> tuple[list[int], bool]:
+    if isinstance(evidence_span, list) and len(evidence_span) == 2:
+        try:
+            start = int(evidence_span[0] if evidence_span[0] is not None else -1)
+            end = int(evidence_span[1] if evidence_span[1] is not None else -1)
+            if 0 <= start <= end <= len(review_text):
+                return [start, end], False
+        except (TypeError, ValueError):
+            pass
+    if evidence_text and review_text:
+        start = review_text.lower().find(evidence_text.lower())
+        if start >= 0:
+            return [int(start), int(start + len(evidence_text))], True
+    return [-1, -1], True
+
+
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
@@ -68,89 +84,148 @@ def read_split_rows(path: Path, *, progress_enabled: bool) -> List[Dict[str, Any
     return list(track(rows, total=len(rows), desc=f"load:{path.stem}", enabled=progress_enabled))
 
 
-def validate_reviewlevel_rows(rows: List[Dict[str, Any]], split: str) -> None:
-    for index, row in enumerate(rows):
-        labels = row.get("labels")
-        if (labels is None or not isinstance(labels, list) or not labels) and isinstance(row.get("implicit"), dict):
-            implicit = row.get("implicit", {})
-            labels = [
-                {
-                    "aspect": aspect,
-                    "implicit_aspect": aspect,
-                    "sentiment": _normalize_sentiment(
-                        implicit.get("aspect_sentiments", {}).get(aspect, implicit.get("dominant_sentiment", "neutral"))
-                    ),
-                    "confidence": float(implicit.get("aspect_confidence", {}).get(aspect, implicit.get("avg_confidence", 0.5))),
-                    "evidence_sentence": row.get("source_text", row.get("review_text", "")),
-                }
-                for aspect in implicit.get("aspects", []) or []
-            ]
-            row["labels"] = labels
-        if "labels" not in row or not isinstance(row["labels"], list) or not row["labels"]:
-            raise ValueError(f"reviewlevel row {index} in split {split} has no labels")
-        for label in row["labels"]:
-            if isinstance(label, dict):
-                label["sentiment"] = _normalize_sentiment(label.get("sentiment"))
-        if not row.get("review_text") and not row.get("clean_text") and not row.get("source_text"):
-            raise ValueError(f"reviewlevel row {index} in split {split} is missing review text")
-        if row.get("split") and str(row["split"]).lower() != split:
-            raise ValueError(f"reviewlevel row {index} in split {split} declares split {row['split']}")
+def _label_from_interpretation(
+    instance_id: str,
+    review_text: str,
+    domain: str,
+    interp: Dict[str, Any],
+    split: str,
+    idx: int,
+    gold_joint_labels: List[str],
+    split_protocol: Dict[str, Any],
+    ambiguity_score: float,
+    abstain_acceptable: bool,
+    ambiguity_type: str | None,
+    novel_acceptable: bool,
+    novel_cluster_id: str | None,
+    novel_alias: str | None,
+    novel_evidence_text: str | None,
+) -> Dict[str, Any]:
+    sentiment = _normalize_sentiment(interp.get("sentiment"))
+    evidence_text = str(interp.get("evidence_text") or "").strip()
+    if not evidence_text:
+        evidence_text = review_text
+    evidence_span, evidence_fallback_used = _normalize_evidence_span(interp.get("evidence_span"), review_text, evidence_text)
+    return {
+        "example_id": f"{instance_id}_g{idx}",
+        "parent_review_id": instance_id,
+        "review_text": review_text,
+        "evidence_sentence": evidence_text,
+        "evidence_text": evidence_text,
+        "evidence_span": evidence_span,
+        "evidence_fallback_used": evidence_fallback_used or evidence_span == [-1, -1],
+        "domain": domain,
+        "domain_family": str(interp.get("domain_family") or ""),
+        "group_id": str(interp.get("group_id") or ""),
+        "hardness_tier": str(interp.get("hardness_tier") or "H0"),
+        "annotation_source": str(interp.get("annotation_source") or "unknown"),
+        "aspect": str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip(),
+        "implicit_aspect": str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip(),
+        "sentiment": sentiment,
+        "label_type": "implicit",
+        "confidence": float(interp.get("annotator_support", 1)),
+        "split": split,
+        "abstain_acceptable": bool(abstain_acceptable),
+        "ambiguity_type": str(ambiguity_type or "").strip() or None,
+        "novel_acceptable": bool(novel_acceptable),
+        "novel_cluster_id": str(novel_cluster_id or "").strip() or None,
+        "novel_alias": str(novel_alias or "").strip() or None,
+        "novel_evidence_text": str(novel_evidence_text or "").strip() or None,
+        "gold_joint_labels": gold_joint_labels,
+        "split_protocol": split_protocol,
+        "benchmark_ambiguity_score": float(ambiguity_score),
+    }
 
 
-def validate_episodic_rows(rows: List[Dict[str, Any]], split: str) -> str:
+def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> str:
     if not rows:
-        raise ValueError(f"No episodic rows found for split {split}")
-    first = rows[0]
-    if "implicit" in first and isinstance(first.get("implicit"), dict):
-        expanded: List[Dict[str, Any]] = []
-        for row in rows:
-            implicit = row.get("implicit", {})
-            for idx, aspect in enumerate(implicit.get("aspects", []) or [], start=1):
-                expanded.append(
-                    {
-                        "example_id": f"{row.get('id')}_e{idx}",
-                        "parent_review_id": row.get("id"),
-                        "review_text": row.get("source_text", row.get("review_text", "")),
-                        "evidence_sentence": row.get("source_text", row.get("review_text", "")),
-                        "domain": row.get("domain", "unknown"),
-                        "aspect": aspect,
-                        "implicit_aspect": aspect,
-                        "sentiment": _normalize_sentiment(
-                            implicit.get("aspect_sentiments", {}).get(aspect, implicit.get("dominant_sentiment", "neutral"))
-                        ),
-                        "label_type": "implicit",
-                        "confidence": float(implicit.get("aspect_confidence", {}).get(aspect, implicit.get("avg_confidence", 0.5))),
-                        "split": row.get("split", split),
-                    }
-                )
-        rows[:] = expanded
-        return "examples"
-    if "support_set" in first and "query_set" in first:
-        for index, row in enumerate(rows):
-            if not isinstance(row.get("support_set"), list) or not isinstance(row.get("query_set"), list):
-                raise ValueError(f"episode row {index} in split {split} has invalid support/query sets")
-        return "episodes"
-    required = {"example_id", "parent_review_id", "review_text", "aspect", "sentiment"}
+        raise ValueError(f"No benchmark rows found for split {split}")
+    expanded: List[Dict[str, Any]] = []
+    evidence_fallback_counter = 0
+    novel_counter = 0
+    abstain_counter = 0
     for index, row in enumerate(rows):
-        missing = sorted(required - set(row))
-        if missing:
-            raise ValueError(f"episodic row {index} in split {split} is missing fields: {missing}")
-        if row.get("split") and str(row["split"]).lower() != split:
-            raise ValueError(f"episodic row {index} in split {split} declares split {row['split']}")
-    return "examples"
+        instance_id = str(row.get("instance_id") or "").strip()
+        review_text = str(row.get("review_text") or "").strip()
+        domain = str(row.get("domain") or "unknown")
+        if not instance_id or not review_text:
+            raise ValueError(f"benchmark row {index} in split {split} is missing instance_id/review_text")
+        interpretations = row.get("gold_interpretations")
+        if not isinstance(interpretations, list) or not interpretations:
+            raise ValueError(f"benchmark row {index} in split {split} has no gold_interpretations")
+        split_protocol = row.get("split_protocol") if isinstance(row.get("split_protocol"), dict) else {}
+        if "grouped" not in split_protocol and "source_holdout" in split_protocol:
+            split_protocol["grouped"] = split_protocol.get("source_holdout")
+        ambiguity_score = float(row.get("ambiguity_score", 0.0))
+        abstain_acceptable = bool(row.get("abstain_acceptable", False))
+        novel_acceptable = bool(row.get("novel_acceptable", False))
+        novel_cluster_id = str(row.get("novel_cluster_id") or "").strip() or None
+        novel_alias = str(row.get("novel_alias") or "").strip() or None
+        novel_evidence_text = str(row.get("novel_evidence_text") or "").strip() or None
+        group_id = str(row.get("group_id") or "").strip()
+        domain_family = str(row.get("domain_family") or "").strip()
+        hardness_tier = str(row.get("hardness_tier") or "H0").strip().upper()
+        annotation_source = str(row.get("annotation_source") or "unknown").strip()
+        if novel_acceptable:
+            novel_counter += 1
+        if abstain_acceptable:
+            abstain_counter += 1
+        gold_joint_labels = []
+        for interp in interpretations:
+            if not isinstance(interp, dict):
+                continue
+            aspect = str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip()
+            sentiment = _normalize_sentiment(interp.get("sentiment"))
+            gold_joint_labels.append(f"{aspect}__{sentiment}")
+        for interp_idx, interp in enumerate(interpretations, start=1):
+            if not isinstance(interp, dict):
+                continue
+            payload = {
+                **interp,
+                "group_id": group_id,
+                "domain_family": domain_family,
+                "hardness_tier": hardness_tier,
+                "annotation_source": annotation_source,
+            }
+            built = _label_from_interpretation(
+                instance_id,
+                review_text,
+                domain,
+                payload,
+                split,
+                interp_idx,
+                gold_joint_labels,
+                split_protocol,
+                ambiguity_score,
+                abstain_acceptable,
+                str(interp.get("ambiguity_type") or "").strip() or None,
+                novel_acceptable,
+                novel_cluster_id,
+                novel_alias,
+                novel_evidence_text,
+            )
+            if bool(built.get("evidence_fallback_used", False)):
+                evidence_fallback_counter += 1
+            expanded.append(built)
+    rows[:] = expanded
+    if split in {"val", "test"} and novel_counter == 0:
+        print(f"[warn] {split} split contains zero novel positives; novelty calibration/eval will be limited.")
+    if split in {"val", "test"} and abstain_counter == 0:
+        print(f"[warn] {split} split contains zero abstain-acceptable rows; abstention eval will be limited.")
+    if evidence_fallback_counter > 0:
+        print(f"[warn] {split} split required evidence span fallback for {evidence_fallback_counter} examples.")
+    return "benchmark_examples"
 
 
 def load_input_dataset(cfg: ProtonetConfig) -> tuple[Dict[str, List[Dict[str, Any]]], DatasetSummary]:
+    if cfg.input_type != "benchmark":
+        raise ValueError("V6 runtime only supports input_type='benchmark'")
     rows_by_split: Dict[str, List[Dict[str, Any]]] = {}
     detected_format = "unknown"
     for split in VALID_SPLITS:
         path = split_file(cfg.input_dir, split)
         rows = read_split_rows(path, progress_enabled=cfg.progress_enabled)
-        if cfg.input_type == "reviewlevel":
-            validate_reviewlevel_rows(rows, split)
-            detected_format = "reviewlevel"
-        else:
-            detected_format = validate_episodic_rows(rows, split)
+        detected_format = validate_benchmark_rows(rows, split)
         rows_by_split[split] = rows
     summary = DatasetSummary(
         split_sizes={split: len(rows) for split, rows in rows_by_split.items()},

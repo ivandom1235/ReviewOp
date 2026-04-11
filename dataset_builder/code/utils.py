@@ -8,6 +8,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Iterable
+from zipfile import ZIP_DEFLATED, ZipFile
 
 
 WHITESPACE_RE = re.compile(r"\s+")
@@ -49,13 +50,15 @@ def to_jsonable(value: Any) -> Any:
         return to_jsonable(asdict(value))
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, (set, frozenset)):
+        return sorted([to_jsonable(item) for item in value])
     if isinstance(value, dict):
         return {str(k): to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [to_jsonable(item) for item in value]
-    if isinstance(value, tuple):
-        return [to_jsonable(item) for item in value]
-    return value
+    if isinstance(value, (int, float, str, bool, type(None))):
+        return value
+    return str(value)
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -93,3 +96,37 @@ def compress_output_folder(output_dir: Path) -> Path | None:
     
     archive_path = shutil.make_archive(str(zip_target), "zip", output_dir)
     return Path(archive_path)
+
+
+def compress_dataset_artifacts(output_dir: Path) -> Path | None:
+    """
+    Compress train/val/test benchmark files + reports into output/zip.
+    Returns the generated zip path, or None when no expected files exist.
+    """
+    benchmark_dir = output_dir / "benchmark" / "ambiguity_grounded"
+    reports_dir = output_dir / "reports"
+    zip_root = output_dir / "zip"
+
+    files_to_pack = [
+        benchmark_dir / "train.jsonl",
+        benchmark_dir / "val.jsonl",
+        benchmark_dir / "test.jsonl",
+        benchmark_dir / "metadata.json",
+        benchmark_dir / "review_queue.jsonl",
+        reports_dir / "build_report.json",
+        reports_dir / "data_quality_report.json",
+        reports_dir / "benchmark_v2_novelty_report.json",
+        reports_dir / "research_manifest.json",
+    ]
+    existing_files = [path for path in files_to_pack if path.exists()]
+    if not existing_files:
+        return None
+
+    zip_root.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_path = zip_root / f"dataset_artifacts_{timestamp}.zip"
+
+    with ZipFile(zip_path, mode="w", compression=ZIP_DEFLATED) as archive:
+        for file_path in existing_files:
+            archive.write(file_path, arcname=file_path.name)
+    return zip_path
