@@ -9,6 +9,8 @@ export default function MyReviewsPage() {
   const nav = useNavigate();
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   useEffect(() => {
     getMyReviews(token).then(setRows).catch((ex) => setError(ex.message || "Failed to load reviews"));
@@ -43,11 +45,28 @@ export default function MyReviewsPage() {
     });
   }
 
+  const visibleRows = rows.filter((row) => {
+    const text = `${row.product_id} ${row.review_title || ""} ${row.review_text || ""}`.toLowerCase();
+    const matchesQuery = !query || text.includes(query.toLowerCase());
+    const status = row.is_reply ? "reply" : row.recommendation ? "recommend" : "review";
+    const matchesStatus = statusFilter === "all" || statusFilter === status;
+    return matchesQuery && matchesStatus;
+  });
+
   return (
     <UserShell title="My Reviews">
       {error ? <div className="mb-4 rounded-lg bg-red-100 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-200">{error}</div> : null}
+      <div className="mb-4 flex flex-wrap gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search your reviews" className="min-w-[220px] flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" />
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
+          <option value="all">All statuses</option>
+          <option value="review">Reviews</option>
+          <option value="reply">Replies</option>
+          <option value="recommend">Recommended</option>
+        </select>
+      </div>
       <div className="space-y-3">
-        {rows.map((r) => (
+        {visibleRows.map((r) => (
           <article key={r.review_id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between">
               <div>
@@ -57,7 +76,13 @@ export default function MyReviewsPage() {
                 ) : null}
                 <p className="text-xs text-slate-500 dark:text-slate-300">{new Date(r.review_date).toLocaleString()}</p>
               </div>
-              <div className="text-amber-600">{r.rating} {"\u2605"}</div>
+              <div className="flex flex-col items-end gap-1">
+                <div className="text-amber-600">{r.rating} {"\u2605"}</div>
+                <div className="flex gap-2 text-[11px]">
+                  <span className={`rounded-full px-2 py-1 ${r.is_reply ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-200" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200"}`}>{r.is_reply ? "Reply" : "Review"}</span>
+                  <span className={`rounded-full px-2 py-1 ${r.recommendation ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-200" : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-200"}`}>{r.recommendation ? "Recommended" : "Not recommended"}</span>
+                </div>
+              </div>
             </div>
             {r.review_title ? <h3 className="mt-2 font-medium text-slate-900 dark:text-slate-100">{r.review_title}</h3> : null}
             <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{r.review_text}</p>
@@ -71,7 +96,7 @@ export default function MyReviewsPage() {
             </div>
           </article>
         ))}
-        {!rows.length && !error ? <p className="text-sm text-slate-600 dark:text-slate-300">No reviews found.</p> : null}
+        {!visibleRows.length && !error ? <p className="text-sm text-slate-600 dark:text-slate-300">No reviews found.</p> : null}
       </div>
     </UserShell>
   );

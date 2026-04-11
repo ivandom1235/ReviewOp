@@ -53,7 +53,13 @@ def _env_value(*names: str, default: str | None = None) -> str | None:
 def resolve_bundle_path(bundle_path: str | Path | None = None) -> Path:
     env_path = _env_value("REVIEWOP_PROTONET_BUNDLE_PATH", "PROTONET_BUNDLE_PATH")
     candidate = bundle_path or env_path or DEFAULT_BUNDLE_PATH
-    return Path(candidate)
+    path = Path(candidate)
+    if path.is_absolute():
+        return path
+    repo_relative = PROJECT_ROOT / path
+    if repo_relative.exists():
+        return repo_relative
+    return path
 
 
 @lru_cache(maxsize=2)

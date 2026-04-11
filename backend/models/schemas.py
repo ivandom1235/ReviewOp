@@ -382,6 +382,7 @@ class ProductReviewOut(BaseModel):
     review_text: str
     review_date: str
     helpful_count: int = 0
+    recommendation: Optional[bool] = None
     aspects: List[AspectSummaryOut] = Field(default_factory=list)
     reply_to_review_id: Optional[int] = None
     reply_to_review_title: Optional[str] = None

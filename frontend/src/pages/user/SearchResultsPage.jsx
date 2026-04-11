@@ -4,6 +4,14 @@ import { searchProducts } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
 import ProductCard from "../../components/user/ProductCard";
 import UserShell from "../../components/user/UserShell";
+import {
+  DEFAULT_SEARCH_MIN_RATING,
+  DEFAULT_SEARCH_SORT,
+  getSearchState,
+  hasSearchFilters,
+  resetSearchResultsState,
+  updateSearchParams,
+} from "./searchState";
 
 const SORT_OPTIONS = [
   { value: "most_recent", label: "Most Recent" },
@@ -20,29 +28,31 @@ export default function SearchResultsPage() {
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
-  const q = params.get("q") || "";
-  const minRating = Number(params.get("min_rating") ?? "0");
-  const sort = params.get("sort") || "most_recent";
+  const { q, minRating, sort } = getSearchState(params);
   const limit = 10;
+  const hasActiveFilters = hasSearchFilters({ q, minRating, sort });
 
   // Local state for the search input to allow debouncing
   const [searchInput, setSearchInput] = useState(q);
 
-  function updateParams(next) {
-    const current = new URLSearchParams(params);
-    Object.entries(next).forEach(([key, value]) => {
-      if (value === "" || value == null) {
-        current.delete(key);
-      } else {
-        current.set(key, String(value));
-      }
-    });
-    setParams(current, { replace: true });
+  function commitParams(next) {
+    setParams(updateSearchParams(params, next), { replace: true });
+  }
+
+  function resetFilters() {
+    const resetState = resetSearchResultsState();
+    setError(resetState.error);
+    setRows(resetState.rows);
+    setHasMore(resetState.hasMore);
+    setSearchInput(resetState.searchInput);
+    setParams(new URLSearchParams(), { replace: true });
   }
 
   useEffect(() => {
     // Reset when keywords or filters change
     setError("");
+    setRows([]);
+    setHasMore(true);
     setLoading(true);
     searchProducts(token, { q, min_rating: minRating, sort, offset: 0 })
       .then((data) => {
@@ -61,11 +71,11 @@ export default function SearchResultsPage() {
   useEffect(() => {
       const handler = setTimeout(() => {
         if (searchInput !== q) {
-          updateParams({ q: searchInput, min_rating: String(minRating), sort });
+          commitParams({ q: searchInput, min_rating: String(minRating), sort });
         }
       }, 400);
     return () => clearTimeout(handler);
-  }, [searchInput, q, minRating, sort, setParams]);
+  }, [searchInput, q, minRating, sort, params, setParams]);
 
   async function handleLoadMore() {
     if (loading || !hasMore) return;
@@ -83,7 +93,7 @@ export default function SearchResultsPage() {
 
   return (
     <UserShell title="Search Results">
-      <div className="flex flex-wrap gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
         <div className="relative flex-1 min-w-[220px]">
           <input
             value={searchInput}
@@ -95,17 +105,28 @@ export default function SearchResultsPage() {
             <div className="absolute right-3 top-2.5 h-4 w-4 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent"></div>
           )}
         </div>
-        <select value={minRating} onChange={(e) => updateParams({ q, min_rating: e.target.value, sort })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
-          <option value={4}>4 stars and above</option>
-          <option value={3}>3 stars and above</option>
-          <option value={2}>2 stars and above</option>
-          <option value={1}>1 star and above</option>
-        </select>
-        <select value={sort} onChange={(e) => updateParams({ q, min_rating: String(minRating), sort: e.target.value })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
-          {SORT_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-        </select>
+        <div className="flex flex-wrap gap-3">
+          <select value={minRating} onChange={(e) => commitParams({ q, min_rating: e.target.value, sort })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
+            <option value={DEFAULT_SEARCH_MIN_RATING}>All ratings</option>
+            <option value={4}>4 stars and above</option>
+            <option value={3}>3 stars and above</option>
+            <option value={2}>2 stars and above</option>
+            <option value={1}>1 star and above</option>
+          </select>
+          <select value={sort} onChange={(e) => commitParams({ q, min_rating: String(minRating), sort: e.target.value })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
+            {SORT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={resetFilters}
+            disabled={!hasActiveFilters && searchInput === ""}
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            Reset
+          </button>
+        </div>
       </div>
 
       {loading && !rows.length ? (

@@ -4,6 +4,16 @@ import { getProductDetail, getProductReviews, submitReview } from "../../api/cli
 import { useAuth } from "../../auth/AuthContext";
 import UserShell from "../../components/user/UserShell";
 
+const DRAFT_KEY = "reviewop-give-review-draft";
+
+function loadDraft() {
+  try {
+    return JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
+
 export default function GiveReviewPage() {
   const { token } = useAuth();
   const nav = useNavigate();
@@ -12,18 +22,33 @@ export default function GiveReviewPage() {
 
   const replyToReviewId = Number(params.get("reply_to_review_id") || location.state?.replyToReviewId || 0);
   const productId = params.get("product_id") || location.state?.productId || "";
+  const draft = loadDraft();
   const [productName, setProductName] = useState(location.state?.productName || "");
   const [parentReview, setParentReview] = useState(location.state?.parentReview || null);
-  const [rating, setRating] = useState(5);
-  const [reviewTitle, setReviewTitle] = useState("");
-  const [reviewText, setReviewText] = useState("");
-  const [pros, setPros] = useState("");
-  const [cons, setCons] = useState("");
-  const [recommendation, setRecommendation] = useState(false);
+  const [rating, setRating] = useState(draft?.rating ?? 5);
+  const [reviewTitle, setReviewTitle] = useState(draft?.reviewTitle ?? "");
+  const [reviewText, setReviewText] = useState(draft?.reviewText ?? "");
+  const [pros, setPros] = useState(draft?.pros ?? "");
+  const [cons, setCons] = useState(draft?.cons ?? "");
+  const [recommendation, setRecommendation] = useState(draft?.recommendation ?? false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const ready = useMemo(() => Boolean(replyToReviewId && productId), [replyToReviewId, productId]);
+
+  useEffect(() => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        rating,
+        reviewTitle,
+        reviewText,
+        pros,
+        cons,
+        recommendation,
+      }),
+    );
+  }, [rating, reviewTitle, reviewText, pros, cons, recommendation]);
 
   useEffect(() => {
     if (!ready) return;
@@ -67,6 +92,7 @@ export default function GiveReviewPage() {
         cons: cons || null,
         recommendation,
       });
+      localStorage.removeItem(DRAFT_KEY);
       nav(`/products/${encodeURIComponent(productId)}`);
     } catch (ex) {
       setError(ex.message || "Submit failed");
@@ -76,7 +102,7 @@ export default function GiveReviewPage() {
   }
 
   return (
-    <UserShell title="Give Review">
+    <UserShell title="Reply to Review">
       <form onSubmit={onSubmit} className="mx-auto w-full max-w-3xl space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
         {error ? <div className="rounded-lg bg-red-100 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-200">{error}</div> : null}
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
@@ -88,9 +114,20 @@ export default function GiveReviewPage() {
             Back to product
           </Link>
         </div>
-        <div className="grid gap-3 md:grid-cols-2">
-          <input value={productName} disabled className="w-full rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" />
-          <input value={productId} disabled className="w-full rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" />
+        <div className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 text-sm dark:border-slate-700 dark:bg-slate-950/40">
+          <div className="grid gap-1 md:grid-cols-2">
+            <div>
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Product name</p>
+              <p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{productName || "Unknown product"}</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Product ID</p>
+              <p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{productId || "Unknown"}</p>
+            </div>
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            These details are locked to the review you selected. Use the fields below only for your reply content.
+          </p>
         </div>
         <select value={rating} onChange={(e) => setRating(Number(e.target.value))} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
           <option value={5}>5 stars</option>
@@ -108,7 +145,7 @@ export default function GiveReviewPage() {
           I recommend this product
         </label>
         <button disabled={loading} className="rounded-lg bg-indigo-600 px-4 py-2 text-white disabled:opacity-60">
-          {loading ? "Submitting..." : "Submit Reply"}
+          {loading ? "Submitting..." : "Post Reply"}
         </button>
       </form>
     </UserShell>

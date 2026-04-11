@@ -5,7 +5,7 @@ try {
   await build({
     configFile: false,
     esbuild: {
-      include: /\.js$/,
+      include: /\.[jt]sx?$/,
     },
     resolve: {
       preserveSymlinks: true,

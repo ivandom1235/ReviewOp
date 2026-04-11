@@ -26,6 +26,9 @@ export default function UserShell({ children, title = "ReviewOps User Portal" })
               <Link to="/" className={`rounded-lg px-3 py-1.5 ${location.pathname === "/" ? "bg-emerald-500 text-slate-950" : isDark ? "text-slate-300" : "text-slate-600"}`}>
                 Home
               </Link>
+              <Link to="/search" className={`rounded-lg px-3 py-1.5 ${location.pathname === "/search" ? "bg-emerald-500 text-slate-950" : isDark ? "text-slate-300" : "text-slate-600"}`}>
+                Search
+              </Link>
               <Link to="/create-review" className={`rounded-lg px-3 py-1.5 ${location.pathname === "/create-review" ? "bg-emerald-500 text-slate-950" : isDark ? "text-slate-300" : "text-slate-600"}`}>
                 Create Review
               </Link>

@@ -12,12 +12,13 @@ function Stat({ label, value, isDark }) {
 export default function Dashboard({ kpis, alerts, leaderboardRows, impactRows = [], segmentRows = [], weeklySummary, isDark, onSeeMoreAlerts }) {
   return (
     <section className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <Stat label="Total Reviews" value={kpis?.total_reviews ?? "-"} isDark={isDark} />
         <Stat label="Total Aspects" value={kpis?.total_aspects ?? "-"} isDark={isDark} />
         <Stat label="Most Negative" value={kpis?.most_negative_aspect ?? "-"} isDark={isDark} />
         <Stat label="% Negative" value={kpis ? `${kpis.negative_sentiment_pct}%` : "-"} isDark={isDark} />
         <Stat label="Emerging Issues" value={kpis?.emerging_issues_count ?? 0} isDark={isDark} />
+        <Stat label="Alerts This Week" value={weeklySummary?.emerging_count ?? alerts?.length ?? 0} isDark={isDark} />
       </div>
       <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
         <h3 className="mb-2 text-lg font-semibold">Weekly Summary</h3>
@@ -27,6 +28,7 @@ export default function Dashboard({ kpis, alerts, leaderboardRows, impactRows = 
             <p className="mt-1">Top Drivers: {(weeklySummary.top_drivers || []).join(", ") || "-"}</p>
             <p>Biggest Increase: {weeklySummary.biggest_increase_aspect || "-"} ({Number(weeklySummary.biggest_increase_pct || 0).toFixed(1)}%)</p>
             <p>Emerging Issues: {weeklySummary.emerging_count || 0}</p>
+            <p className="mt-2 text-xs opacity-70">Summary is evidence-gated and intended for operational review, not narrative reporting.</p>
           </div>
         ) : (
           <p className={`text-sm ${isDark ? "text-slate-400" : "text-slate-500"}`}>No summary available.</p>
@@ -48,7 +50,11 @@ export default function Dashboard({ kpis, alerts, leaderboardRows, impactRows = 
           {(alerts || []).length ? (
             alerts.slice(0, 10).map((a, idx) => (
               <div key={`${a.aspect}-${idx}`} className={`rounded-lg p-3 text-sm ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
-                [{a.severity}] {a.message}
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-semibold">[{a.severity}] {a.aspect}</span>
+                  <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[11px] text-slate-700 dark:bg-slate-800 dark:text-slate-200">{a.status || "Open"}</span>
+                </div>
+                <p className="mt-1">{a.message}</p>
               </div>
             ))
           ) : (
@@ -70,11 +76,8 @@ export default function Dashboard({ kpis, alerts, leaderboardRows, impactRows = 
             { field: "positive_pct", headerName: "Positive %", type: "number", flex: 0.6, minWidth: 100 },
             { field: "neutral_pct", headerName: "Neutral %", type: "number", flex: 0.6, minWidth: 100 },
             { field: "negative_pct", headerName: "Negative %", type: "number", flex: 0.6, minWidth: 100 },
-            { field: "negative_ci_low", headerName: "Neg CI Low", type: "number", flex: 0.6, minWidth: 100 },
-            { field: "negative_ci_high", headerName: "Neg CI High", type: "number", flex: 0.6, minWidth: 100 },
             { field: "net_sentiment", headerName: "Net Sent", type: "number", flex: 0.6, minWidth: 100 },
             { field: "change_vs_previous_period", headerName: "Change %", type: "number", flex: 0.6, minWidth: 100 },
-            { field: "change_7d_vs_prev_7d", headerName: "7d vs prev 7d %", type: "number", flex: 0.8, minWidth: 130 },
             { field: "implicit_pct", headerName: "Implicit %", type: "number", flex: 0.6, minWidth: 100 },
           ]}
         />

@@ -206,6 +206,16 @@ def _apply_cached_product_delta(
         product.cached_latest_review_at = latest_review_at
 
 
+def _lock_reply_context(
+    clean_product_id: str,
+    clean_product_name: str,
+    parent_review: UserProductReview | None,
+) -> tuple[str, str]:
+    if parent_review is None:
+        return clean_product_id, clean_product_name
+    return parent_review.product_id, parent_review.title or parent_review.product_id
+
+
 @router.get("/products/suggestions", response_model=ProductSuggestionOut)
 def product_suggestions(
     current: User = Depends(require_user),
@@ -449,9 +459,7 @@ def submit_review(
         parent_review = db.query(UserProductReview).filter(UserProductReview.id == int(reply_to_review_id)).first()
         if not parent_review:
             raise HTTPException(status_code=404, detail="parent review not found")
-        clean_product_id = parent_review.product_id
-        if not clean_product_name:
-            clean_product_name = parent_review.title or parent_review.product_id
+        clean_product_id, clean_product_name = _lock_reply_context(clean_product_id, clean_product_name, parent_review)
 
     product = db.query(ProductCatalog).filter(ProductCatalog.product_id == clean_product_id).first()
     if not product:
@@ -543,6 +551,7 @@ def my_reviews(
             review_text=row.review_text,
             review_date=row.created_at.isoformat(),
             helpful_count=row.helpful_count,
+            recommendation=row.recommendation,
             aspects=preds_by_id.get(row.linked_review_id, [])[:6],
             reply_to_review_id=row.reply_to_review_id,
             is_reply=bool(row.reply_to_review_id),
