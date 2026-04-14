@@ -1,0 +1,8 @@
+{
+  "timeliness": {
+    "occurrences": 5,
+    "max_confidence": 0.95,
+    "promoted": true,
+    "aliases": []
+  }
+}

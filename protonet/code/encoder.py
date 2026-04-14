@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import nullcontext
 from typing import Dict, List
 
 import torch
@@ -130,29 +131,39 @@ class HybridTextEncoder(nn.Module):
             self.hidden_size = cfg.bow_dim
 
     def encode(self, texts: List[str]) -> torch.Tensor:
-        # Check cache first for massive ProtoNet speedup
+        # Check cache first for massive ProtoNet speedup.
+        device = self.cfg.device
+        use_cache = not self.trainable
+        use_grad = self.trainable and torch.is_grad_enabled()
         results = [None] * len(texts)
         to_encode_indices = []
         to_encode_texts = []
         
         for i, text in enumerate(texts):
-            if text in self._cache:
+            if use_cache and text in self._cache:
                 cached = self._cache.pop(text)
                 self._cache[text] = cached
-                results[i] = cached.to(self.cfg.device)
+                results[i] = cached.to(device)
             else:
                 to_encode_indices.append(i)
                 to_encode_texts.append(text)
-        
+
         if to_encode_texts:
-            encoded_tensors = self._encode_transformer(to_encode_texts) if self.backend == "transformer" else self._encode_bow(to_encode_texts)
+            context = nullcontext() if use_grad else torch.inference_mode()
+            with context:
+                encoded_tensors = (
+                    self._encode_transformer(to_encode_texts)
+                    if self.backend == "transformer"
+                    else self._encode_bow(to_encode_texts)
+                )
             for idx, i in enumerate(to_encode_indices):
-                # We store on CPU to avoid OOM for large caches, moving to device on hit
-                self._cache[to_encode_texts[idx]] = encoded_tensors[idx].detach().cpu()
-                if len(self._cache) > int(self.cfg.runtime_cache_max_items):
-                    self._cache.popitem(last=False)
+                # We store on CPU to avoid OOM for large caches, moving to device on hit.
+                if use_cache:
+                    self._cache[to_encode_texts[idx]] = encoded_tensors[idx].detach().cpu()
+                    if len(self._cache) > int(self.cfg.runtime_cache_max_items):
+                        self._cache.popitem(last=False)
                 results[i] = encoded_tensors[idx]
-                
+
         return torch.stack(results)
 
     def _encode_bow(self, texts: List[str]) -> torch.Tensor:
@@ -163,6 +174,7 @@ class HybridTextEncoder(nn.Module):
 
     def _encode_transformer(self, texts: List[str]) -> torch.Tensor:
         assert self.tokenizer is not None and self.model is not None
+        device = self.cfg.device
         encoded = self.tokenizer(
             texts,
             padding=True,
@@ -170,36 +182,36 @@ class HybridTextEncoder(nn.Module):
             max_length=self.cfg.max_length,
             return_tensors="pt",
         )
-        encoded = {key: value.to(self.cfg.device) for key, value in encoded.items()}
-        
-        device_type = self.cfg.device.type
+        encoded = {key: value.to(device) for key, value in encoded.items()}
+
+        device_type = device.type
         use_amp = self.cfg.use_amp and device_type == "cuda"
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        
+
         with torch.autocast(device_type=device_type, dtype=amp_dtype, enabled=use_amp):
             outputs = self.model(**encoded)
             hidden = outputs.last_hidden_state
-            
-        attention_mask = encoded["attention_mask"].to(self.cfg.device)
+
+        attention_mask = encoded["attention_mask"]
         start_id = self.tokenizer.convert_tokens_to_ids("[E_START]")
         end_id = self.tokenizer.convert_tokens_to_ids("[E_END]")
 
         # Vectorized evidence-aware pooling
-        input_ids = encoded["input_ids"].to(self.cfg.device)
+        input_ids = encoded["input_ids"]
         start_mask = (input_ids == start_id)
         end_mask = (input_ids == end_id)
         has_both = start_mask.any(dim=1) & end_mask.any(dim=1)
-        
+
         if has_both.any():
             start_indices = start_mask.float().argmax(dim=1)
             end_indices = end_mask.float().argmax(dim=1)
-            seq_range = torch.arange(input_ids.size(1), device=self.cfg.device).unsqueeze(0)
+            seq_range = torch.arange(input_ids.size(1), device=device).unsqueeze(0)
             range_mask = (seq_range > start_indices.unsqueeze(1)) & (seq_range < end_indices.unsqueeze(1))
             range_mask = range_mask & has_both.unsqueeze(1) & (start_indices.unsqueeze(1) < end_indices.unsqueeze(1))
             final_mask = torch.where(range_mask.any(dim=1, keepdim=True), range_mask, attention_mask.bool())
         else:
             final_mask = attention_mask.bool()
-            
+
         mask_float = final_mask.float().unsqueeze(-1)
         return (hidden * mask_float).sum(dim=1) / mask_float.sum(dim=1).clamp(min=1.0)
 

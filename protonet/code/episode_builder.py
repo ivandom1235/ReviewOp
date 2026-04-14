@@ -67,10 +67,10 @@ def _episode_cache_path_with_protocol(cfg: ProtonetConfig, split: str, protocol:
     )
 
 
-def _load_cached_episodes(cfg: ProtonetConfig, split: str) -> List[Dict[str, Any]] | None:
+def _load_cached_episodes(cfg: ProtonetConfig, split: str, protocol: str | None = None) -> List[Dict[str, Any]] | None:
     if cfg.force_rebuild_episodes:
         return None
-    path = _episode_cache_path(cfg, split)
+    path = _episode_cache_path_with_protocol(cfg, split, protocol)
     if not path.exists():
         return None
     rows: List[Dict[str, Any]] = []
@@ -130,23 +130,28 @@ def _episode_row_from_example(row: Dict[str, Any], role: str, cfg: ProtonetConfi
         "parent_review_id": row.get("parent_review_id"),
         "review_text": row.get("review_text"),
         "evidence_sentence": row.get("evidence_sentence") or row.get("review_text"),
+        "evidence_fallback_used": bool(row.get("evidence_fallback_used", False)),
         "domain": row.get("domain", "unknown"),
+        "domain_family": row.get("domain_family", ""),
+        "group_id": row.get("group_id", ""),
         "aspect": row.get("aspect") or row.get("implicit_aspect"),
         "sentiment": str(row.get("sentiment") or "neutral").lower(),
         "label_type": row.get("label_type", "explicit"),
         "confidence": float(row.get("confidence", 1.0)),
+        "hardness_tier": str(row.get("hardness_tier") or "H0").upper(),
+        "annotation_source": row.get("annotation_source", "unknown"),
         "joint_label": build_joint_label(row, cfg.joint_label_separator),
         "role": role,
         "gold_joint_labels": list(row.get("gold_joint_labels") or []),
         "gold_interpretations": list(row.get("gold_interpretations") or []),
         "abstain_acceptable": bool(row.get("abstain_acceptable", False)),
         "ambiguity_type": row.get("ambiguity_type"),
+        "benchmark_ambiguity_score": float(row.get("benchmark_ambiguity_score", 0.0)),
         "novel_acceptable": bool(row.get("novel_acceptable", False)),
         "novel_cluster_id": row.get("novel_cluster_id"),
         "novel_alias": row.get("novel_alias"),
         "novel_evidence_text": row.get("novel_evidence_text"),
         "split_protocol": row.get("split_protocol") or {},
-        "benchmark_ambiguity_score": float(row.get("benchmark_ambiguity_score", 0.0)),
     }
 
 
@@ -329,6 +334,17 @@ def build_or_load_episode_sets(
                     continue
                 protocol_key = f"{split}__{protocol}"
                 cached_path = _episode_cache_path_with_protocol(cfg, split, protocol)
+                cached = _load_cached_episodes(cfg, split, protocol)
+                if cached is not None:
+                    try:
+                        for episode in cached:
+                            validate_episode_row(episode, cfg)
+                    except ValueError:
+                        cached = None
+                    else:
+                        episodes_by_split[protocol_key] = cached
+                        announce(f"Loaded cached {protocol_key} episodes from {cached_path}")
+                        continue
                 try:
                     protocol_episodes = _build_episodes_for_split(split, protocol_rows, cfg)
                 except ValueError as exc:

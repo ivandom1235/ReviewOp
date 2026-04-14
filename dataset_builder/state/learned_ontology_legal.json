@@ -1,0 +1,26 @@
+{
+  "timeliness": {
+    "occurrences": 1,
+    "max_confidence": 0.95,
+    "promoted": false,
+    "aliases": []
+  },
+  "reliability": {
+    "occurrences": 3,
+    "max_confidence": 0.95,
+    "promoted": false,
+    "aliases": []
+  },
+  "cleanliness": {
+    "occurrences": 5,
+    "max_confidence": 0.95,
+    "promoted": true,
+    "aliases": []
+  },
+  "accessibility": {
+    "occurrences": 2,
+    "max_confidence": 0.95,
+    "promoted": false,
+    "aliases": []
+  }
+}

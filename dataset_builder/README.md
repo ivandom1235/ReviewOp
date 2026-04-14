@@ -29,7 +29,7 @@ These are the flags most users should care about:
 
 - `--input-dir`
 - `--output-dir`
-- `--run-profile` (`research` for full runs, `debug` for sampled runs)
+- `--run-profile` (`research` for standard runs, `debug` for lightweight sampled runs)
 - `--sample-size`
 - `--chunk-size`
 - `--chunk-offset`

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from functools import cached_property
 import os
 from pathlib import Path
 import random
@@ -33,8 +34,6 @@ def _env_value(*names: str, default: str | None = None) -> str | None:
 
 def resolve_default_input_dir(input_type: str) -> Path:
     if input_type == "benchmark":
-        if BENCHMARK_INPUT_ROOT.exists():
-            return BENCHMARK_INPUT_ROOT
         return BENCHMARK_INPUT_ROOT
     return INPUT_ROOT / input_type
 
@@ -66,28 +65,29 @@ class ProtonetConfig:
     protocol_eval_splits: tuple[str, ...] = ("random", "grouped", "domain_holdout")
 
     warmup_epochs: int = 1
-    epochs: int = 8
-    patience: int = 3
-    learning_rate: float = 5e-4
-    encoder_learning_rate: float = 1e-5
-    weight_decay: float = 2e-4
+    epochs: int = 12
+    patience: int = 4
+    learning_rate: float = 6e-4
+    encoder_learning_rate: float = 1.2e-5
+    weight_decay: float = 2.5e-4
     gradient_accumulation_steps: int = 2
     batch_size_hint: int = 1
     use_amp: bool = True
-    contrastive_weight: float = 0.15
-    prototype_smoothing: float = 0.05
-    low_confidence_threshold: float = 0.55
+    contrastive_weight: float = 0.22
+    focal_gamma: float = 1.8
+    prototype_smoothing: float = 0.08
+    low_confidence_threshold: float = 0.25
     top_k_debug: int = 3
-    selective_alpha: float = 0.6
-    selective_beta: float = 0.25
-    selective_gamma: float = 0.1
-    selective_delta: float = 0.05
-    abstain_threshold: float = 0.55
-    multi_label_margin: float = 0.08
+    selective_alpha: float = 1.0
+    selective_beta: float = 0.0
+    selective_gamma: float = 0.0
+    selective_delta: float = 0.0
+    abstain_threshold: float = 0.01
+    multi_label_margin: float = 0.10
     sentiment_pipeline: str = "both"
-    novelty_threshold: float = 0.45
-    novelty_known_threshold: float = 0.35
-    novelty_novel_threshold: float = 0.65
+    novelty_threshold: float = 0.70
+    novelty_known_threshold: float = 0.50
+    novelty_novel_threshold: float = 0.80
     novelty_calibration_path: Path = METADATA_ROOT / "novelty_calibration_v2.json"
     runtime_cache_max_items: int = 20000
 
@@ -115,7 +115,7 @@ class ProtonetConfig:
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
-    @property
+    @cached_property
     def device(self) -> torch.device:
         if torch.cuda.is_available():
             return torch.device("cuda")

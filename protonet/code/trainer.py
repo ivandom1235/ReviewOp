@@ -16,12 +16,14 @@ try:
     from .evaluator import evaluate_episodes
     from .model import ProtoNetModel
     from .progress import announce, task_bar
+    from .quality_signals import example_quality_weight
     from .prototype_bank import PrototypeBank, build_global_prototype_bank
 except ImportError:
     from config import ProtonetConfig
     from evaluator import evaluate_episodes
     from model import ProtoNetModel
     from progress import announce, task_bar
+    from quality_signals import example_quality_weight
     from prototype_bank import PrototypeBank, build_global_prototype_bank
 
 
@@ -37,13 +39,15 @@ class TrainingResult:
 
 def _composite_selection_score(metrics: Dict[str, Any]) -> float:
     return float(
-        0.25 * float(metrics.get("macro_f1", 0.0))
-        + 0.20 * float(metrics.get("protocol_breakdown", {}).get("grouped", {}).get("accuracy", metrics.get("accuracy", 0.0)))
-        + 0.15 * float(metrics.get("protocol_breakdown", {}).get("grouped", {}).get("macro_f1", metrics.get("macro_f1", 0.0)))
-        + 0.15 * float(metrics.get("known_vs_novel_f1_macro", metrics.get("abstention_f1", 0.0)))
-        + 0.10 * float(metrics.get("abstention_f1", 0.0))
-        + 0.10 * float(1.0 - metrics.get("calibration_ece", 1.0))
-        + 0.05 * float(metrics.get("coverage", 0.0))
+        0.30 * float(metrics.get("accuracy", 0.0))
+        + 0.20 * float(metrics.get("macro_f1", 0.0))
+        + 0.12 * float(metrics.get("aspect_only_accuracy", metrics.get("accuracy", 0.0)))
+        + 0.13 * float(metrics.get("protocol_breakdown", {}).get("grouped", {}).get("accuracy", metrics.get("accuracy", 0.0)))
+        + 0.10 * float(metrics.get("protocol_breakdown", {}).get("grouped", {}).get("macro_f1", metrics.get("macro_f1", 0.0)))
+        + 0.05 * float(metrics.get("known_vs_novel_f1_macro", metrics.get("abstention_f1", 0.0)))
+        + 0.05 * float(metrics.get("abstention_f1", 0.0))
+        + 0.03 * float(1.0 - metrics.get("calibration_ece", 1.0))
+        + 0.02 * float(metrics.get("coverage", 0.0))
     )
 
 
@@ -81,9 +85,9 @@ def _build_offline_embedding_cache(model: ProtoNetModel, episodes_by_split: Dict
 
     model.eval()
     batch_size = 128 if cfg.device.type == "cuda" else 48
-    chunks = [all_items[idx : idx + batch_size] for idx in range(0, len(all_items), batch_size)]
     with torch.no_grad():
-        for chunk in chunks:
+        for idx in range(0, len(all_items), batch_size):
+            chunk = all_items[idx : idx + batch_size]
             _ = model.encode_items(chunk)
     cache_dir = cfg.output_dir / "embedding_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -115,7 +119,7 @@ def _supervised_contrastive_loss(embeddings: torch.Tensor, labels: List[str], te
 
 def _warmup_label_cap(model: ProtoNetModel) -> int:
     if model.encoder.backend == "transformer":
-        if model.cfg.device == "cpu":
+        if model.cfg.device.type == "cpu":
             return 4
         return 8
     return 12
@@ -123,10 +127,14 @@ def _warmup_label_cap(model: ProtoNetModel) -> int:
 
 def _warmup_batch_size(model: ProtoNetModel) -> int:
     if model.encoder.backend == "transformer":
-        if model.cfg.device == "cpu":
+        if model.cfg.device.type == "cpu":
             return 16
         return 48
     return 128
+
+
+def _use_cuda_amp(cfg: ProtonetConfig) -> bool:
+    return bool(cfg.use_amp and cfg.device.type == "cuda")
 
 
 def _encode_items_in_batches(
@@ -137,13 +145,14 @@ def _encode_items_in_batches(
     desc: str,
     enabled: bool,
 ) -> torch.Tensor:
-    chunks = [items[index : index + batch_size] for index in range(0, len(items), batch_size)]
     embeddings: List[torch.Tensor] = []
-    with task_bar(total=len(chunks), desc=desc, enabled=enabled) as bar:
-        for chunk_index, chunk in enumerate(chunks, start=1):
+    total_chunks = max(1, (len(items) + batch_size - 1) // batch_size)
+    with task_bar(total=total_chunks, desc=desc, enabled=enabled) as bar:
+        for chunk_index, index in enumerate(range(0, len(items), batch_size), start=1):
+            chunk = items[index : index + batch_size]
             embeddings.append(model.encode_items(chunk))
             bar.update(1)
-            bar.set_postfix(batch=f"{chunk_index}/{len(chunks)}", items=len(chunk))
+            bar.set_postfix(batch=f"{chunk_index}/{total_chunks}", items=len(chunk))
     return torch.cat(embeddings, dim=0)
 
 
@@ -181,8 +190,8 @@ def _warmup_representations(model: ProtoNetModel, cfg: ProtonetConfig, optimizer
 def _trainable_parameter_groups(model: ProtoNetModel, cfg: ProtonetConfig) -> List[Dict[str, Any]]:
     # Regularization: exclude bias and LayerNorm from weight decay
     no_decay = ["bias", "LayerNorm.weight"]
-    
-    def get_groups(module_name: str, params: Any, lr: float):
+
+    def get_groups(params: Any, lr: float):
         decay_params = []
         no_decay_params = []
         for n, p in params:
@@ -197,13 +206,13 @@ def _trainable_parameter_groups(model: ProtoNetModel, cfg: ProtonetConfig) -> Li
             {"params": no_decay_params, "weight_decay": 0.0, "lr": lr},
         ]
 
-    groups = get_groups("projection", model.projection.named_parameters(), cfg.learning_rate)
+    groups = get_groups(model.projection.named_parameters(), cfg.learning_rate)
     # Add log_temperature to no_decay group of projection
     groups[1]["params"].append(model.log_temperature)
-    
+
     if model.encoder.backend == "transformer" and model.encoder.trainable and model.encoder.model is not None:
-        groups.extend(get_groups("encoder", model.encoder.model.named_parameters(), cfg.encoder_learning_rate))
-    
+        groups.extend(get_groups(model.encoder.model.named_parameters(), cfg.encoder_learning_rate))
+
     return [g for g in groups if g["params"]]
 
 
@@ -212,26 +221,37 @@ def _episode_loss(model: ProtoNetModel, episode: Dict[str, Any], cfg: ProtonetCo
 
 
 def _class_balanced_ce_weights(train_episodes: List[Dict[str, Any]], cfg: ProtonetConfig, beta: float = 0.9999) -> Dict[str, float]:
-    counts: Dict[str, int] = {}
+    counts: Dict[str, float] = {}
     for episode in train_episodes:
         for item in list(episode.get("query_set", [])) + list(episode.get("support_set", [])):
             label = _joint_label_from_item(item, cfg.joint_label_separator)
-            counts[label] = counts.get(label, 0) + 1
+            counts[label] = counts.get(label, 0.0) + example_quality_weight(item)
     if not counts:
         return {}
     raw: Dict[str, float] = {}
     for label, n in counts.items():
-        effective = (1.0 - (beta ** max(1, n))) / max(1e-8, 1.0 - beta)
+        effective = (1.0 - (beta ** max(1.0, n))) / max(1e-8, 1.0 - beta)
         raw[label] = 1.0 / max(1e-8, effective)
     scale = sum(raw.values()) / max(1, len(raw))
     return {label: float(value / max(1e-8, scale)) for label, value in raw.items()}
 
 
-def _focal_loss(logits: torch.Tensor, targets: torch.Tensor, alpha: torch.Tensor | None = None, gamma: float = 2.0) -> torch.Tensor:
+def _focal_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    alpha: torch.Tensor | None = None,
+    gamma: float = 2.0,
+    sample_weights: torch.Tensor | None = None,
+) -> torch.Tensor:
     ce_loss = F.cross_entropy(logits, targets, reduction='none', weight=alpha)
     pt = torch.exp(-ce_loss)
-    focal_loss = ((1 - pt) ** gamma * ce_loss).mean()
-    return focal_loss
+    focal_loss = (1 - pt) ** gamma * ce_loss
+    if sample_weights is not None:
+        sample_weights = sample_weights.to(device=focal_loss.device, dtype=focal_loss.dtype)
+        focal_loss = focal_loss * sample_weights
+        return focal_loss.sum() / sample_weights.sum().clamp(min=1e-6)
+    return focal_loss.mean()
 
 
 def _episode_loss_with_weights(
@@ -240,15 +260,25 @@ def _episode_loss_with_weights(
     cfg: ProtonetConfig,
     class_weight_lookup: Dict[str, float],
 ) -> tuple[torch.Tensor, float]:
-    use_amp = cfg.use_amp and cfg.device == "cuda"
+    use_amp = _use_cuda_amp(cfg)
+    query_weights = torch.tensor(
+        [example_quality_weight(item) for item in list(episode.get("query_set", []))],
+        dtype=torch.float32,
+        device=cfg.device,
+    )
     with autocast(device_type="cuda", enabled=use_amp):
         out = model.episode_forward(episode)
         ce_weights = torch.ones(len(out.ordered_labels), device=out.logits.device, dtype=out.logits.dtype)
         for idx, label in enumerate(out.ordered_labels):
             ce_weights[idx] = float(class_weight_lookup.get(label, 1.0))
         
-        gamma = cfg.focal_gamma if hasattr(cfg, "focal_gamma") else 2.0
-        loss = _focal_loss(out.logits, out.targets, alpha=ce_weights, gamma=gamma)
+        loss = _focal_loss(
+            out.logits,
+            out.targets,
+            alpha=ce_weights,
+            gamma=float(cfg.focal_gamma),
+            sample_weights=query_weights if len(query_weights) else None,
+        )
         
         if cfg.contrastive_weight > 0:
             embeddings = torch.cat([out.support_embeddings, out.query_embeddings], dim=0)
@@ -286,7 +316,7 @@ def load_checkpoint(model: ProtoNetModel, checkpoint_path: Path) -> Dict[str, An
 def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str, Any]]]) -> TrainingResult:
     model = ProtoNetModel(cfg)
     optimizer = AdamW(_trainable_parameter_groups(model, cfg))
-    scaler = GradScaler("cuda", enabled=cfg.use_amp and cfg.device == "cuda")
+    scaler = GradScaler("cuda", enabled=_use_cuda_amp(cfg))
 
     history: List[Dict[str, Any]] = []
     best_val = float("-inf")
@@ -348,7 +378,7 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
             "train_loss": running_loss / max(1, len(train_episodes)),
             "train_accuracy": running_acc / max(1, len(train_episodes)),
         }
-        val_metrics, _ = evaluate_episodes(model, episodes_by_split["val"], cfg, "val")
+        val_metrics, _ = evaluate_episodes(model, episodes_by_split["val"], cfg, "val", include_predictions=False)
         train_metrics.update(
             {
                 "val_accuracy": val_metrics["accuracy"],
@@ -372,13 +402,13 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
 
     load_checkpoint(model, checkpoint_path)
     
-    val_metrics, _ = evaluate_episodes(model, episodes_by_split["val"], cfg, "val")
-    test_metrics, _ = evaluate_episodes(model, episodes_by_split["test"], cfg, "test")
+    val_metrics, _ = evaluate_episodes(model, episodes_by_split["val"], cfg, "val", include_predictions=False)
+    test_metrics, _ = evaluate_episodes(model, episodes_by_split["test"], cfg, "test", include_predictions=False)
     
     protocol_metrics: Dict[str, Any] = {}
     for key, episodes in episodes_by_split.items():
         if "__" in key and (key.startswith("val") or key.startswith("test")):
-            m, _ = evaluate_episodes(model, episodes, cfg, key)
+            m, _ = evaluate_episodes(model, episodes, cfg, key, include_predictions=False)
             protocol_metrics[key] = m
     
     if protocol_metrics:

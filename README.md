@@ -65,24 +65,6 @@ Purpose: starts backend (`uvicorn`) and frontend (`npm run dev`) in new PowerShe
 
 Options: none.
 
-### `npm test`
-
-Purpose: runs the repo-wide test suite from the root.
-
-Steps:
-
-- backend unittest discovery
-- dataset_builder unittest discovery
-- protonet unittest discovery
-- frontend production build
-
-Individual entries:
-
-- `npm run test:backend`
-- `npm run test:dataset-builder`
-- `npm run test:protonet`
-- `npm run test:frontend`
-
 ### `dataset_builder` CLI
 
 Command:

@@ -14,6 +14,7 @@ import torch
 
 try:
     from .config import ProtonetConfig
+    from .quality_signals import prediction_error_buckets, top_aspect_confusions
     from .progress import task_bar
 except ImportError:
     _config_path = Path(__file__).resolve().with_name("config.py")
@@ -24,6 +25,7 @@ except ImportError:
     sys.modules[_config_spec.name] = _config_module
     _config_spec.loader.exec_module(_config_module)
     ProtonetConfig = _config_module.ProtonetConfig
+    from quality_signals import prediction_error_buckets, top_aspect_confusions
     from progress import task_bar
 
 
@@ -47,6 +49,13 @@ def _expected_calibration_error(confidences: List[float], correct: List[int], bi
         bucket_acc = corr[mask].mean()
         ece += abs(bucket_acc - bucket_conf) * (mask.sum() / len(conf))
     return float(ece)
+
+
+def _diagnostic_summary(rows: List[Dict[str, Any]], separator: str) -> Dict[str, Any]:
+    return {
+        "error_buckets": prediction_error_buckets(rows),
+        "top_aspect_confusions": top_aspect_confusions(rows, separator=separator, limit=5),
+    }
 
 
 def _stable_cluster_id(*, domain: str, hint: str) -> str:
@@ -186,11 +195,19 @@ def _compact_mode_metrics(
         "risk": float(risk),
         "low_confidence_rate": low_confidence_count / max(1, len(rows)),
         "calibration_ece": float(confidence_error),
+        **_diagnostic_summary(rows, cfg.joint_label_separator),
         "selected_mode": mode,
     }
 
 
-def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig, split_name: str) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+def evaluate_episodes(
+    model,
+    episodes: List[Dict[str, Any]],
+    cfg: ProtonetConfig,
+    split_name: str,
+    *,
+    include_predictions: bool = True,
+) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
     model.eval()
     eval_temperature = float(model.temperature.detach().cpu().item())
     y_true: List[str] = []
@@ -230,14 +247,16 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
                     post_pred_label = str(post_aspect.get("pred_label") or pred_label)
                     post_pred_labels = list(post_aspect.get("pred_labels") or ([post_pred_label] if post_pred_label else []))
                     confidence = float(probs[row_index].max())
-                    top_indices = np.argsort(probs[row_index])[::-1][: cfg.top_k_debug].tolist()
-                    top_predictions = [
-                        {
-                            "label": out.ordered_labels[idx],
-                            "probability": float(probs[row_index][idx]),
-                        }
-                        for idx in top_indices
-                    ]
+                    top_predictions: List[Dict[str, Any]] = []
+                    if include_predictions:
+                        top_indices = np.argsort(probs[row_index])[::-1][: cfg.top_k_debug].tolist()
+                        top_predictions = [
+                            {
+                                "label": out.ordered_labels[idx],
+                                "probability": float(probs[row_index][idx]),
+                            }
+                            for idx in top_indices
+                        ]
                     y_true.append(true_label)
                     y_pred.append(pred_label)
                     y_true_aspect.append(_aspect_from_joint(true_label, cfg.joint_label_separator))
@@ -309,46 +328,46 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
                         if routing == "novel"
                         else None
                     )
-                    predictions.append(
-                        {
-                            "episode_id": episode.get("episode_id"),
-                            "true_label": true_label,
-                            "pred_label": pred_label,
-                            "post_aspect_pred_label": post_pred_label,
-                            "post_aspect_pred_labels": post_pred_labels,
-                            "post_aspect_confidence": float(post_aspect.get("confidence", confidence)),
-                            "confidence": confidence,
-                            "low_confidence": confidence < cfg.low_confidence_threshold,
-                            "post_aspect_low_confidence": float(post_aspect.get("confidence", confidence)) < cfg.low_confidence_threshold,
-                            "top_k": top_predictions,
-                            "correct": bool(is_correct),
-                            "post_aspect_correct": bool(true_label == post_pred_label),
-                            "split": split_name,
-                            "flex_correct": bool(pred_label in true_set),
-                            "post_aspect_flex_correct": bool(set(post_pred_labels) & true_set),
-                            "multi_label_overlap": float(jaccard),
-                            "post_aspect_multi_label_overlap": float(len(true_set & set(post_pred_labels)) / max(1, len(true_set | set(post_pred_labels)))),
-                            "abstained": did_abstain,
-                            "post_aspect_abstained": float(post_aspect.get("confidence", confidence)) < cfg.low_confidence_threshold,
-                            "novelty_score": float(novelty_score),
-                            "novelty_components": {
-                                "distance_score": float(distance_score),
-                                "ambiguity_score": float(ambiguity_score),
-                                "energy_score": float(energy_score),
-                            },
-                            "routing": routing,
-                            "decision_band": decision_band,
-                            "split_protocol": split_protocol if isinstance(split_protocol, dict) else {},
-                            "benchmark_ambiguity_score": float(query_row.get("benchmark_ambiguity_score", 0.0)) if isinstance(query_row, dict) else 0.0,
-                            "abstain_acceptable": bool(query_row.get("abstain_acceptable", False)) if isinstance(query_row, dict) else False,
-                            "ambiguity_type": query_row.get("ambiguity_type") if isinstance(query_row, dict) else None,
-                            "novel_acceptable": bool(query_row.get("novel_acceptable", False)) if isinstance(query_row, dict) else False,
-                            "gold_novel_cluster_id": str(query_row.get("novel_cluster_id") or "").strip() if isinstance(query_row, dict) else "",
-                            "pred_novel_cluster_id": predicted_cluster_id,
-                            "post_aspect_selected_aspects": list(post_aspect.get("selected_aspects") or []),
-                            "post_aspect_sentiment": str(post_aspect.get("sentiment") or "neutral"),
-                        }
-                    )
+                    prediction_row = {
+                        "episode_id": episode.get("episode_id"),
+                        "true_label": true_label,
+                        "pred_label": pred_label,
+                        "post_aspect_pred_label": post_pred_label,
+                        "post_aspect_pred_labels": post_pred_labels,
+                        "post_aspect_confidence": float(post_aspect.get("confidence", confidence)),
+                        "confidence": confidence,
+                        "low_confidence": confidence < cfg.low_confidence_threshold,
+                        "post_aspect_low_confidence": float(post_aspect.get("confidence", confidence)) < cfg.low_confidence_threshold,
+                        "correct": bool(is_correct),
+                        "post_aspect_correct": bool(true_label == post_pred_label),
+                        "split": split_name,
+                        "flex_correct": bool(pred_label in true_set),
+                        "post_aspect_flex_correct": bool(set(post_pred_labels) & true_set),
+                        "multi_label_overlap": float(jaccard),
+                        "post_aspect_multi_label_overlap": float(len(true_set & set(post_pred_labels)) / max(1, len(true_set | set(post_pred_labels)))),
+                        "abstained": did_abstain,
+                        "post_aspect_abstained": float(post_aspect.get("confidence", confidence)) < cfg.low_confidence_threshold,
+                        "novelty_score": float(novelty_score),
+                        "novelty_components": {
+                            "distance_score": float(distance_score),
+                            "ambiguity_score": float(ambiguity_score),
+                            "energy_score": float(energy_score),
+                        },
+                        "routing": routing,
+                        "decision_band": decision_band,
+                        "split_protocol": split_protocol if isinstance(split_protocol, dict) else {},
+                        "benchmark_ambiguity_score": float(query_row.get("benchmark_ambiguity_score", 0.0)) if isinstance(query_row, dict) else 0.0,
+                        "abstain_acceptable": bool(query_row.get("abstain_acceptable", False)) if isinstance(query_row, dict) else False,
+                        "ambiguity_type": query_row.get("ambiguity_type") if isinstance(query_row, dict) else None,
+                        "novel_acceptable": bool(query_row.get("novel_acceptable", False)) if isinstance(query_row, dict) else False,
+                        "gold_novel_cluster_id": str(query_row.get("novel_cluster_id") or "").strip() if isinstance(query_row, dict) else "",
+                        "pred_novel_cluster_id": predicted_cluster_id,
+                        "post_aspect_selected_aspects": list(post_aspect.get("selected_aspects") or []),
+                        "post_aspect_sentiment": str(post_aspect.get("sentiment") or "neutral"),
+                    }
+                    if include_predictions:
+                        prediction_row["top_k"] = top_predictions
+                    predictions.append(prediction_row)
                 bar.update(1)
                 if y_true:
                     bar.set_postfix(
@@ -483,6 +502,7 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
         "low_confidence_rate": low_confidence_count / max(1, len(y_true)),
         "inference_seconds": elapsed,
         "avg_seconds_per_episode": elapsed / max(1, len(episodes)),
+        **_diagnostic_summary(predictions, cfg.joint_label_separator),
     }
     joint_mode_metrics = _compact_mode_metrics(predictions, cfg, split_name, mode="joint", elapsed=elapsed, episodes=episodes)
     post_aspect_rows = _project_prediction_rows(predictions, "post_aspect")
@@ -495,4 +515,4 @@ def evaluate_episodes(model, episodes: List[Dict[str, Any]], cfg: ProtonetConfig
     }
     if cfg.sentiment_pipeline == "post_aspect":
         metrics.update(post_aspect_mode_metrics)
-    return metrics, predictions
+    return metrics, predictions if include_predictions else []

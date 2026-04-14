@@ -157,15 +157,7 @@ def build_explicit_row(
     explicit.update(artifacts.numeric.transform(row))
     explicit.update(artifacts.categorical.transform(row))
     explicit.update(artifacts.datetime.transform(row))
-    if text_column:
-        explicit.update(TextStatsFeaturiser(text_column).transform(row))
-    for column in datetime_columns:
-        parsed = pd.to_datetime(row.get(column), errors="coerce", utc=True)
-        if pd.notna(parsed):
-            explicit[f"{column}_year"] = int(parsed.year)
-            explicit[f"{column}_month"] = int(parsed.month)
-            explicit[f"{column}_day_of_week"] = int(parsed.dayofweek)
-            explicit[f"{column}_is_weekend"] = int(parsed.dayofweek >= 5)
+    explicit.update(artifacts.text.transform(row))
     return {
         "id": row.get("id"),
         "split": row.get("split"),

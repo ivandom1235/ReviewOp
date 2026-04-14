@@ -132,6 +132,8 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
         root_causes.append(
             "Strict filters (review gating + leakage barrier + non-general enforcement + sentiment bounds) reduced train rows below target minimum."
         )
+    if bool(build.get("train_viability_guard_triggered", False)):
+        root_causes.append("Train-size viability guard prevented the sentiment balancer from collapsing the export further.")
     if float(output_quality.get("fallback_only_rate", 0.0)) > 0.2:
         root_causes.append("Implicit generation quality remains bottlenecked by fallback-heavy rows in source corpus.")
 

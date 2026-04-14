@@ -7,7 +7,7 @@ import threading
 import asyncio
 import httpx
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
 
 def _env_value(*names: str, default: str | None = None) -> str | None:
@@ -135,6 +135,16 @@ class AsyncRunPodProvider(AsyncLlmProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         } if self.api_key else {}
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=300.0)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
 
     async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
         # Late-bind the endpoint and key to ensure .env updates reflect in long-running processes
@@ -171,24 +181,36 @@ class AsyncRunPodProvider(AsyncLlmProvider):
         elif not base_url.endswith("/runsync"):
             base_url = base_url.rstrip("/") + "/runsync"
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            res = await client.post(base_url, json=data, headers=self.headers)
-            res.raise_for_status()
-            result = res.json()
-            # RunPod Serverless standard return is {"output": ..., "id": ..., "status": ...}
-            if isinstance(result, dict) and "output" in result:
-                output = result["output"]
-                # vLLM/Flash usually returns a string or a dict depending on the template
-                if isinstance(output, str):
-                    return output
-                return json.dumps(output)
-            return json.dumps(result)
+        client = self._get_client()
+        res = await client.post(base_url, json=data, headers=self.headers)
+        res.raise_for_status()
+        result = res.json()
+        # RunPod Serverless standard return is {"output": ..., "id": ..., "status": ...}
+        if isinstance(result, dict) and "output" in result:
+            output = result["output"]
+            # vLLM/Flash usually returns a string or a dict depending on the template
+            output_text = output if isinstance(output, str) else json.dumps(output)
+            GLOBAL_LLM_CACHE.set(cache_key, output_text)
+            return output_text
+        output_text = json.dumps(result)
+        GLOBAL_LLM_CACHE.set(cache_key, output_text)
+        return output_text
 
 class AsyncOpenAiProvider(AsyncLlmProvider):
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.base_url = base_url or "https://api.openai.com/v1"
         self.headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=60.0)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
 
     async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
         bypass = kwargs.pop("bypass_cache", False)
@@ -204,12 +226,12 @@ class AsyncOpenAiProvider(AsyncLlmProvider):
             return cached_val
 
         url = self.base_url.rstrip("/") + "/chat/completions"
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            res = await client.post(url, json=payload, headers=self.headers)
-            res.raise_for_status()
-            result = res.json()["choices"][0]["message"]["content"]
-            GLOBAL_LLM_CACHE.set(cache_key, result)
-            return result
+        client = self._get_client()
+        res = await client.post(url, json=payload, headers=self.headers)
+        res.raise_for_status()
+        result = res.json()["choices"][0]["message"]["content"]
+        GLOBAL_LLM_CACHE.set(cache_key, result)
+        return result
 
 class AsyncClaudeProvider(AsyncLlmProvider):
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
@@ -224,6 +246,16 @@ class AsyncClaudeProvider(AsyncLlmProvider):
             if self.api_key
             else {}
         )
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=60.0)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
 
     async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
         bypass = kwargs.pop("bypass_cache", False)
@@ -240,19 +272,31 @@ class AsyncClaudeProvider(AsyncLlmProvider):
             return cached_val
 
         url = self.base_url.rstrip("/") + "/messages"
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            res = await client.post(url, json=payload, headers=self.headers)
-            res.raise_for_status()
-            content = res.json().get("content", [])
-            if isinstance(content, list):
-                result = "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
-                GLOBAL_LLM_CACHE.set(cache_key, result)
-                return result
-            return str(content)
+        client = self._get_client()
+        res = await client.post(url, json=payload, headers=self.headers)
+        res.raise_for_status()
+        content = res.json().get("content", [])
+        if isinstance(content, list):
+            result = "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+            GLOBAL_LLM_CACHE.set(cache_key, result)
+            return result
+        result = str(content)
+        GLOBAL_LLM_CACHE.set(cache_key, result)
+        return result
 
 class AsyncOllamaProvider(AsyncLlmProvider):
     def __init__(self, base_url: str | None = None):
         self.base_url = base_url or "http://localhost:11434"
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=120.0)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
 
     async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
         payload = {
@@ -261,10 +305,10 @@ class AsyncOllamaProvider(AsyncLlmProvider):
             "stream": False,
             **kwargs
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            res = await client.post(f"{self.base_url}/api/generate", json=payload)
-            res.raise_for_status()
-            return res.json()["response"]
+        client = self._get_client()
+        res = await client.post(f"{self.base_url}/api/generate", json=payload)
+        res.raise_for_status()
+        return res.json()["response"]
 
 class AsyncMockProvider(AsyncLlmProvider):
     async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
@@ -358,15 +402,6 @@ def get_async_provider(provider_type: str, api_key: str | None = None, base_url:
         raise ValueError(f"Unsupported async provider: {provider_type}")
 
 
-def resolve_llm_provider(provider_name: str | None, model_name: str | None = None) -> LlmProvider | None:
-    if not provider_name:
-        return None
-    provider_key = str(provider_name).strip().lower()
-    if provider_key in {"", "none"}:
-        return None
-    return get_provider(provider_key)
-
-
 def resolve_async_llm_provider(provider_name: str | None, model_name: str | None = None) -> AsyncLlmProvider | None:
     if not provider_name:
         return None
@@ -385,51 +420,19 @@ def resolve_processor_async_provider(processor_name: str | None, model_name: str
     raise ValueError(f"Unsupported processor: {processor_name}")
 
 
-def discover_best_provider() -> Tuple[str, Optional[str], Optional[str]]:
-    runpod_key = _env_value("REVIEWOP_RUNPOD_API_KEY", "RUNPOD_API_KEY")
-    runpod_url = _env_value("REVIEWOP_RUNPOD_ENDPOINT_URL", "RUNPOD_ENDPOINT_URL")
-    if runpod_key and runpod_url:
-        return "runpod", runpod_key, runpod_url
-    claude_key = _env_value("CLAUDE_API_KEY")
-    if claude_key:
-        return "claude", claude_key, _env_value("CLAUDE_BASE_URL", default="https://api.anthropic.com/v1")
-
-    openai_key = _env_value("OPENAI_API_KEY")
-    if openai_key:
-        return "openai", openai_key, None
-    
-    return "ollama", None, os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-
-
-def reason_implicit_signal(text: str, candidate_aspects: List[str], provider: LlmProvider, model_name: str) -> List[str]:
-    prompt = f"""Given the following review segment: "{text}"
-Rephrase it such that any implicit aspects from this list: {candidate_aspects} become explicit.
-If the segment does not imply any of these aspects, return the original text.
-Return ONLY the rephrased text.
-Review segment: {text}
-Explicit version:"""
-    
-    cache_key = hashlib.md5(f"{model_name}:{prompt}".encode("utf-8")).hexdigest()
-    cached_val = GLOBAL_LLM_CACHE.get(cache_key)
-    if cached_val:
-        return [cached_val]
-
-    try:
-        paraphrase = provider.generate(prompt, model_name, temperature=0.2)
-        result = paraphrase.strip()
-        GLOBAL_LLM_CACHE.set(cache_key, result)
-        return [result]
-    except Exception:
-        return [text]
-
-
 async def reason_implicit_signal_async(text: str, candidate_aspects: List[str], provider: AsyncLlmProvider, model_name: str, bypass_cache: bool = False) -> List[str]:
-    prompt = f"""Given the following review segment: "{text}"
-Rephrase it such that any implicit aspects from this list: {candidate_aspects} become explicit.
-If the segment does not imply any of these aspects, return the original text.
-Return ONLY the rephrased text.
-Review segment: {text}
-Explicit version:"""
+    prompt = f"""Task: Strictly Implicit Aspect Extraction
+You are an expert linguistic analysis engine. Determine if the review segment IMPLIES any aspects from the allowed Canonical Ontology.
+
+Review segment: "{text}"
+Canonical Ontology: {candidate_aspects}
+
+CRITICAL RULES:
+1. PURELY IMPLICIT ONLY: If the text explicitly mentions the aspect by name or a direct synonym, you MUST NOT extract it. Only extract if the aspect is implied through context, effects, or evaluation without being named.
+2. STRICT ONTOLOGY: If an implicit aspect is found, you MUST return exactly the aspect name from the Canonical Ontology. Do not modify the name.
+3. OUTPUT FORMAT: Return ONLY the exact canonical aspect name. If no purely implicit aspect is present, return the exact word "none". No explanations, no quotes.
+
+Extraction:"""
     
     cache_key = hashlib.md5(f"async:{model_name}:{prompt}".encode("utf-8")).hexdigest()
     cached_val = GLOBAL_LLM_CACHE.get(cache_key, bypass=bypass_cache)
@@ -494,90 +497,3 @@ If no new aspects are found, return [].
     except Exception:
         return []
 
-
-def augment_implicit_difficulty(text: str, aspect: str, provider: LlmProvider, model_name: str, domain: str = "general") -> str:
-    prompt = f"""Task: Adversarial Implicit Aspect Rephrasing (Research-Grade)
-Domain: {domain}
-Target Aspect: {aspect}
-Original Segment: "{text}"
-
-Goal: Rewrite the segment to be HIGH-DIFFICULTY IMPLICIT.
-Rules:
-1. DO NOT use the word "{aspect}" or its direct synonyms.
-2. DO NOT use surface keywords typically mapped to this aspect (e.g., if aspect is 'price', avoid 'cheap', 'expensive', 'cost').
-3. Focus on symptoms, consequences, or experiential details (e.g., instead of "short battery life", use "I couldn't even finish my morning commute before it went dark").
-4. Maintain the original sentiment.
-5. Keep it concise and human-like.
-
-Return ONLY the rewritten hard-implicit segment.
-Hard-Implicit Version:"""
-    
-    cache_key = hashlib.md5(f"hard:{model_name}:{prompt}".encode("utf-8")).hexdigest()
-    cached_val = GLOBAL_LLM_CACHE.get(cache_key)
-    if cached_val:
-        return cached_val
-
-    try:
-        hard_ver = provider.generate(prompt, model_name, temperature=0.7)
-        result = hard_ver.strip().strip('"')
-        GLOBAL_LLM_CACHE.set(cache_key, result)
-        return result
-    except Exception:
-        return ""
-
-
-async def augment_implicit_difficulty_async(text: str, aspect: str, provider: AsyncLlmProvider, model_name: str, domain: str = "general") -> str:
-    prompt = f"""Task: Adversarial Implicit Aspect Rephrasing (Research-Grade)
-Domain: {domain}
-Target Aspect: {aspect}
-Original Segment: "{text}"
-
-Goal: Rewrite the segment to be HIGH-DIFFICULTY IMPLICIT.
-Rules:
-1. DO NOT use the word "{aspect}" or its direct synonyms.
-2. DO NOT use surface keywords typically mapped to this aspect (e.g., if aspect is 'price', avoid 'cheap', 'expensive', 'cost').
-3. Focus on symptoms, consequences, or experiential details (e.g., instead of "short battery life", use "I couldn't even finish my morning commute before it went dark").
-4. Maintain the original sentiment.
-5. Keep it concise and human-like.
-
-Return ONLY the rewritten hard-implicit segment.
-Hard-Implicit Version:"""
-    
-    cache_key = hashlib.md5(f"async-hard:{model_name}:{prompt}".encode("utf-8")).hexdigest()
-    cached_val = GLOBAL_LLM_CACHE.get(cache_key)
-    if cached_val:
-        return cached_val
-
-    try:
-        hard_ver = await provider.generate(prompt, model_name, temperature=0.7)
-        result = hard_ver.strip().strip('"')
-        GLOBAL_LLM_CACHE.set(cache_key, result)
-        return result
-    except Exception:
-        return ""
-
-
-def generate_multi_aspect_review(aspects: List[str], provider: LlmProvider, model_name: str, domain: str = "general") -> str:
-    aspects_str = ", ".join(aspects)
-    prompt = f"""Task: Multi-Aspect Implicit Review Generation
-Domain: {domain}
-Target Aspects: {aspects_str}
-
-Goal: Generate a single, natural-sounding review sentence or segment that implicitly suggests ALL listed aspects without explicitly naming them.
-Avoid surface word leakage. Focus on consequences or interconnected symptoms.
-
-Return ONLY the generated segment.
-Multi-Aspect Implicit Segment:"""
-    
-    cache_key = hashlib.md5(f"multi:{model_name}:{prompt}".encode("utf-8")).hexdigest()
-    cached_val = GLOBAL_LLM_CACHE.get(cache_key)
-    if cached_val:
-        return cached_val
-
-    try:
-        multi_ver = provider.generate(prompt, model_name, temperature=0.7)
-        result = multi_ver.strip().strip('"')
-        GLOBAL_LLM_CACHE.set(cache_key, result)
-        return result
-    except Exception:
-        return ""

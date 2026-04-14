@@ -7,9 +7,11 @@ import torch
 
 try:
     from .config import ProtonetConfig
+    from .quality_signals import example_quality_weight
     from .progress import task_bar
 except ImportError:
     from config import ProtonetConfig
+    from quality_signals import example_quality_weight
     from progress import task_bar
 
 
@@ -63,8 +65,9 @@ def build_global_prototype_bank(model, episodes: List[Dict[str, Any]], cfg: Prot
                 
                 embedding_cache[label] = embeddings
                 raw_confidences = [float(item.get("confidence", 1.0)) for item in items]
+                quality_weights = [example_quality_weight(item) for item in items]
                 weights = torch.tensor(
-                    raw_confidences,
+                    quality_weights,
                     dtype=torch.float32,
                     device=cfg.device,
                 )

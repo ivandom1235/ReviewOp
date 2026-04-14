@@ -135,17 +135,16 @@ async def unhandled_error_handler(_: Request, exc: Exception):
 
 def _apply_schema_patches() -> None:
     with engine.begin() as conn:
+        inspector = inspect(conn)
+
         def has_column(table_name: str, column_name: str) -> bool:
-            inspector = inspect(engine)
             return any(col["name"] == column_name for col in inspector.get_columns(table_name))
 
         def add_column_if_missing(table_name: str, column_name: str, ddl: str) -> None:
-            inspector = inspect(engine)
             if inspector.has_table(table_name) and not has_column(table_name, column_name):
                 conn.execute(text(ddl))
 
         def create_table_if_missing(table_name: str, ddl: str) -> None:
-            inspector = inspect(engine)
             if not inspector.has_table(table_name):
                 conn.execute(text(ddl))
 

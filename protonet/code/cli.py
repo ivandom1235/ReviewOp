@@ -58,6 +58,7 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         max_train_episodes=args.max_train_episodes,
         max_eval_episodes=args.max_eval_episodes,
         contrastive_weight=args.contrastive_weight,
+        focal_gamma=args.focal_gamma,
         prototype_smoothing=args.prototype_smoothing,
         low_confidence_threshold=args.low_confidence_threshold,
         selective_alpha=args.selective_alpha,
@@ -220,6 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--max-train-episodes", type=int, default=120)
     common.add_argument("--max-eval-episodes", type=int, default=48)
     common.add_argument("--contrastive-weight", type=float, default=0.15)
+    common.add_argument("--focal-gamma", type=float, default=2.0)
     common.add_argument("--prototype-smoothing", type=float, default=0.05)
     common.add_argument("--low-confidence-threshold", type=float, default=0.55)
     common.add_argument("--selective-alpha", type=float, default=0.6)

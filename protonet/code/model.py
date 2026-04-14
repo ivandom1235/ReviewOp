@@ -11,10 +11,12 @@ try:
     from .config import ProtonetConfig
     from .encoder import HybridTextEncoder, format_input_text
     from .projection_head import ProjectionHead
+    from .quality_signals import example_quality_weight
 except ImportError:
     from config import ProtonetConfig
     from encoder import HybridTextEncoder, format_input_text
     from projection_head import ProjectionHead
+    from quality_signals import example_quality_weight
 
 
 @dataclass
@@ -56,6 +58,7 @@ class ProtoNetModel(nn.Module):
         if not items:
             hidden = int(self.cfg.projection_dim)
             return torch.empty((0, hidden), device=self.cfg.device)
+        device = self.cfg.device
         cached_outputs: List[torch.Tensor | None] = [None] * len(items)
         missing_indices: List[int] = []
         missing_items: List[Dict[str, Any]] = []
@@ -63,7 +66,7 @@ class ProtoNetModel(nn.Module):
         for idx, item in enumerate(items):
             key = str(item.get("example_id") or item.get("parent_review_id") or "")
             if (not self.training) and key and key in self.precomputed_embeddings:
-                cached_outputs[idx] = self.precomputed_embeddings[key].to(self.cfg.device)
+                cached_outputs[idx] = self.precomputed_embeddings[key].to(device)
             else:
                 missing_indices.append(idx)
                 missing_items.append(item)
@@ -83,7 +86,7 @@ class ProtoNetModel(nn.Module):
             ]
             embeddings = self.encoder(texts)
             projection_dtype = next(self.projection.parameters()).dtype
-            embeddings = embeddings.to(device=self.cfg.device, dtype=projection_dtype)
+            embeddings = embeddings.to(device=device, dtype=projection_dtype)
             projected = self.projection(embeddings)
             for local_idx, global_idx in enumerate(missing_indices):
                 tensor = projected[local_idx]
@@ -92,7 +95,7 @@ class ProtoNetModel(nn.Module):
                 if key and (not self.training):
                     self.precomputed_embeddings[key] = tensor.detach().cpu()
 
-        return torch.stack([tensor for tensor in cached_outputs if tensor is not None], dim=0)
+        return torch.stack(cached_outputs, dim=0)
 
     def episode_forward(self, episode: Dict[str, Any]) -> EpisodeForwardOutput:
         support = list(episode.get("support_set", []))
@@ -105,36 +108,33 @@ class ProtoNetModel(nn.Module):
         ordered_labels = sorted(dict.fromkeys(support_labels))
 
         # Vectorized prototype calculation
-        num_support = support_embeddings.size(0)
         num_labels = len(ordered_labels)
-        
+
         # Create a one-hot mask for each label: (num_labels, num_support)
         label_to_index = {label: idx for idx, label in enumerate(ordered_labels)}
         target_indices = torch.tensor([label_to_index[lab] for lab in support_labels], device=self.cfg.device)
-        one_hot = F.one_hot(target_indices, num_classes=num_labels).float().T # (num_labels, num_support)
-        
-        # Apply confidence weights
+        one_hot = F.one_hot(target_indices, num_classes=num_labels).to(dtype=support_embeddings.dtype).T
+
+        # Apply quality-aware weights
         weights = torch.tensor(
-            [float(item.get("confidence", 1.0)) for item in support],
+            [example_quality_weight(item) for item in support],
             dtype=torch.float32,
             device=self.cfg.device,
         )
-        weighted_one_hot = one_hot * weights.unsqueeze(0) # (num_labels, num_support)
-        
+        weighted_one_hot = one_hot * weights.unsqueeze(0)
+
         # Normalize weights per label
         weight_sums = weighted_one_hot.sum(dim=1, keepdim=True).clamp(min=1e-6)
-        normalized_weights = weighted_one_hot / weight_sums # (num_labels, num_support)
-        
-        # Compute prototypes: (num_labels, hidden)
+        normalized_weights = weighted_one_hot / weight_sums
+
         prototypes = torch.matmul(normalized_weights, support_embeddings)
-        
+
         # Apply smoothing and global mean
         global_mean = support_embeddings.mean(dim=0)
         prototypes = (1.0 - self.cfg.prototype_smoothing) * prototypes + self.cfg.prototype_smoothing * global_mean
         prototypes = F.normalize(prototypes, p=2, dim=-1)
 
         logits = -torch.cdist(query_embeddings, prototypes, p=2).pow(2) / self.temperature
-        label_to_index = {label: idx for idx, label in enumerate(ordered_labels)}
         targets = torch.tensor([label_to_index[label] for label in query_labels], dtype=torch.long, device=self.cfg.device)
         probabilities = torch.softmax(logits, dim=-1)
         prediction_indices = probabilities.argmax(dim=-1).tolist()

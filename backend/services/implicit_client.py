@@ -22,6 +22,7 @@ class ImplicitClient:
     def __init__(self) -> None:
         self.mode = settings.protonet_mode
         self._predict_fn = None
+        self._http_client: httpx.Client | None = None
         if self.mode == "import":
             self._setup_import_mode()
         elif self.mode == "http":
@@ -35,6 +36,7 @@ class ImplicitClient:
             self._setup_import_mode()
         except Exception:
             self._predict_fn = None
+        self._http_client = httpx.Client(timeout=settings.protonet_request_timeout_seconds)
 
     def _setup_import_mode(self) -> None:
         try:
@@ -49,11 +51,12 @@ class ImplicitClient:
     def _predict_http(self, review_text: str, domain: Optional[str], top_k: int) -> List[ImplicitPrediction]:
         payload = {"text": review_text, "domain": domain, "top_k": top_k}
         try:
-            with httpx.Client(timeout=settings.protonet_request_timeout_seconds) as client:
-                response = client.post(f"{settings.protonet_url}/infer/implicit", json=payload)
-                response.raise_for_status()
-                data = response.json()
-                return list(data.get("predictions", []))
+            if self._http_client is None:
+                self._http_client = httpx.Client(timeout=settings.protonet_request_timeout_seconds)
+            response = self._http_client.post(f"{settings.protonet_url}/infer/implicit", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return list(data.get("predictions", []))
         except Exception as exc:
             if self._predict_fn:
                 logger.warning("ProtoNet HTTP request failed, falling back to local: %s", exc)

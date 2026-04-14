@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List, Dict, Any
-from models.schemas import InferReviewOut, PredictionOut
+from models.schemas import InferReviewOut
 
 class ContractMapper:
     """

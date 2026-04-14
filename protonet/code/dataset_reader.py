@@ -14,6 +14,7 @@ except ImportError:
 
 
 VALID_SPLITS = ("train", "val", "test")
+REQUIRED_BENCHMARK_FILES = tuple(f"{split}.jsonl" for split in VALID_SPLITS) + ("metadata.json",)
 
 
 @dataclass
@@ -82,6 +83,25 @@ def read_split_rows(path: Path, *, progress_enabled: bool) -> List[Dict[str, Any
         raise FileNotFoundError(f"Missing input split file: {path}")
     rows = load_jsonl(path)
     return list(track(rows, total=len(rows), desc=f"load:{path.stem}", enabled=progress_enabled))
+
+
+def validate_benchmark_artifacts(input_dir: Path) -> None:
+    missing = [input_dir / name for name in REQUIRED_BENCHMARK_FILES if not (input_dir / name).exists()]
+    if not missing:
+        return
+
+    if input_dir.name == "ambiguity_grounded" and input_dir.parent.name == "benchmark":
+        output_dir_hint = input_dir.parent.parent
+    else:
+        output_dir_hint = Path("dataset_builder") / "output"
+    missing_lines = "\n".join(f"- {path}" for path in missing)
+    raise FileNotFoundError(
+        "Missing benchmark artifacts required by protonet.\n"
+        f"Input directory: {input_dir}\n"
+        f"Missing files:\n{missing_lines}\n"
+        "Generate them with:\n"
+        f"python dataset_builder\\code\\build_dataset.py --input-dir dataset_builder\\input --output-dir {output_dir_hint}"
+    )
 
 
 def _label_from_interpretation(
@@ -220,6 +240,7 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> str:
 def load_input_dataset(cfg: ProtonetConfig) -> tuple[Dict[str, List[Dict[str, Any]]], DatasetSummary]:
     if cfg.input_type != "benchmark":
         raise ValueError("V6 runtime only supports input_type='benchmark'")
+    validate_benchmark_artifacts(cfg.input_dir)
     rows_by_split: Dict[str, List[Dict[str, Any]]] = {}
     detected_format = "unknown"
     for split in VALID_SPLITS:

@@ -36,8 +36,14 @@
     "aliases": []
   },
   "service": {
-    "occurrences": 1,
+    "occurrences": 3,
     "max_confidence": 0.95,
+    "promoted": false,
+    "aliases": []
+  },
+  "cuisine": {
+    "occurrences": 1,
+    "max_confidence": 0.9,
     "promoted": false,
     "aliases": []
   }

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
@@ -26,7 +26,7 @@ from aspect_registry import (
 )
 from coref import heuristic_coref
 from evaluation import aspect_metrics, benchmark_gold_eval, benchmark_structural_audits, gold_eval
-from exporters import write_benchmark_outputs
+from exporters import write_pipeline_outputs
 from explicit_features import build_explicit_row, fit_explicit_artifacts
 from implicit_pipeline import (
     _is_valid_latent_aspect,
@@ -43,15 +43,17 @@ from llm_utils import resolve_async_llm_provider
 from research_stack import build_research_manifest, resolve_benchmark, resolve_model_family
 from robustness_eval import evaluate_training_tracks, promotion_gate
 from schema_detect import detect_schema
+from pipeline_state import build_pipeline_state
+from report_context import build_report_context
+from report_payload import assemble_pipeline_report
 from splitter import grouped_leakage_report, grouped_split
-from synthetic_generation import generate_synthetic_multidomain, write_synthetic_outputs
+from synthetic_generation import generate_synthetic_multidomain
 from governance import governance_signoff
 from utils import (
     normalize_whitespace,
     read_jsonl,
     stable_id,
     utc_now_iso,
-    write_json,
     write_jsonl,
     compress_dataset_artifacts,
 )
@@ -73,15 +75,6 @@ def _load_runtime_defaults() -> dict[str, Any]:
         return {}
     defaults = payload.get("defaults")
     return defaults if isinstance(defaults, dict) else {}
-
-
-def _required_env(*names: str) -> str:
-    for name in names:
-        value = os.environ.get(name)
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    primary = names[0] if names else "environment variable"
-    raise RuntimeError(f"{primary} is required in .env for dataset_builder")
 
 
 def _optional_env(*names: str, default: str | None = None) -> str | None:
@@ -223,25 +216,30 @@ def _select_working_rows(rows: list[dict[str, Any]], cfg: BuilderConfig) -> list
     if cfg.sample_size is None and cfg.chunk_size is None:
         return ordered
 
-    available_core_domains = [
-        domain for domain in _CORE_BENCHMARK_DOMAINS if any(_benchmark_domain_family(str(_get_row_domain(row))) == domain for row in ordered)
-    ]
+    target_size = cfg.sample_size if cfg.sample_size is not None else (cfg.chunk_size if cfg.chunk_size is not None else len(ordered))
+    
+    from collections import defaultdict
+    by_domain: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in ordered:
+        by_domain[_benchmark_domain_family(str(_get_row_domain(row)))].append(row)
+        
+    sorted_domains = sorted(by_domain.keys())
+    quota_per_domain = max(1, target_size // max(1, len(sorted_domains)))
+
     prioritized: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
 
-    # Seed the core V1 domains first so sampled runs do not collapse to one domain.
-    for domain in available_core_domains:
+    for domain in sorted_domains:
         domain_rows = sorted(
-            [row for row in ordered if _benchmark_domain_family(str(_get_row_domain(row))) == domain],
+            by_domain[domain],
             key=lambda row: _benchmark_row_priority(row, preferred_domain=domain),
         )
-        if not domain_rows:
-            continue
-        chosen = domain_rows[0]
-        chosen_id = str(chosen.get("id") or "")
-        if chosen_id and chosen_id not in selected_ids:
-            prioritized.append(chosen)
-            selected_ids.add(chosen_id)
+        selected_for_domain = domain_rows[:quota_per_domain]
+        for row in selected_for_domain:
+            chosen_id = str(row.get("id") or "")
+            if chosen_id and chosen_id not in selected_ids:
+                prioritized.append(row)
+                selected_ids.add(chosen_id)
 
     remaining = [row for row in ordered if str(row.get("id") or "") not in selected_ids]
     remaining_sorted = sorted(remaining, key=lambda row: _benchmark_row_priority(row, preferred_domain=_benchmark_domain_family(str(_get_row_domain(row)))))
@@ -276,13 +274,6 @@ def _train_floor_row_passes(
     if any(str(span.get("support_type") or "") not in accepted_support_types for span in spans):
         return False
     return True
-
-
-def _benchmark_domain_coverage(rows: list[dict[str, Any]]) -> dict[str, int]:
-    counts: Counter[str] = Counter()
-    for row in rows:
-        counts[_benchmark_domain_family(str(_get_row_domain(row)))] += 1
-    return {domain: int(counts.get(domain, 0)) for domain in _CORE_BENCHMARK_DOMAINS}
 
 
 _NON_FEATURE_COLUMNS = {
@@ -367,6 +358,50 @@ def _train_sentiment_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
             sentiment = "neutral"
         counts[sentiment] += 1
     return counts
+
+
+def _align_novel_clusters_to_split(
+    rows_by_split: dict[str, list[dict[str, Any]]],
+    *,
+    seed: int,
+) -> dict[str, Any]:
+    cluster_to_rows: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
+    for split_name, split_rows in rows_by_split.items():
+        for row in split_rows:
+            if not bool(row.get("novel_acceptable", False)):
+                continue
+            cluster_id = str(row.get("novel_cluster_id") or "").strip()
+            if not cluster_id:
+                continue
+            cluster_to_rows[cluster_id].append((split_name, row))
+
+    if not cluster_to_rows:
+        return {"applied": False, "reassigned_rows": 0, "clusters_seen": 0}
+
+    split_names = ("train", "val", "test")
+    reassigned_rows = 0
+    for cluster_id, split_rows in cluster_to_rows.items():
+        if len({split_name for split_name, _ in split_rows}) <= 1:
+            continue
+        target_split = sorted(
+            split_names,
+            key=lambda split_name: stable_id(seed, "novel-cluster-split", cluster_id, split_name),
+        )[0]
+        for split_name, row in list(split_rows):
+            if split_name == target_split:
+                continue
+            try:
+                rows_by_split[split_name].remove(row)
+            except ValueError:
+                continue
+            rows_by_split.setdefault(target_split, []).append(row)
+            reassigned_rows += 1
+
+    return {
+        "applied": bool(reassigned_rows),
+        "reassigned_rows": reassigned_rows,
+        "clusters_seen": len(cluster_to_rows),
+    }
 
 
 def _sentiment_ratio(rows: list[dict[str, Any]], *, label: str) -> float:
@@ -950,19 +985,6 @@ def _build_gold_interpretations(row: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def _evidence_for_aspect(row: dict[str, Any], aspect: str) -> tuple[str, list[int], bool]:
-    spans = list(row.get("implicit", {}).get("spans") or [])
-    for span in spans:
-        latent = str(span.get("latent_label") or span.get("latent_aspect") or span.get("aspect") or "").strip().lower()
-        if latent and latent == aspect.lower():
-            text = str(span.get("evidence_text") or span.get("clause") or span.get("evidence") or "").strip()
-            start = int(span.get("start_char", -1) or -1)
-            end = int(span.get("end_char", -1) or -1)
-            return text, [start, end], False
-    source_text = str(row.get("source_text") or "").strip()
-    return source_text, [-1, -1], True
-
-
 def _normalize_evidence_text(value: Any) -> str:
     return normalize_whitespace(str(value or "")).lower()
 
@@ -1185,24 +1207,6 @@ def _apply_train_fallback_general_policy(
     return kept_rows, stats
 
 
-def _apply_train_review_filter(
-    train_rows: list[dict[str, Any]],
-    *,
-    mode: str,
-    candidate_aspects_by_domain: dict[str, list[str]] | None = None,
-    min_confidence: float = 0.58,
-    accepted_support_types: tuple[str, ...] = ("exact", "near_exact", "gold"),
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    kept_rows, _, _, stats = _split_train_review_filter(
-        train_rows,
-        mode=mode,
-        candidate_aspects_by_domain=candidate_aspects_by_domain,
-        min_confidence=min_confidence,
-        accepted_support_types=accepted_support_types,
-    )
-    return kept_rows, stats
-
-
 def _apply_train_sentiment_balance(
     train_rows: list[dict[str, Any]],
     *,
@@ -1213,6 +1217,7 @@ def _apply_train_sentiment_balance(
     max_positive_ratio: float,
     neutral_max_ratio: float,
     seed: int,
+    min_rows_guard: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int], dict[str, Any]]:
     before_counts = _train_sentiment_counts(train_rows)
     mode_name = str(mode or "cap_neutral_with_dual_floor").strip().lower()
@@ -1226,6 +1231,7 @@ def _apply_train_sentiment_balance(
         "min_positive_ratio": positive_floor,
         "max_positive_ratio": positive_max,
         "max_neutral_ratio": neutral_max,
+        "viability_guard_triggered": False,
     }
     if mode_name not in {"cap_neutral", "cap_neutral_with_negative_floor", "cap_neutral_with_dual_floor"}:
         rows = list(train_rows)
@@ -1331,6 +1337,22 @@ def _apply_train_sentiment_balance(
         balanced_rows,
         key=lambda row: stable_id(seed, "train-balance-order", row.get("id") or row.get("source_text") or ""),
     )
+
+    guard_rows = max(0, int(min_rows_guard)) if min_rows_guard is not None else 0
+    if guard_rows > 0 and len(balanced_rows) < guard_rows and len(train_rows) > len(balanced_rows):
+        preserved_rows = sorted(
+            list(train_rows),
+            key=lambda row: stable_id(seed, "train-balance-order", row.get("id") or row.get("source_text") or ""),
+        )
+        constraints["viability_guard_triggered"] = True
+        constraints["min_rows_guard"] = guard_rows
+        constraints["achieved"] = {
+            "negative_ratio": _sentiment_ratio(preserved_rows, label="negative"),
+            "positive_ratio": _sentiment_ratio(preserved_rows, label="positive"),
+            "neutral_ratio": _sentiment_ratio(preserved_rows, label="neutral"),
+        }
+        return preserved_rows, before_counts, _train_sentiment_counts(preserved_rows), constraints
+
     constraints["achieved"] = {
         "negative_ratio": _sentiment_ratio(balanced_rows, label="negative"),
         "positive_ratio": _sentiment_ratio(balanced_rows, label="positive"),
@@ -1409,6 +1431,59 @@ def _apply_train_size_target(
     }
 
 
+def _recover_strict_train_floor(
+    train_rows: list[dict[str, Any]],
+    *,
+    candidate_rows: list[dict[str, Any]],
+    candidate_aspects_by_domain: dict[str, list[str]],
+    accepted_support_types: tuple[str, ...],
+    artifact_mode: str,
+    seed: int,
+    debug_benchmark_max_rows: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    strict_rows = [row for row in train_rows if _strict_row_passes(row)]
+    if strict_rows:
+        return strict_rows, [], {
+            "applied": False,
+            "floor_rows": 0,
+            "eligible_rows": len(strict_rows),
+            "reason": "strict_rows_present",
+        }
+
+    floor_rows = [
+        row for row in train_rows
+        if _train_floor_row_passes(
+            row,
+            candidate_aspects_by_domain=candidate_aspects_by_domain,
+            accepted_support_types={str(value).strip() for value in accepted_support_types if str(value).strip()},
+        )
+    ]
+    if not floor_rows:
+        return [], [], {
+            "applied": False,
+            "floor_rows": 0,
+            "eligible_rows": 0,
+            "reason": "no_floor_rows",
+        }
+
+    limit = len(floor_rows)
+    if artifact_mode == "debug_artifacts":
+        limit = max(1, int(debug_benchmark_max_rows))
+    selected = _stable_keep(
+        floor_rows,
+        seed=seed,
+        token="strict-train-floor",
+        limit=min(len(floor_rows), limit),
+    )
+    rejected = [row for row in train_rows if str(row.get("id") or "") not in {str(item.get("id") or "") for item in selected}]
+    return selected, rejected, {
+        "applied": True,
+        "floor_rows": len(floor_rows),
+        "eligible_rows": len(selected),
+        "reason": "floor_rows_recovered",
+    }
+
+
 async def _salvage_train_rows(
     dropped_rows: list[dict[str, Any]],
     *,
@@ -1443,7 +1518,7 @@ async def _salvage_train_rows(
         accepted_support = {"exact", "near_exact", "gold"}
     sent_for_salvage = [
         row for row in dropped_rows
-        if str(row.get("implicit", {}).get("review_reason") or "") in {"fallback_general", "implicit_not_ready"}
+        if str(row.get("implicit", {}).get("review_reason") or "") in {"weak_support", "low_confidence"}
     ]
     if mode_name == "off" or not sent_for_salvage:
         return [], {
@@ -1529,16 +1604,6 @@ async def _salvage_train_rows(
         recovered_by_reason[str(row.get("implicit", {}).get("review_reason") or "unknown")] += 1
         for support_type in support_types:
             recovered_span_support[support_type] += 1
-
-    return recovered, {
-        "salvage_mode": mode_name,
-        "salvage_sent_rows": len(sent_for_salvage),
-        "salvage_recovered_rows": len(recovered),
-        "salvage_recovery_rate": round(len(recovered) / len(sent_for_salvage), 4) if sent_for_salvage else 0.0,
-        "salvage_recovered_by_reason": dict(recovered_by_reason),
-        "salvage_recovered_span_support": dict(recovered_span_support),
-        "salvage_accepted_support_types": sorted(accepted_support),
-    }
 
     return recovered, {
         "salvage_mode": mode_name,
@@ -2113,6 +2178,91 @@ _QUALITY_REJECT_REASONS = {
 }
 
 
+def _quality_recovery_eligible(
+    row: dict[str, Any],
+    *,
+    min_confidence: float,
+    recovery_confidence_threshold: float,
+    accepted_support_types: tuple[str, ...],
+    candidate_aspects_by_domain: dict[str, list[str]] | None = None,
+    allow_weak_support: bool = False,
+) -> tuple[bool, list[str]]:
+    reason_codes = _quality_reason_codes(
+        row,
+        min_confidence=min_confidence,
+        accepted_support_types=accepted_support_types,
+        candidate_aspects_by_domain=candidate_aspects_by_domain,
+    )
+    if _quality_row_bucket(reason_codes) != "borderline":
+        return False, reason_codes
+
+    accepted_support = {str(value).strip() for value in accepted_support_types if str(value).strip()}
+    if not accepted_support:
+        accepted_support = {"exact", "near_exact", "gold"}
+
+    if not _row_domain_valid_for_train(row=row, candidate_aspects_by_domain=candidate_aspects_by_domain or {}):
+        return False, reason_codes
+    if not _row_grounded_non_general(
+        row,
+        accepted_support_types=accepted_support,
+        min_confidence=recovery_confidence_threshold,
+    ):
+        return False, reason_codes
+    if str(row.get("implicit", {}).get("review_reason") or "") == "weak_support" and not allow_weak_support:
+        return False, reason_codes
+    return True, reason_codes
+
+
+def _collect_recoverable_quality_rows(
+    rows: list[dict[str, Any]],
+    *,
+    min_confidence: float,
+    recovery_confidence_threshold: float,
+    accepted_support_types: tuple[str, ...],
+    candidate_aspects_by_domain: dict[str, list[str]] | None = None,
+    allow_weak_support: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    recoverable_rows: list[dict[str, Any]] = []
+    borderline_rows = 0
+    terminal_rows = 0
+    eligible_reason_counts: Counter[str] = Counter()
+    terminal_reason_counts: Counter[str] = Counter()
+
+    for row in rows:
+        eligible, reason_codes = _quality_recovery_eligible(
+            row,
+            min_confidence=min_confidence,
+            recovery_confidence_threshold=recovery_confidence_threshold,
+            accepted_support_types=accepted_support_types,
+            candidate_aspects_by_domain=candidate_aspects_by_domain,
+            allow_weak_support=allow_weak_support,
+        )
+        bucket = _quality_row_bucket(reason_codes)
+        if bucket == "borderline":
+            borderline_rows += 1
+            if eligible:
+                recoverable_rows.append(row)
+                for code in reason_codes:
+                    eligible_reason_counts[code] += 1
+            else:
+                for code in reason_codes:
+                    terminal_reason_counts[code] += 1
+        elif reason_codes:
+            terminal_rows += 1
+            for code in reason_codes:
+                terminal_reason_counts[code] += 1
+
+    return recoverable_rows, {
+        "source_rows": len(rows),
+        "borderline_rows": borderline_rows,
+        "recoverable_rows": len(recoverable_rows),
+        "terminal_rows": terminal_rows,
+        "recoverable_rate": round(len(recoverable_rows) / max(1, len(rows)), 4),
+        "recoverable_reason_counts": dict(eligible_reason_counts),
+        "terminal_reason_counts": dict(terminal_reason_counts),
+    }
+
+
 def _quality_reason_codes(
     row: dict[str, Any],
     *,
@@ -2182,13 +2332,16 @@ def _build_quality_analysis_artifact(
     final_train_rows: list[dict[str, Any]],
     *,
     min_confidence: float,
+    recovery_confidence_threshold: float,
     accepted_support_types: tuple[str, ...],
     candidate_aspects_by_domain: dict[str, list[str]] | None = None,
+    allow_weak_support_in_recovery: bool = False,
 ) -> dict[str, Any]:
     final_ids = {str(row.get("id") or "") for row in final_train_rows}
     excluded_rows = [row for row in train_rows if str(row.get("id") or "") not in final_ids]
     borderline_rows: list[dict[str, Any]] = []
     rejected_rows: list[dict[str, Any]] = []
+    recoverable_rows: list[dict[str, Any]] = []
     reason_counts: Counter[str] = Counter()
 
     for row in excluded_rows:
@@ -2207,6 +2360,16 @@ def _build_quality_analysis_artifact(
             reason_counts[code] += 1
         if bucket == "borderline":
             borderline_rows.append(payload)
+            eligible, _ = _quality_recovery_eligible(
+                row,
+                min_confidence=min_confidence,
+                recovery_confidence_threshold=recovery_confidence_threshold,
+                accepted_support_types=accepted_support_types,
+                candidate_aspects_by_domain=candidate_aspects_by_domain,
+                allow_weak_support=allow_weak_support_in_recovery,
+            )
+            if eligible:
+                recoverable_rows.append(payload)
         else:
             rejected_rows.append(payload)
 
@@ -2216,15 +2379,18 @@ def _build_quality_analysis_artifact(
         "final_train_rows": len(final_train_rows),
         "excluded_rows": len(excluded_rows),
         "borderline_count": len(borderline_rows),
+        "recoverable_count": len(recoverable_rows),
         "rejected_count": len(rejected_rows),
         "reason_group_counts": dict(reason_counts),
         "borderline_rows": borderline_rows,
+        "recoverable_rows": recoverable_rows,
         "rejected_rows": rejected_rows,
         "summary": {
             "train_rows": len(train_rows),
             "final_train_rows": len(final_train_rows),
             "excluded_rows": len(excluded_rows),
             "borderline_count": len(borderline_rows),
+            "recoverable_count": len(recoverable_rows),
             "rejected_count": len(rejected_rows),
             "reason_group_counts": dict(reason_counts),
         },
@@ -2253,42 +2419,6 @@ def _prepare_rows(frame: pd.DataFrame, cfg: BuilderConfig, text_column: str, pro
     ]
     if not cfg.no_drop:
         out = out[out[text_column].str.split().map(len) >= cfg.min_text_tokens].reset_index(drop=True)
-    return out
-
-
-def _build_labels_for_export(row: dict[str, Any]) -> list[dict[str, Any]]:
-    implicit = row.get("implicit", {}) or {}
-    # Use canonical aspect
-    aspect = str(implicit.get("aspect") or "general")
-    if not aspect or aspect == "general":
-        return []
-        
-    labels: list[dict[str, Any]] = []
-    # Every label now includes the core canonical fields + unconventional metadata
-    evidence_text, _, fallback_used = _evidence_for_aspect(row, aspect)
-    labels.append(
-        {
-            "aspect": aspect,
-            "sentiment": str(implicit.get("aspect_sentiments", {}).get(aspect, implicit.get("dominant_sentiment", "neutral"))).lower(),
-            "confidence": float(implicit.get("aspect_confidence", {}).get(aspect, 0.5)),
-            "evidence": evidence_text, # Hard cut-over Fix 1
-            "conformal_set": implicit.get("conformal_set", [aspect]),
-            "ambiguity_score": float(implicit.get("ambiguity_score", 0.0)),
-            "pivot_confirmed": bool(implicit.get("pivot_confirmed", False)),
-            "type": str(implicit.get("label_type") or "implicit"),
-        }
-    )
-    return labels
-
-
-def _to_model_export_row(row: dict[str, Any]) -> dict[str, Any]:
-    out = dict(row)
-    out["review_text"] = str(row.get("source_text") or row.get("review_text") or "")
-    out["labels"] = _build_labels_for_export(row)
-    out["group_id"] = _group_identity(row)
-    # Active Learning Hook: Tag high priority review if ambiguous
-    implicit = row.get("implicit", {}) or {}
-    out["review_priority"] = "high" if float(implicit.get("ambiguity_score", 0.0)) > 0.7 else "standard"
     return out
 
 
@@ -2431,6 +2561,31 @@ def _enforce_benchmark_family_floor(
     return {"applied": bool(restored_rows), "restored_rows": restored_rows, "restored_families": restored_families}
 
 
+def _benchmark_export_priority(row: dict[str, Any]) -> tuple[float, float, float, int, int, int, int, str]:
+    implicit_count = len(list(row.get("implicit_grounded_interpretations") or []))
+    explicit_count = len(list(row.get("explicit_grounded_interpretations") or []))
+    total_grounded = implicit_count + explicit_count
+    implicit_ratio = implicit_count / max(1, total_grounded)
+    hardness = str(row.get("hardness_tier") or "H0").strip().upper()
+    hardness_score = {"H3": 3, "H2": 2, "H1": 1, "H0": 0}.get(hardness, 0)
+    abstain_bonus = 1 if bool(row.get("abstain_acceptable", False)) else 0
+    novel_bonus = 1 if bool(row.get("novel_acceptable", False)) else 0
+    stable = stable_id(
+        "benchmark-row-priority",
+        row.get("instance_id") or row.get("record_id") or row.get("review_text") or "",
+    )
+    return (
+        float(implicit_count),
+        float(implicit_ratio),
+        float(total_grounded),
+        hardness_score,
+        abstain_bonus,
+        novel_bonus,
+        -explicit_count,
+        stable,
+    )
+
+
 def _export_protocol_views(
     rows_by_split: dict[str, list[dict[str, Any]]],
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
@@ -2512,6 +2667,7 @@ def _build_benchmark_instances(
     selected_rows = list(rows)
     if artifact_mode == "debug_artifacts" and debug_row_limit is not None and debug_row_limit > 0 and len(selected_rows) > debug_row_limit:
         selected_rows = _stable_keep(selected_rows, seed=seed, token="benchmark-debug-cap", limit=debug_row_limit)
+    selected_rows = sorted(selected_rows, key=_benchmark_export_priority, reverse=True)
 
     total_interpretations = 0
     grounded_interpretations = 0
@@ -2805,6 +2961,7 @@ def _build_benchmark_instances(
 
     leakage_rows = [{"split": split, "group_id": row.get("group_id", "unknown")} for split, rows_split in benchmark_rows_by_split.items() for row in rows_split]
     novelty_stats = _assign_novelty_flags(benchmark_rows_by_split)
+    novelty_alignment_stats = _align_novel_clusters_to_split(benchmark_rows_by_split, seed=seed)
     balance_stats = _apply_benchmark_balance_policy(benchmark_rows_by_split, seed=seed)
     family_floor_stats = _enforce_benchmark_family_floor(
         benchmark_rows_by_split,
@@ -2856,6 +3013,7 @@ def _build_benchmark_instances(
             "per_row_fallback_rate": round(local_group_source_counts.get("per_row_fallback", 0) / max(1, len(all_bench)), 4),
         },
         "novelty_assignment": novelty_stats,
+        "novelty_alignment": novelty_alignment_stats,
         "balance_policy": balance_stats,
         "family_floor_policy": family_floor_stats,
         "grounded_evidence_rate": round(grounded_interpretations / max(1, total_interpretations), 4),
@@ -3088,13 +3246,6 @@ def _resolve_processor_choice(*, processor: str | None) -> str:
     return choice
 
 
-def _resolve_llm_provider_for_processor(*, processor: str | None) -> str | None:
-    choice = _resolve_processor_choice(processor=processor)
-    if choice == "local":
-        return None
-    return "runpod"
-
-
 def _resolve_promotion_eligibility(
     *,
     run_profile: str,
@@ -3133,11 +3284,6 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     run_profile = _normalize_run_profile(cfg)
     artifact_mode = _normalize_artifact_mode(cfg, run_profile=run_profile)
     sampled_run = (cfg.sample_size is not None) or (cfg.chunk_size is not None)
-    if run_profile == "research" and sampled_run:
-        raise ValueError(
-            "Research profile forbids sample/chunk settings. "
-            "Unset sample_size/chunk_size or use run_profile=debug."
-        )
 
     cfg.ensure_dirs()
     progress = _ProgressTracker(enabled=bool(getattr(cfg, "progress", True)), total_steps=10)
@@ -3389,14 +3535,14 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         cap_ratio=cfg.train_fallback_general_cap_ratio,
         seed=cfg.random_seed,
     )
-    train_stage_counts: dict[str, int] = {
-        "start": len(train_built),
-        "after_general_policy": len(train_export_rows),
-    }
     train_after_general_ids = {str(row.get("id") or "") for row in train_export_rows}
     train_general_policy_dropped_rows = [
         row for row in train_built if str(row.get("id") or "") not in train_after_general_ids
     ]
+    train_stage_counts: dict[str, int] = {
+        "start": len(train_built),
+        "after_general_policy": len(train_export_rows),
+    }
     train_export_rows, train_reinference_stats = await _re_infer_recoverable_train_rows(
         train_export_rows,
         text_column=text_column,
@@ -3429,13 +3575,21 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         accepted_support_types=cfg.train_topup_allowed_support_types,
     )
     train_stage_counts["after_review_filter"] = len(train_export_rows)
+    train_quarantine_recoverable_rows, train_quarantine_stats = _collect_recoverable_quality_rows(
+        train_review_dropped_soft_rows,
+        min_confidence=cfg.train_topup_confidence_threshold,
+        recovery_confidence_threshold=cfg.train_topup_stage_c_confidence_threshold,
+        accepted_support_types=cfg.train_topup_allowed_support_types,
+        candidate_aspects_by_domain=candidate_aspects_by_domain_train,
+        allow_weak_support=cfg.train_topup_allow_weak_support_in_stage_c,
+    )
     train_export_rows, train_leakage_filter_stats_before_salvage = _strict_train_domain_leakage_filter(
         train_export_rows,
         candidate_aspects_by_domain=candidate_aspects_by_domain_train,
     )
     train_stage_counts["after_leakage_filter_before_salvage"] = len(train_export_rows)
     salvaged_rows, train_salvage_stats = await _salvage_train_rows(
-        train_review_dropped_soft_rows,
+        train_quarantine_recoverable_rows,
         mode=cfg.train_salvage_mode,
         text_column=text_column,
         candidate_aspects=candidate_aspects,
@@ -3460,6 +3614,11 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         llm_provider=llm_provider,
         llm_model_name=cfg.llm_model_name,
     )
+    salvaged_ids = {str(row.get("id") or "") for row in salvaged_rows}
+    train_topup_candidates = [
+        row for row in (train_general_policy_dropped_rows + train_review_dropped_soft_rows + train_review_dropped_hard_rows)
+        if str(row.get("id") or "") not in salvaged_ids
+    ]
     train_export_rows = train_export_rows + salvaged_rows
     train_stage_counts["after_salvage"] = len(train_export_rows)
     train_export_rows, train_leakage_filter_stats_after_salvage = _strict_train_domain_leakage_filter(
@@ -3478,10 +3637,10 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         max_positive_ratio=cfg.train_max_positive_ratio,
         neutral_max_ratio=cfg.train_neutral_max_ratio,
         seed=cfg.random_seed,
+        min_rows_guard=cfg.train_target_min_rows,
     )
     train_stage_counts["after_sentiment_balance"] = len(train_export_rows)
     progress.step("train export policies: sentiment balance")
-    train_topup_candidates = train_general_policy_dropped_rows + train_review_dropped_soft_rows + train_review_dropped_hard_rows
     with tqdm(
         total=len(train_topup_candidates),
         desc="train export policies: topup recovery",
@@ -3528,28 +3687,27 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     strict_train_export_rows = [row for row in train_export_rows if _strict_row_passes(row)] if cfg.strict_implicit_enabled else list(train_export_rows)
     train_stage_counts["after_strict_implicit"] = len(strict_train_export_rows)
     train_export_floor_rows: list[dict[str, Any]] = []
-    if cfg.strict_implicit_enabled and not strict_train_export_rows and (artifact_mode == "debug_artifacts" or sampled_run):
+    if cfg.strict_implicit_enabled and not strict_train_export_rows:
         accepted_support = {str(value).strip() for value in cfg.train_topup_allowed_support_types if str(value).strip()}
         if not accepted_support:
             accepted_support = {"exact", "near_exact", "gold"}
-        train_export_floor_rows = [
-            row for row in train_export_rows
-            if _train_floor_row_passes(
-                row,
-                candidate_aspects_by_domain=candidate_aspects_by_domain_train,
-                accepted_support_types=accepted_support,
-            )
-        ]
-        if train_export_floor_rows:
-            strict_train_export_rows = _stable_keep(
-                train_export_floor_rows,
-                seed=cfg.random_seed,
-                token="debug-train-floor",
-                limit=min(
-                    len(train_export_floor_rows),
-                    max(1, int(cfg.debug_benchmark_max_rows)) if artifact_mode == "debug_artifacts" else len(train_export_floor_rows),
-                ),
-            )
+        strict_train_export_rows, train_export_floor_rows, strict_floor_stats = _recover_strict_train_floor(
+            train_export_rows,
+            candidate_rows=train_built,
+            candidate_aspects_by_domain=candidate_aspects_by_domain_train,
+            accepted_support_types=tuple(sorted(accepted_support)),
+            artifact_mode=artifact_mode,
+            seed=cfg.random_seed,
+            debug_benchmark_max_rows=cfg.debug_benchmark_max_rows,
+        )
+        train_stage_counts["after_strict_floor_recovery"] = len(strict_train_export_rows)
+    else:
+        strict_floor_stats = {
+            "applied": False,
+            "floor_rows": len(train_export_floor_rows),
+            "eligible_rows": len(strict_train_export_rows),
+            "reason": "strict_rows_present",
+        }
     strict_val_export_rows = [row for row in val_built if _strict_row_passes(row)] if cfg.strict_implicit_enabled else list(val_built)
     strict_test_export_rows = [row for row in test_built if _strict_row_passes(row)] if cfg.strict_implicit_enabled else list(test_built)
     strict_review_candidates = [
@@ -3600,8 +3758,10 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         train_built,
         train_export_rows,
         min_confidence=cfg.train_topup_confidence_threshold,
+        recovery_confidence_threshold=cfg.train_topup_stage_c_confidence_threshold,
         accepted_support_types=cfg.train_topup_allowed_support_types,
         candidate_aspects_by_domain=(candidate_aspects_by_domain_train if train_domain_conditioning_mode != "off" else None),
+        allow_weak_support_in_recovery=cfg.train_topup_allow_weak_support_in_stage_c,
     )
     train_general_dominance_rate = (
         round(
@@ -3729,232 +3889,157 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         train_domain_support=dict(train_domain_support),
         weak_domain_support_row_threshold=cfg.weak_domain_support_row_threshold,
     )
-    report = {
-        "pipeline_version": "6.0-v6-only",
-        "output_version": cfg.output_version,
-        "generated_at": utc_now_iso(),
-        "run_profile": run_profile,
-        "artifact_mode": artifact_mode,
-        "config": asdict(cfg),
-        "schema": asdict(schema),
+    pipeline_state = build_pipeline_state(
+        train={
+            "export_rows": train_export_rows,
+            "stage_counts": train_stage_counts,
+            "target_stats": train_target_stats,
+            "topup_stats": train_topup_stats,
+            "sentiment_constraints": train_sentiment_constraints,
+            "general_policy_stats": train_general_policy_stats,
+            "review_filter_stats": train_review_filter_stats,
+            "reinference_stats": train_reinference_stats,
+            "quarantine_stats": train_quarantine_stats,
+            "leakage_before_salvage": train_leakage_filter_stats_before_salvage,
+            "leakage_after_salvage": train_leakage_filter_stats_after_salvage,
+            "leakage_after_topup": train_leakage_filter_stats_after_topup,
+            "leakage_after_targeting": train_leakage_filter_stats_after_targeting,
+        },
+        benchmark={
+            "rows_by_split": benchmark_rows_by_split,
+            "metadata": benchmark_metadata,
+            "review_queue_rows": benchmark_review_queue_rows,
+            "protocol_views": benchmark_protocol_views,
+            "gold_metrics": benchmark_gold_metrics,
+            "structural_audits": benchmark_structural,
+            "novelty": benchmark_v2_novelty,
+        },
+        evaluation={
+            "quality_summary": quality_summary,
+            "gold_metrics": gold_metrics,
+            "domain_generalization": domain_generalization,
+            "unseen_metrics": unseen_metrics,
+            "robust_training_eval": robust_training_eval,
+            "promotion_guard": promotion_guard,
+        },
+        governance={
+            "sentiment_quality": sentiment_quality,
+            "run_registry": run_registry,
+            "promoted_registry": promoted_registry,
+            "synthetic_audit": synthetic_audit,
+        },
+    )
+    research = {
+        "benchmark": benchmark_spec.key,
+        "benchmark_family": benchmark_spec.family,
+        "model_family": model_spec.key,
+        "model_kind": model_spec.kind,
+        "prompt_mode": cfg.prompt_mode,
+        "augmentation_mode": cfg.augmentation_mode,
         "implicit_mode": cfg.implicit_mode,
-        "multilingual_mode": cfg.multilingual_mode,
-        "domain_conditioning_mode": train_domain_conditioning_mode,
-        "train_domain_conditioning_mode": train_domain_conditioning_mode,
-        "eval_domain_conditioning_mode": eval_domain_conditioning_mode,
+        "multilingual_strategy": cfg.multilingual_mode,
         "coreference_enabled": cfg.use_coref,
-        "language_distribution": prepared_language_distribution,
-        "research": {
-            "benchmark": benchmark_spec.key,
-            "benchmark_family": benchmark_spec.family,
-            "model_family": model_spec.key,
-            "model_kind": model_spec.kind,
-            "prompt_mode": cfg.prompt_mode,
-            "augmentation_mode": cfg.augmentation_mode,
-            "implicit_mode": cfg.implicit_mode,
-            "multilingual_strategy": cfg.multilingual_mode,
-            "coreference_enabled": cfg.use_coref,
-            "no_drop": cfg.no_drop,
-        },
-        "stratification_choice": "group_id",
-        "candidate_aspects": candidate_aspects,
-        "candidate_aspects_by_language": candidate_aspects_by_language,
-        "candidate_aspects_by_domain": candidate_aspects_by_domain_train,
-        "chunk_preview_size": len(chunk_preview),
-        "chunk_sampling_strategy": "seeded_shuffle_then_slice",
-        "row_counts": {
-            "input": len(frame),
-            "preprocessed": len(prepared),
-            "selected": len(sample_frame),
-            "train": len(train_built),
-            "val": len(val_built),
-            "test": len(test_built),
-            "train_export": len(train_export_rows),
-        },
-        "split_ratios": {
-            "train": round(len(train_built) / max(1, len(train_built) + len(val_built) + len(test_built)), 4),
-            "val": round(len(val_built) / max(1, len(train_built) + len(val_built) + len(test_built)), 4),
-            "test": round(len(test_built) / max(1, len(train_built) + len(val_built) + len(test_built)), 4),
-        },
-        "split_sizes": {"train": len(train_built), "val": len(val_built), "test": len(test_built)},
-        "implicit_diagnostics": diagnostics,
-        "benchmark_summary": benchmark_metadata,
-        "benchmark_gold_eval": benchmark_gold_metrics,
-        "benchmark_structural_audits": benchmark_structural,
-        "benchmark_v2_novelty": benchmark_v2_novelty,
-        "aspect_registry": {
-            "run_registry_version": resolve_registry_version(run_registry),
-            "promoted_registry_version": resolve_registry_version(promoted_registry),
-            "run_registry_domains": len(run_registry.get("domains", {})),
-            "promoted_registry_domains": len(promoted_registry.get("domains", {})),
-        },
-        "sentiment_quality": sentiment_quality,
-        "synthetic_generation": synthetic_audit,
-        "robust_training_eval": robust_training_eval,
-        "promotion_guard": promotion_guard,
-        "benchmark_artifact_counts": benchmark_metadata.get("split_counts", {}),
-        "benchmark_review_queue_rows": len(benchmark_review_queue_rows),
-        "output_quality": quality_summary,
-        "strict_quality": quality_summary.get("strict_quality", {}),
-        "strict_artifacts": {
-            "strict_train_rows": len(strict_train_export_rows),
-            "strict_val_rows": len(strict_val_export_rows),
-            "strict_test_rows": len(strict_test_export_rows),
-            "strict_review_queue_rows": len(strict_review_queue_rows),
-            "strict_challenge_rows": len(strict_challenge_rows),
-        },
-        "train_export_floor_rows": len(train_export_floor_rows),
-        "grounded_prediction_rate": grounding["grounded_prediction_rate"],
-        "ungrounded_non_general_count": grounding["ungrounded_non_general_count"],
-        "train_general_rows_before_policy": train_general_policy_stats["train_general_rows_before_policy"],
-        "train_general_rows_after_policy": train_general_policy_stats["train_general_rows_after_policy"],
-        "train_general_policy_applied": train_general_policy_stats["train_general_policy_applied"],
-        "train_review_rows_before_filter": train_review_filter_stats["train_review_rows_before_filter"],
-        "train_review_rows_after_filter": train_review_filter_stats["train_review_rows_after_filter"],
-        "train_review_filter_applied": train_review_filter_stats["train_review_filter_applied"],
-        "train_review_dropped_soft_rows": len(train_review_dropped_soft_rows),
-        "train_review_dropped_hard_rows": len(train_review_dropped_hard_rows),
-        "train_reinference_stats": train_reinference_stats,
-        "train_export_stage_counts": train_stage_counts,
-        "train_salvage_stats": train_salvage_stats,
-        "train_leakage_filter_stats_before_salvage": train_leakage_filter_stats_before_salvage,
-        "train_leakage_filter_stats_after_salvage": train_leakage_filter_stats_after_salvage,
-        "train_leakage_filter_stats_after_topup": train_leakage_filter_stats_after_topup,
-        "train_leakage_filter_stats_after_targeting": train_leakage_filter_stats_after_targeting,
-        "train_sentiment_before_balance": train_sentiment_before_balance,
-        "train_sentiment_after_balance": train_sentiment_after_balance,
-        "train_sentiment_constraints": train_sentiment_constraints,
-        "train_topup_stats": train_topup_stats,
-        "train_topup_rejection_breakdown": train_topup_stats.get("train_topup_rejection_breakdown", {}),
-        "topup_effectiveness": train_topup_stats.get("topup_effectiveness", {}),
-        "size_recovery_stage": train_topup_stats.get("size_recovery_stage", "none"),
-        "size_recovery_shortfall_remaining": train_topup_stats.get("size_recovery_shortfall_remaining", 0),
-        "quality_analysis_summary": {
-            "train_rows": quality_analysis_artifact["train_rows"],
-            "final_train_rows": quality_analysis_artifact["final_train_rows"],
-            "excluded_rows": quality_analysis_artifact["excluded_rows"],
-            "borderline_count": quality_analysis_artifact["borderline_count"],
-            "rejected_count": quality_analysis_artifact["rejected_count"],
-            "reason_group_counts": quality_analysis_artifact["reason_group_counts"],
-        },
-        "train_general_dominance_rate": train_general_dominance_rate,
-        **train_domain_leakage_metrics,
-        **eval_domain_leakage_metrics,
-        "train_negative_ratio": _sentiment_ratio(train_export_rows, label="negative"),
-        "train_positive_ratio": _sentiment_ratio(train_export_rows, label="positive"),
-        "train_target_stats": train_target_stats,
-        "gold_eval": gold_metrics,
-        "domain_generalization": domain_generalization,
-        "unseen_domain_metrics": unseen_metrics,
-        "domain_prior_boost_count": sum(int(row.get("implicit", {}).get("domain_prior_boost_count", 0)) for row in finalized_rows),
-        "domain_prior_penalty_count": sum(int(row.get("implicit", {}).get("domain_prior_penalty_count", 0)) for row in finalized_rows),
-        "explicit_metrics": aspect_metrics(train_export_rows),
-        "validation": {
-            "counts_match": len(train_built) + len(val_built) + len(test_built) == (
-                len(finalized_rows)
-                - int(eval_leakage_filter_stats_val.get("train_domain_leakage_filter_removed_rows", 0))
-                - int(eval_leakage_filter_stats_test.get("train_domain_leakage_filter_removed_rows", 0))
-            ),
-            "has_language_distribution": bool(prepared_language_distribution),
-            "has_candidate_aspects_by_language": bool(candidate_aspects_by_language),
-            "no_generic_aspects": quality_summary["generic_implicit_aspects"] == 0,
-            "no_rejected_aspects": quality_summary["rejected_implicit_aspects"] == 0,
-            "has_gold_eval": bool(gold_metrics.get("has_gold_labels")) or bool(benchmark_gold_metrics.get("has_gold_interpretations")),
-            "has_benchmark_gold_eval": bool(benchmark_gold_metrics.get("has_gold_interpretations")),
-            "train_general_excluded": train_general_dominance_rate == 0.0,
-            "train_domain_leakage_ok": float(train_domain_leakage_metrics.get("train_domain_leakage_row_rate", 1.0)) == 0.0,
-            "train_target_size_within_range": bool(train_target_stats.get("size_within_target_range")),
-            "train_positive_ratio_within_max": float(_sentiment_ratio(train_export_rows, label="positive")) <= float(cfg.train_max_positive_ratio),
-            "train_neutral_ratio_within_max": float(_sentiment_ratio(train_export_rows, label="neutral")) <= float(cfg.train_neutral_max_ratio),
-            "train_target_blocking_failure": (
-                run_profile == "research"
-                and not bool(train_target_stats.get("size_within_target_range"))
-            ),
-            "sampled_run_blocked_or_debug": sampled_run and run_profile in {"research", "debug"},
-            "unseen_non_general_coverage_ok": float(unseen_metrics.get("unseen_non_general_coverage", 0.0)) >= float(cfg.unseen_non_general_coverage_min),
-            "unseen_not_ready_rate_ok": float(unseen_metrics.get("unseen_implicit_not_ready_rate", 1.0)) <= float(cfg.unseen_implicit_not_ready_rate_max),
-            "unseen_domain_leakage_ok": float(unseen_metrics.get("unseen_domain_leakage_row_rate", 1.0)) <= float(cfg.unseen_domain_leakage_row_rate_max),
-            "strict_explicit_contamination_ok": float(quality_summary.get("explicit_in_implicit_rate", 1.0)) <= float(cfg.strict_explicit_in_implicit_rate_max),
-            "strict_boundary_fp_ok": int(quality_summary.get("boundary_false_positive_count", 10**9)) <= int(cfg.strict_boundary_fp_max),
-            "strict_h2_h3_ok": float(quality_summary.get("h2_h3_ratio", 0.0)) >= float(cfg.strict_h2_h3_ratio_min),
-            "strict_multi_aspect_ok": float(quality_summary.get("multi_aspect_ratio", 0.0)) >= float(cfg.strict_multi_aspect_ratio_min),
-            "strict_challenge_ok": float(quality_summary.get("challenge_macro_f1", 0.0)) >= float(cfg.strict_challenge_macro_f1_min),
-            "grouped_split_leakage_ok": int(benchmark_metadata.get("grouped_split_leakage", {}).get("overlap_counts", {}).get("train_val", 0)) == 0
-            and int(benchmark_metadata.get("grouped_split_leakage", {}).get("overlap_counts", {}).get("train_test", 0)) == 0
-            and int(benchmark_metadata.get("grouped_split_leakage", {}).get("overlap_counts", {}).get("val_test", 0)) == 0,
-            "benchmark_val_non_empty": int(len(benchmark_rows_by_split.get("val", []))) > 0,
-            "benchmark_grounded_evidence_ok": float(benchmark_metadata.get("grounded_evidence_rate", 0.0)) >= 0.98,
-            "benchmark_duplicate_rate_ok": float(benchmark_metadata.get("duplicate_interpretation_rate", 1.0)) <= 0.01,
-            "benchmark_thermal_share_ok": float(benchmark_metadata.get("thermal_share", 1.0)) <= 0.35,
-            "benchmark_domain_coverage_ok": bool(benchmark_metadata.get("benchmark_domain_coverage_ok", True)),
-            "benchmark_family_floor_ok": bool(benchmark_metadata.get("family_floor_policy", {}).get("applied", False))
-            or all(
-                int(benchmark_metadata.get("source_domain_family_counts", {}).get(domain, 0)) == 0
-                or int(benchmark_metadata.get("benchmark_domain_family_counts", {}).get(domain, 0)) > 0
-                for domain in _CORE_BENCHMARK_DOMAINS
-            ),
-            "benchmark_implicit_purity_ok": float(benchmark_metadata.get("implicit_purity_rate", 0.0)) >= 0.7,
-            "benchmark_ontology_compatibility_ok": float(benchmark_metadata.get("ontology_compatibility_rate", 0.0)) >= 0.9,
-            "sentiment_mismatch_rate_ok": float(sentiment_quality.get("sentiment_mismatch_rate", 1.0)) <= 0.2,
-            "promotion_guard_ok": not bool(promotion_guard.get("blocked", False)),
-            "benchmark_artifact_counts_match": True,
-        },
+        "no_drop": cfg.no_drop,
     }
-    blocking_reasons: list[dict[str, str]] = []
-    if bool(report["validation"].get("sampled_run_blocked_or_debug")) and run_profile == "debug":
-        blocking_reasons.append({"code": "DEBUG_OR_SAMPLED_RUN", "message": "Run used debug profile and is not promotable."})
-    if bool(report["validation"].get("train_target_blocking_failure")):
-        topup_shortfall = int(report.get("size_recovery_shortfall_remaining", 0))
-        if str(cfg.train_topup_recovery_mode).strip().lower() == "strict_topup" and topup_shortfall > 0:
-            blocking_reasons.append({
-                "code": "TRAIN_SIZE_BELOW_TARGET_AFTER_STAGED_TOPUP",
-                "message": "Train export remains below minimum after staged strict top-up. See train_topup_rejection_breakdown.",
-            })
-        else:
-            blocking_reasons.append({"code": "TRAIN_SIZE_BELOW_TARGET", "message": "Train export is below configured minimum target size."})
-    if not bool(report["validation"].get("train_domain_leakage_ok")):
-        blocking_reasons.append({"code": "TRAIN_DOMAIN_LEAKAGE", "message": "Train export contains cross-domain aspect leakage."})
-    if not bool(report["validation"].get("train_general_excluded")):
-        blocking_reasons.append({"code": "TRAIN_GENERAL_CONTAMINATION", "message": "Train export still includes general-only fallback rows."})
-    if not bool(report["validation"].get("no_generic_aspects")) or not bool(report["validation"].get("no_rejected_aspects")):
-        blocking_reasons.append({"code": "INVALID_ASPECT_LABELS", "message": "Generic or rejected aspect labels detected."})
-    if not bool(report["validation"].get("train_positive_ratio_within_max")):
-        blocking_reasons.append({"code": "TRAIN_POSITIVE_RATIO_TOO_HIGH", "message": "Positive sentiment exceeds configured maximum ratio."})
-    if not bool(report["validation"].get("train_neutral_ratio_within_max")):
-        blocking_reasons.append({"code": "TRAIN_NEUTRAL_RATIO_TOO_HIGH", "message": "Neutral sentiment exceeds configured maximum ratio."})
-    if not bool(report["validation"].get("strict_explicit_contamination_ok")):
-        blocking_reasons.append({"code": "STRICT_EXPLICIT_CONTAMINATION", "message": "Strict implicit set contains explicit span contamination."})
-    if not bool(report["validation"].get("strict_boundary_fp_ok")):
-        blocking_reasons.append({"code": "STRICT_BOUNDARY_FALSE_POSITIVES", "message": "Strict implicit set still includes boundary false positives."})
-    if not bool(report["validation"].get("strict_h2_h3_ok")):
-        blocking_reasons.append({"code": "STRICT_HARDNESS_TOO_LOW", "message": "Strict implicit set does not meet H2/H3 minimum ratio."})
-    if not bool(report["validation"].get("strict_multi_aspect_ok")):
-        blocking_reasons.append({"code": "STRICT_MULTI_ASPECT_TOO_LOW", "message": "Strict implicit set does not meet multi-aspect minimum ratio."})
-    if not bool(report["validation"].get("strict_challenge_ok")):
-        blocking_reasons.append({"code": "STRICT_CHALLENGE_TOO_LOW", "message": "Strict challenge metric is below configured floor."})
-    if not bool(report["validation"].get("grouped_split_leakage_ok")):
-        blocking_reasons.append({"code": "GROUPED_SPLIT_LEAKAGE", "message": "Grouped split leakage detected across benchmark splits."})
-    if not bool(report["validation"].get("benchmark_val_non_empty")):
-        blocking_reasons.append({"code": "BENCHMARK_VAL_EMPTY", "message": "Benchmark validation split is empty."})
-    if not bool(report["validation"].get("benchmark_grounded_evidence_ok")):
-        blocking_reasons.append({"code": "BENCHMARK_EVIDENCE_NOT_GROUNDED", "message": "Benchmark evidence grounding rate is below required threshold."})
-    if not bool(report["validation"].get("benchmark_duplicate_rate_ok")):
-        blocking_reasons.append({"code": "BENCHMARK_DUPLICATE_INTERPRETATIONS", "message": "Benchmark still contains duplicate interpretations."})
-    if not bool(report["validation"].get("benchmark_thermal_share_ok")):
-        blocking_reasons.append({"code": "BENCHMARK_THERMAL_OVERCONCENTRATION", "message": "Thermal aspect share remains over concentrated."})
-    if not bool(report["validation"].get("benchmark_domain_coverage_ok")):
-        blocking_reasons.append({"code": "BENCHMARK_DOMAIN_COVERAGE", "message": "Benchmark is missing a core V1 domain family present in the source pool."})
-    if not bool(report["validation"].get("benchmark_family_floor_ok")):
-        blocking_reasons.append({"code": "BENCHMARK_FAMILY_FLOOR", "message": "Debug benchmark family floor could not restore a missing core family."})
-    if not bool(report["validation"].get("benchmark_implicit_purity_ok")):
-        blocking_reasons.append({"code": "BENCHMARK_IMPLICIT_PURITY", "message": "Benchmark implicit purity rate is below threshold."})
-    if not bool(report["validation"].get("benchmark_ontology_compatibility_ok")):
-        blocking_reasons.append({"code": "BENCHMARK_ONTOLOGY_COMPATIBILITY", "message": "Benchmark ontology compatibility is below threshold."})
-    if not bool(report["validation"].get("sentiment_mismatch_rate_ok")):
-        blocking_reasons.append({"code": "SENTIMENT_MISMATCH_RATE", "message": "Sentiment mismatch rate exceeds allowed maximum."})
-    if not bool(report["validation"].get("promotion_guard_ok")):
-        blocking_reasons.append({"code": "WORST_DOMAIN_REGRESSION", "message": "Worst-domain F1 regressed above allowed threshold."})
-    report["blocking_reasons"] = blocking_reasons
+    counts_match = len(train_built) + len(val_built) + len(test_built) == (
+        len(finalized_rows)
+        - int(eval_leakage_filter_stats_val.get("train_domain_leakage_filter_removed_rows", 0))
+        - int(eval_leakage_filter_stats_test.get("train_domain_leakage_filter_removed_rows", 0))
+    )
+    train_negative_ratio = _sentiment_ratio(train_export_rows, label="negative")
+    train_positive_ratio = _sentiment_ratio(train_export_rows, label="positive")
+    train_neutral_ratio = _sentiment_ratio(train_export_rows, label="neutral")
+    train_target_blocking_failure = (
+        run_profile == "research"
+        and not sampled_run
+        and not bool(train_target_stats.get("size_within_target_range"))
+    )
+    sampled_run_blocked_or_debug = sampled_run and run_profile in {"research", "debug"}
+    generated_at = run_ts
+    run_registry_version = resolve_registry_version(run_registry)
+    promoted_registry_version = resolve_registry_version(promoted_registry)
+    domain_prior_boost_count = 0
+    domain_prior_penalty_count = 0
+    quality_analysis_summary = {
+        "train_rows": quality_analysis_artifact["train_rows"],
+        "final_train_rows": quality_analysis_artifact["final_train_rows"],
+        "excluded_rows": quality_analysis_artifact["excluded_rows"],
+        "borderline_count": quality_analysis_artifact["borderline_count"],
+        "recoverable_count": quality_analysis_artifact["recoverable_count"],
+        "rejected_count": quality_analysis_artifact["rejected_count"],
+        "reason_group_counts": quality_analysis_artifact["reason_group_counts"],
+    }
+    explicit_metrics = aspect_metrics(train_export_rows)
+    report_context = build_report_context(
+        cfg=cfg,
+        generated_at=generated_at,
+        run_profile=run_profile,
+        artifact_mode=artifact_mode,
+        config=asdict(cfg),
+        text_column=text_column,
+        frame=frame,
+        prepared=prepared,
+        sample_frame=sample_frame,
+        train_built=train_built,
+        val_built=val_built,
+        test_built=test_built,
+        finalized_rows=finalized_rows,
+        candidate_aspects=candidate_aspects,
+        candidate_aspects_by_language=candidate_aspects_by_language,
+        candidate_aspects_by_domain_train=candidate_aspects_by_domain_train,
+        chunk_preview=chunk_preview,
+        prepared_language_distribution=prepared_language_distribution,
+        schema=schema,
+        train_domain_conditioning_mode=train_domain_conditioning_mode,
+        eval_domain_conditioning_mode=eval_domain_conditioning_mode,
+        research=research,
+        diagnostics=diagnostics,
+        pipeline_state=pipeline_state,
+        train_review_filter_stats=train_review_filter_stats,
+        train_quarantine_recoverable_rows=train_quarantine_recoverable_rows,
+        train_quarantine_stats=train_quarantine_stats,
+        train_review_dropped_soft_rows=train_review_dropped_soft_rows,
+        train_review_dropped_hard_rows=train_review_dropped_hard_rows,
+        train_salvage_stats=train_salvage_stats,
+        train_leakage_filter_stats_before_salvage=train_leakage_filter_stats_before_salvage,
+        train_leakage_filter_stats_after_salvage=train_leakage_filter_stats_after_salvage,
+        train_leakage_filter_stats_after_topup=train_leakage_filter_stats_after_topup,
+        train_leakage_filter_stats_after_targeting=train_leakage_filter_stats_after_targeting,
+        train_sentiment_before_balance=train_sentiment_before_balance,
+        train_sentiment_after_balance=train_sentiment_after_balance,
+        train_general_dominance_rate=train_general_dominance_rate,
+        train_domain_leakage_metrics=train_domain_leakage_metrics,
+        eval_domain_leakage_metrics=eval_domain_leakage_metrics,
+        train_negative_ratio=train_negative_ratio,
+        train_positive_ratio=train_positive_ratio,
+        train_neutral_ratio=train_neutral_ratio,
+        train_target_blocking_failure=train_target_blocking_failure,
+        sampled_run_blocked_or_debug=sampled_run_blocked_or_debug,
+        quality_analysis_summary=quality_analysis_summary,
+        explicit_metrics=explicit_metrics,
+        counts_match=counts_match,
+        run_registry=run_registry,
+        promoted_registry=promoted_registry,
+        run_registry_version=run_registry_version,
+        promoted_registry_version=promoted_registry_version,
+        benchmark_spec=benchmark_spec,
+        model_spec=model_spec,
+        benchmark_rows_by_split=benchmark_rows_by_split,
+        benchmark_metadata=benchmark_metadata,
+        core_benchmark_domains=_CORE_BENCHMARK_DOMAINS,
+        synthetic_audit=synthetic_audit,
+        strict_train_export_rows=strict_train_export_rows,
+        strict_val_export_rows=strict_val_export_rows,
+        strict_test_export_rows=strict_test_export_rows,
+        strict_review_queue_rows=strict_review_queue_rows,
+        strict_challenge_rows=strict_challenge_rows,
+        strict_floor_stats=strict_floor_stats,
+        train_export_floor_rows=train_export_floor_rows,
+        grounding=grounding,
+        domain_prior_boost_count=domain_prior_boost_count,
+        domain_prior_penalty_count=domain_prior_penalty_count,
+    )
+    report = assemble_pipeline_report(context=report_context)
     report["governance_signoff"] = governance_signoff(report=report)
     report["promotion_eligibility"] = _resolve_promotion_eligibility(
         run_profile=run_profile,
@@ -3981,123 +4066,32 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
 
     progress.step("report assembly")
     if not cfg.dry_run:
-        write_benchmark_outputs(
-            cfg.benchmark_dir,
-            benchmark_rows_by_split,
-            benchmark_metadata,
-            protocol_views=benchmark_protocol_views,
+        output_stats = write_pipeline_outputs(
+            cfg=cfg,
+            report=report,
+            benchmark_rows_by_split=benchmark_rows_by_split,
+            benchmark_metadata=benchmark_metadata,
+            benchmark_protocol_views=benchmark_protocol_views,
+            benchmark_review_queue_rows=benchmark_review_queue_rows,
+            run_registry=run_registry,
+            promoted_registry=promoted_registry,
+            quality_analysis_artifact=quality_analysis_artifact,
+            synthetic_accepted=synthetic_accepted,
+            synthetic_rejected=synthetic_rejected,
+            synthetic_audit=synthetic_audit,
+            benchmark_v2_novelty=benchmark_v2_novelty,
+            research_manifest=research_manifest,
+            previous_accepted_path=previous_accepted_path,
+            robust_training_eval=robust_training_eval,
+            promotion_guard=promotion_guard,
         )
-        write_jsonl(cfg.benchmark_dir / "review_queue.jsonl", benchmark_review_queue_rows)
-        write_json(cfg.reports_dir / "aspect_registry_run.json", run_registry)
-        write_json(cfg.reports_dir / "aspect_registry_promoted.json", promoted_registry)
-        write_json(cfg.reports_dir / "quality_analysis.json", quality_analysis_artifact)
-        write_synthetic_outputs(
-            output_dir=cfg.output_dir / "synthetic",
-            accepted=synthetic_accepted,
-            rejected=synthetic_rejected,
-        )
-        write_json(cfg.output_dir / "synthetic" / "audit.json", synthetic_audit)
-        benchmark_artifact_counts = _benchmark_artifact_counts(cfg.benchmark_dir)
-        benchmark_report_counts = dict(benchmark_metadata.get("split_counts", {}))
-        benchmark_report_counts["total"] = int(benchmark_metadata.get("rows", 0))
-        benchmark_artifact_counts_match = all(
-            int(benchmark_artifact_counts.get(key, 0)) == int(value)
-            for key, value in benchmark_report_counts.items()
-        )
-        report["benchmark_artifact_counts"] = benchmark_artifact_counts
-        report["validation"]["benchmark_artifact_counts_match"] = benchmark_artifact_counts_match
-        if not benchmark_artifact_counts_match:
-            report["blocking_reasons"] = report.get("blocking_reasons", [])
-            report["blocking_reasons"].append({
-                "code": "BENCHMARK_ARTIFACT_COUNT_MISMATCH",
-                "message": "Written benchmark JSONL counts do not match report metadata.",
-            })
-        report["promotion_eligibility"] = _resolve_promotion_eligibility(
-            run_profile=run_profile,
-            sampled=sampled_run,
-            validation=report["validation"],
-        )
-        if not bool(promotion_guard.get("blocked", False)):
-            previous_accepted_path.parent.mkdir(parents=True, exist_ok=True)
-            previous_accepted_path.write_text(
-                json.dumps(
-                    {
-                        "updated_at": utc_now_iso(),
-                        "worst_domain_f1": float((robust_training_eval.get("groupdro") or {}).get("worst_domain_f1", 0.0)),
-                    },
-                    indent=2,
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-        write_json(cfg.reports_dir / "build_report.json", report)
-        write_json(cfg.reports_dir / "benchmark_v2_novelty_report.json", benchmark_v2_novelty)
-        write_json(cfg.reports_dir / "data_quality_report.json", {
-            "run_profile": run_profile,
-            "artifact_mode": artifact_mode,
-            "rows_in": len(frame),
-            "rows_out": len(prepared),
-            "text_column": text_column,
-            "schema_fingerprint": schema.schema_fingerprint,
-            "candidate_aspects": candidate_aspects,
-            "candidate_aspects_by_language": candidate_aspects_by_language,
-            "candidate_aspects_by_domain": candidate_aspects_by_domain_train,
-            "implicit_mode": cfg.implicit_mode,
-            "multilingual_mode": cfg.multilingual_mode,
-            "coreference_enabled": cfg.use_coref,
-            "language_distribution": prepared_language_distribution,
-            "row_counts": report["row_counts"],
-            "research": report["research"],
-            "output_quality": quality_summary,
-            "benchmark_summary": benchmark_metadata,
-            "benchmark_v2_novelty": benchmark_v2_novelty,
-            "aspect_registry_run": run_registry,
-            "aspect_registry_promoted": promoted_registry,
-            "sentiment_quality": sentiment_quality,
-            "synthetic_generation": synthetic_audit,
-            "robust_training_eval": robust_training_eval,
-            "promotion_guard": promotion_guard,
-            "governance_signoff": report.get("governance_signoff", {}),
-            "benchmark_artifact_counts": benchmark_artifact_counts,
-            "benchmark_report_counts": benchmark_report_counts,
-            "benchmark_artifact_counts_match": benchmark_artifact_counts_match,
-            "strict_quality": report.get("strict_quality", {}),
-            "strict_artifacts": report.get("strict_artifacts", {}),
-            "train_salvage_stats": train_salvage_stats,
-            "train_topup_stats": train_topup_stats,
-            "train_reinference_stats": report.get("train_reinference_stats", {}),
-            "train_review_dropped_soft_rows": report.get("train_review_dropped_soft_rows", 0),
-            "train_review_dropped_hard_rows": report.get("train_review_dropped_hard_rows", 0),
-            "size_recovery_stage": train_topup_stats.get("size_recovery_stage", "none"),
-            "size_recovery_shortfall_remaining": train_topup_stats.get("size_recovery_shortfall_remaining", 0),
-            "topup_effectiveness": train_topup_stats.get("topup_effectiveness", {}),
-            "train_topup_rejection_breakdown": train_topup_stats.get("train_topup_rejection_breakdown", {}),
-            "train_target_stats": train_target_stats,
-            "train_sentiment_constraints": train_sentiment_constraints,
-            "train_domain_leakage_rows": report["train_domain_leakage_rows"],
-            "train_domain_leakage_row_rate": report["train_domain_leakage_row_rate"],
-            "train_domain_leakage_aspect_instances": report["train_domain_leakage_aspect_instances"],
-            "eval_domain_leakage_rows": report["eval_domain_leakage_rows"],
-            "eval_domain_leakage_row_rate": report["eval_domain_leakage_row_rate"],
-            "eval_domain_leakage_aspect_instances": report["eval_domain_leakage_aspect_instances"],
-            "train_negative_ratio": report["train_negative_ratio"],
-            "train_positive_ratio": report["train_positive_ratio"],
-            "grounded_prediction_rate": grounding["grounded_prediction_rate"],
-            "ungrounded_non_general_count": grounding["ungrounded_non_general_count"],
-            "gold_eval": gold_metrics,
-            "domain_generalization": domain_generalization,
-            "unseen_domain_metrics": unseen_metrics,
-            "domain_prior_boost_count": report["domain_prior_boost_count"],
-            "domain_prior_penalty_count": report["domain_prior_penalty_count"],
-            "novelty_identity": report["novelty_identity"],
-            "promotion_eligibility": report["promotion_eligibility"],
-            "blocking_reasons": report["blocking_reasons"],
-            "validation": report["validation"],
-            "chunked_execution": {"sample_size": cfg.sample_size, "chunk_size": cfg.chunk_size, "chunk_offset": cfg.chunk_offset, "strategy": "seeded_shuffle_then_slice"},
-        })
-        write_json(cfg.reports_dir / "research_manifest.json", research_manifest)
+        report["benchmark_artifact_counts"] = output_stats["benchmark_artifact_counts"]
+        report["validation"]["benchmark_artifact_counts_match"] = output_stats["benchmark_artifact_counts_match"]
         if cfg.emit_review_set:
-            write_jsonl(cfg.reports_dir / "review_set_template.jsonl", _build_review_set_template(finalized_rows, size=cfg.review_set_size, seed=cfg.random_seed))
+            write_jsonl(
+                cfg.reports_dir / "review_set_template.jsonl",
+                _build_review_set_template(finalized_rows, size=cfg.review_set_size, seed=cfg.random_seed),
+            )
         progress.step("report/export writing")
     else:
         progress.step("report/export writing")
@@ -4227,7 +4221,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_llm_config(provider_name: str, model_name: str | None) -> tuple[str, str]:
+def _resolve_llm_config(provider_name: str, model_name: str | None) -> tuple[str, str | None]:
     """Resolves the active LLM provider and model name based on .env and CLI args."""
     # 1. Resolve Provider
     active_provider = provider_name.strip().lower()
@@ -4239,6 +4233,10 @@ def _resolve_llm_config(provider_name: str, model_name: str | None) -> tuple[str
     effective_model = model_name
     if not effective_model:
         provider_model_env = f"{active_provider.upper()}_MODEL"
+        if active_provider == "runpod":
+            # RunPod serverless endpoints usually bind the model in the endpoint image/template.
+            return active_provider, None
+
         effective_model = _optional_env(provider_model_env)
         
         if not effective_model:
@@ -4248,15 +4246,10 @@ def _resolve_llm_config(provider_name: str, model_name: str | None) -> tuple[str
                 print(f"[!] Warning: {provider_model_env} not found in .env. Falling back to DEFAULT_LLM_MODEL: {fallback_model}")
                 effective_model = fallback_model
             else:
-                # Last resort error (only if not runpod)
-                if active_provider != "runpod":
-                    raise RuntimeError(
-                        f"No model configured for provider '{active_provider}'. "
-                        f"Please define {provider_model_env} or DEFAULT_LLM_MODEL in your .env file."
-                    )
-                else:
-                    # For RunPod serverless, model is often managed at the endpoint level
-                    effective_model = ""
+                raise RuntimeError(
+                    f"No model configured for provider '{active_provider}'. "
+                    f"Please define {provider_model_env} or DEFAULT_LLM_MODEL in your .env file."
+                )
     
     return active_provider, effective_model
 
@@ -4389,6 +4382,12 @@ def main(argv: list[str] | None = None) -> int:
         discovery_min_confidence=args.discovery_min_confidence,
         discovery_stability_threshold=args.discovery_stability_threshold,
     )
+    if cfg.sample_size is not None and cfg.sample_size > 0:
+        dynamic_min = max(1, int(cfg.sample_size * cfg.train_ratio * 0.8))
+        cfg.train_target_min_rows = min(cfg.train_target_min_rows, dynamic_min)
+        dynamic_max = max(cfg.train_target_min_rows, int(cfg.sample_size * cfg.train_ratio * 1.5))
+        cfg.train_target_max_rows = min(cfg.train_target_max_rows, dynamic_max)
+
     import asyncio
     report = asyncio.run(run_pipeline(cfg))
     
@@ -4406,4 +4405,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

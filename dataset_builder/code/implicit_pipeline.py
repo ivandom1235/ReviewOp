@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-import json
 import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -233,16 +232,6 @@ def _keyword_in_text(text: str, keyword: str) -> bool:
     return bool(pattern.search(normalized_text))
 
 
-def _hardness_tier(hardness: int) -> str:
-    if hardness >= 3:
-        return "H3"
-    if hardness == 2:
-        return "H2"
-    if hardness == 1:
-        return "H1"
-    return "H0"
-
-
 def _compute_leakage_flags(
     *,
     text: str,
@@ -308,19 +297,6 @@ def _match_aspect_surface(text: str, aspect: str) -> tuple[str | None, str | Non
                 if match:
                     return match.group(0), "near_exact"
     return None, None
-
-
-def is_surface_leakage(text: str, aspect: str) -> bool:
-    """Checks if the aspect name or its direct synonyms appear in the text."""
-    text_lower = normalize_whitespace(text).lower()
-    aspect_lower = normalize_whitespace(aspect).lower()
-    if _keyword_in_text(text_lower, aspect_lower):
-        return True
-    # Check for plural-stripped aspect.
-    stemmed = " ".join(_stem_token(token) for token in aspect_lower.split())
-    if _keyword_in_text(text_lower, stemmed):
-        return True
-    return False
 
 
 _ADVERSATIVE_RE = re.compile(r"(?:\s+)(?:but|however|yet|while|although)(?:\s+)", re.IGNORECASE)
@@ -392,30 +368,6 @@ def _sentence_clauses_with_offsets(text: str) -> list[dict[str, int | str]]:
         cursor = end
         out.append({"clause": piece, "start": int(start), "end": int(end)})
     return out
-
-
-def _infer_fallback_latent_from_clause(clause: str) -> tuple[str | None, int]:
-    tokens = set(tokenize(clause))
-    if not tokens:
-        return None, 0
-    ranked: list[tuple[str, int]] = []
-    for label, e_kws, i_sigs in LATENT_ASPECT_RULES:
-        keywords = e_kws | i_sigs
-        score = 0
-        for keyword in keywords:
-            keyword_tokens = set(tokenize(keyword))
-            if not keyword_tokens:
-                continue
-            if keyword_tokens.issubset(tokens):
-                score += 2
-            elif keyword_tokens & tokens:
-                score += 1
-        if score:
-            ranked.append((label, score))
-    if not ranked:
-        return None, 0
-    ranked.sort(key=lambda item: item[1], reverse=True)
-    return ranked[0][0], ranked[0][1]
 
 
 def infer_sentiment(text: str) -> str:
@@ -533,51 +485,6 @@ def _extract_gold_aspects(rows: List[Dict[str, Any]]) -> list[str]:
     return [aspect for aspect, _ in counts.most_common()]
 
 
-def _extract_primary_gold_aspect(row: Dict[str, Any]) -> str | None:
-    for key in ("aspect", "gold_aspect", "target_aspect"):
-        value = row.get(key)
-        if isinstance(value, str) and _is_meaningful_aspect(value):
-            return _normalize_aspect(value)
-    if isinstance(row.get("gold_labels"), list):
-        for label in row["gold_labels"]:
-            if isinstance(label, dict):
-                for key in ("aspect", "text", "implicit_aspect"):
-                    value = label.get(key)
-                    if isinstance(value, str) and _is_meaningful_aspect(value):
-                        return _normalize_aspect(value)
-    return None
-
-
-def _parse_structured_prediction(raw: Any) -> tuple[list[dict[str, Any]], list[str]]:
-    if raw is None:
-        return [], []
-    errors: list[str] = []
-    payload = raw
-    if isinstance(raw, str):
-        candidate = raw.strip()
-        if candidate.startswith("```"):
-            candidate = candidate.strip("`")
-            if candidate.startswith("json"):
-                candidate = candidate[4:].strip()
-        try:
-            payload = json.loads(candidate)
-        except Exception as exc:  # noqa: BLE001
-            return [], [type(exc).__name__]
-    if isinstance(payload, dict):
-        items = payload.get("aspects") or payload.get("predictions") or []
-    elif isinstance(payload, list):
-        items = payload
-    else:
-        return [], errors
-    parsed: list[dict[str, Any]] = []
-    for item in items:
-        if isinstance(item, str):
-            parsed.append({"aspect": item})
-        elif isinstance(item, dict):
-            parsed.append(item)
-    return parsed, errors
-
-
 def discover_aspects(
     rows: List[Dict[str, Any]],
     *,
@@ -651,7 +558,7 @@ async def build_implicit_row(
     discovery_mode: bool = False,
     discovery_min_confidence: float = 0.55,
 ) -> Dict[str, Any]:
-    from llm_utils import AsyncLlmProvider, reason_implicit_signal_async, discover_novel_aspects_async
+    from llm_utils import AsyncRunPodProvider, reason_implicit_signal_async, discover_novel_aspects_async
 
     mode = _canonical_mode(implicit_mode)
     raw_text = normalize_whitespace(row.get(text_column, ""))
@@ -667,6 +574,8 @@ async def build_implicit_row(
     fallback_branch = "none"
     reasoned_recovery_used = False
     leakage_flags_total: set[str] = set()
+    runpod_endpoint_manages_model = isinstance(llm_provider, AsyncRunPodProvider)
+    effective_llm_model_name = str(llm_model_name or "")
 
     # Stage A/B: Hybrid Candidate Generation (Optimized single-pass)
     for clause_payload in clauses:
@@ -725,25 +634,42 @@ async def build_implicit_row(
 
         # Priority 3: Stage 3 - LLM Fallback (only if no lexical or vector matches)
         if not clause_matches and enable_llm_fallback and llm_provider:
-            if llm_model_name is None or not str(llm_model_name).strip():
+            if not effective_llm_model_name and not runpod_endpoint_manages_model:
                 raise RuntimeError(
                     "LLM_MODEL_NAME or provider-specific model env is required"
                 )
             llm_fallback_used = True
-            paraphrases = await reason_implicit_signal_async(clause, candidate_aspects, llm_provider, llm_model_name, bypass_cache=bypass_cache)
+            predicted_aspects = await reason_implicit_signal_async(clause, candidate_aspects, llm_provider, effective_llm_model_name, bypass_cache=bypass_cache)
             fallback_branch = "llm_parse"
-            for para in paraphrases:
+            for pred in predicted_aspects:
+                pred_clean = str(pred).strip().lower()
+                if not pred_clean or pred_clean == "none":
+                    continue
+                # The LLM must return a label from the canonical ontology (candidate_aspects)
+                # But we map it back to LATENT_ASPECT_RULES
                 for label, e_kws, i_sigs in LATENT_ASPECT_RULES:
-                    for kw in sorted(e_kws | i_sigs, key=len, reverse=True):
-                        if _keyword_in_text(para, kw) and _keyword_in_text(clause, kw):
-                            clause_matches.append({
-                                "latent": label,"aspect": kw,"support_type": "llm_reasoning",
-                                "label_type": "implicit","hardness": 2,"confidence": 0.75,"source": "llm",
-                            })
-                            reasoned_recovery_used = True
-                            break
-                    if clause_matches: break
-                if clause_matches: break
+                    if pred_clean == label:
+                        # Extract the best matching evidence from the clause
+                        matched_surface = None
+                        for kw in sorted(e_kws | i_sigs, key=len, reverse=True):
+                            if _keyword_in_text(clause, kw):
+                                matched_surface = kw
+                                break
+                        # Even if we don't find a keyword match, the LLM extracted it purely implicitly.
+                        # So we anchor on the clause itself if no surface keyword matches,
+                        # OR if we want strict grounding, we only accept if there is SOME signal.
+                        # Since it's purely implicit, there might not be a keyword. Anchor is clause start.
+                        clause_matches.append({
+                            "latent": label,
+                            "aspect": matched_surface or clause[:30],
+                            "support_type": "llm_reasoning",
+                            "label_type": "implicit",
+                            "hardness": 2,
+                            "confidence": 0.75,
+                            "source": "llm",
+                        })
+                        reasoned_recovery_used = True
+                        break
             if not clause_matches:
                 llm_parse_errors.append("ungrounded_llm_match")
         
@@ -753,7 +679,7 @@ async def build_implicit_row(
                 clause, 
                 excluded_aspects=list(VALID_LATENT_ASPECTS), 
                 provider=llm_provider, 
-                model_name=llm_model_name,
+                model_name=effective_llm_model_name,
                 domain=domain,
                 bypass_cache=bypass_cache
             )
@@ -940,19 +866,6 @@ class MultiAspectSynthesis:
             return initial_aspects
         # Synthesis logic for resolving conflicting or overlapping implicit signals
         return list(dict.fromkeys(initial_aspects))
-
-
-class ResearchAblationMatrix:
-    """Manages the 5-stage ablation matrix for ReviewOp research validation."""
-    def __init__(self, run_profile: str = "research") -> None:
-        self.run_profile = run_profile
-        self.matrix = {
-            "baseline": {"stage_b": False, "stage_c": False},
-            "v5_hybrid": {"stage_b": True, "stage_c": True},
-        }
-
-    def get_config(self, stage: str) -> dict[str, bool]:
-        return self.matrix.get(stage, self.matrix["v5_hybrid"])
 
 
 def collect_diagnostics(rows: List[Dict[str, Any]], *, text_column: str, candidate_aspects: List[str]) -> Dict[str, Any]:

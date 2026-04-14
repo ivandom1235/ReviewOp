@@ -1,0 +1,14 @@
+{
+  "timeliness": {
+    "occurrences": 1,
+    "max_confidence": 0.95,
+    "promoted": false,
+    "aliases": []
+  },
+  "cleanliness": {
+    "occurrences": 1,
+    "max_confidence": 0.95,
+    "promoted": false,
+    "aliases": []
+  }
+}

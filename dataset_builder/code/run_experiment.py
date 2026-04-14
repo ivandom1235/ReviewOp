@@ -32,6 +32,14 @@ def _required_env(*names: str) -> str:
     primary = names[0] if names else "environment variable"
     raise RuntimeError(f"{primary} is required in .env for dataset_builder")
 
+
+def _optional_env(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
+
 QUALITY_GATES = {
     "fallback_only_rate_max": 0.22,
     "needs_review_rows_max": 1800,
@@ -445,7 +453,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--llm-model-name",
         type=str,
-        default=_required_env("LLM_MODEL_NAME", "GROQ_MODEL", "OPENAI_MODEL", "OLLAMA_MODEL"),
+        default=_optional_env("LLM_MODEL_NAME", "GROQ_MODEL", "OPENAI_MODEL", "OLLAMA_MODEL"),
     )
     parser.add_argument("--llm-api-key", type=str, default=None)
     parser.add_argument("--llm-base-url", type=str, default=None)
