@@ -66,6 +66,35 @@ def format_input_text(review_text: str, evidence_text: str, domain: str) -> str:
     return f"[DOMAIN={dom}] {marked}".strip()
 
 
+class AttentionPoolingHead(nn.Module):
+    def __init__(self, hidden_dim: int) -> None:
+        super().__init__()
+        self.query = nn.Parameter(torch.randn(1, 1, hidden_dim))
+        self.key = nn.Linear(hidden_dim, hidden_dim)
+        self.value = nn.Linear(hidden_dim, hidden_dim)
+        self.scale = hidden_dim**-0.5
+
+    def forward(self, hidden_states: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Calculates cross-attention between a learnable query and sequence hidden states.
+        mask: (batch, seq_len) where 1 is valid token, 0 is padding/masked.
+        """
+        # Head parameters should be synced to device/dtype during initialization or model.to()
+        q = self.query.expand(hidden_states.size(0), -1, -1)
+        k = self.key(hidden_states)
+        v = self.value(hidden_states)
+
+        # (batch, 1, seq_len)
+        attn_logits = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        # Apply mask: mask == 0 means padding
+        attn_logits = attn_logits.squeeze(1).masked_fill(mask == 0, float("-inf"))
+        attn_weights = torch.softmax(attn_logits, dim=-1).unsqueeze(1)
+
+        # (batch, hidden_dim)
+        pooled = torch.matmul(attn_weights, v).squeeze(1)
+        return pooled
+
+
 class HybridTextEncoder(nn.Module):
     def __init__(self, cfg: ProtonetConfig) -> None:
         super().__init__()
@@ -77,6 +106,7 @@ class HybridTextEncoder(nn.Module):
         self.hidden_size = cfg.bow_dim
         self.tokenizer = None
         self.model = None
+        self.pooling_head = None
         self.vectorizer = None
         self._cache: "OrderedDict[str, torch.Tensor]" = OrderedDict()  # Text -> Embedding
 
@@ -92,6 +122,11 @@ class HybridTextEncoder(nn.Module):
                     self.model.resize_token_embeddings(len(self.tokenizer))
                 self.backend = "transformer"
                 self.hidden_size = int(self.model.config.hidden_size)
+                self.pooling_head = AttentionPoolingHead(self.hidden_size)
+                # Ensure head matches backbone dtype (essential for DeBERTa-v3/Mixed Precision)
+                if hasattr(self.model, "dtype"):
+                    self.pooling_head.to(self.model.dtype)
+                
                 self.trainable = bool(cfg.train_encoder)
                 if not self.trainable:
                     for param in self.model.parameters():
@@ -212,8 +247,8 @@ class HybridTextEncoder(nn.Module):
         else:
             final_mask = attention_mask.bool()
 
-        mask_float = final_mask.float().unsqueeze(-1)
-        return (hidden * mask_float).sum(dim=1) / mask_float.sum(dim=1).clamp(min=1.0)
+        mask_float = final_mask.float()
+        return self.pooling_head(hidden, mask_float)
 
     def forward(self, texts: List[str]) -> torch.Tensor:
         return self.encode(texts)
@@ -232,4 +267,6 @@ class HybridTextEncoder(nn.Module):
         payload: Dict[str, object] = {"backend": self.backend}
         if self.backend == "transformer" and self.model is not None:
             payload["state_dict"] = self.model.state_dict()
+            if self.pooling_head is not None:
+                payload["pooling_head"] = self.pooling_head.state_dict()
         return payload

@@ -157,7 +157,7 @@ def _label_from_interpretation(
     }
 
 
-def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> str:
+def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> tuple[List[Dict[str, Any]], str]:
     if not rows:
         raise ValueError(f"No benchmark rows found for split {split}")
     expanded: List[Dict[str, Any]] = []
@@ -227,14 +227,13 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> str:
             if bool(built.get("evidence_fallback_used", False)):
                 evidence_fallback_counter += 1
             expanded.append(built)
-    rows[:] = expanded
     if split in {"val", "test"} and novel_counter == 0:
         print(f"[warn] {split} split contains zero novel positives; novelty calibration/eval will be limited.")
     if split in {"val", "test"} and abstain_counter == 0:
         print(f"[warn] {split} split contains zero abstain-acceptable rows; abstention eval will be limited.")
     if evidence_fallback_counter > 0:
         print(f"[warn] {split} split required evidence span fallback for {evidence_fallback_counter} examples.")
-    return "benchmark_examples"
+    return expanded, "benchmark_examples"
 
 
 def load_input_dataset(cfg: ProtonetConfig) -> tuple[Dict[str, List[Dict[str, Any]]], DatasetSummary]:
@@ -245,8 +244,8 @@ def load_input_dataset(cfg: ProtonetConfig) -> tuple[Dict[str, List[Dict[str, An
     detected_format = "unknown"
     for split in VALID_SPLITS:
         path = split_file(cfg.input_dir, split)
-        rows = read_split_rows(path, progress_enabled=cfg.progress_enabled)
-        detected_format = validate_benchmark_rows(rows, split)
+        raw_rows = read_split_rows(path, progress_enabled=cfg.progress_enabled)
+        rows, detected_format = validate_benchmark_rows(raw_rows, split)
         rows_by_split[split] = rows
     summary = DatasetSummary(
         split_sizes={split: len(rows) for split, rows in rows_by_split.items()},

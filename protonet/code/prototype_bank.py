@@ -78,15 +78,10 @@ def build_global_prototype_bank(model, episodes: List[Dict[str, Any]], cfg: Prot
                 bar.update(1)
         raw_prototypes = torch.stack(prototype_rows, dim=0)
         global_mean = raw_prototypes.mean(dim=0)
-        smoothed = torch.stack(
-            [
-                torch.nn.functional.normalize(
-                    (1.0 - cfg.prototype_smoothing) * proto + cfg.prototype_smoothing * global_mean,
-                    p=2,
-                    dim=-1,
-                )
-                for proto in raw_prototypes
-            ],
-            dim=0,
+        # Vectorized: interpolate all prototypes toward the global mean in one op
+        smoothed = torch.nn.functional.normalize(
+            torch.lerp(raw_prototypes, global_mean.unsqueeze(0).expand_as(raw_prototypes), cfg.prototype_smoothing),
+            p=2,
+            dim=-1,
         )
     return PrototypeBank(labels=labels, prototypes=smoothed, counts=counts, mean_confidence=mean_confidence)

@@ -34,6 +34,8 @@ class TrainingResult:
     checkpoint_path: Path
     val_metrics: Dict[str, Any]
     test_metrics: Dict[str, Any]
+    val_predictions: List[Dict[str, Any]]
+    test_predictions: List[Dict[str, Any]]
     prototype_bank: PrototypeBank
 
 
@@ -100,7 +102,7 @@ def _build_offline_embedding_cache(model: ProtoNetModel, episodes_by_split: Dict
     return snapshot
 
 
-def _supervised_contrastive_loss(embeddings: torch.Tensor, labels: List[str], temperature: float = 0.2) -> torch.Tensor:
+def _supervised_contrastive_loss(embeddings: torch.Tensor, labels: List[str], temperature: float) -> torch.Tensor:
     if len(labels) < 2:
         return embeddings.new_tensor(0.0)
     label_to_id = {label: idx for idx, label in enumerate(sorted(set(labels)))}
@@ -181,7 +183,7 @@ def _warmup_representations(model: ProtoNetModel, cfg: ProtonetConfig, optimizer
             desc=f"warmup:{epoch}/{cfg.warmup_epochs}",
             enabled=cfg.progress_enabled,
         )
-        loss = _supervised_contrastive_loss(embeddings, labels)
+        loss = _supervised_contrastive_loss(embeddings, labels, temperature=cfg.contrastive_temperature)
         loss.backward()
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
@@ -210,8 +212,14 @@ def _trainable_parameter_groups(model: ProtoNetModel, cfg: ProtonetConfig) -> Li
     # Add log_temperature to no_decay group of projection
     groups[1]["params"].append(model.log_temperature)
 
-    if model.encoder.backend == "transformer" and model.encoder.trainable and model.encoder.model is not None:
-        groups.extend(get_groups(model.encoder.model.named_parameters(), cfg.encoder_learning_rate))
+    if model.encoder.backend == "transformer" and model.encoder.model is not None:
+        # Backbone parameters (optional)
+        if model.encoder.trainable:
+            groups.extend(get_groups(model.encoder.model.named_parameters(), cfg.encoder_learning_rate))
+        
+        # Head parameters (always trained if using transformer backbone)
+        if model.encoder.pooling_head is not None:
+            groups.extend(get_groups(model.encoder.pooling_head.named_parameters(), cfg.learning_rate))
 
     return [g for g in groups if g["params"]]
 
@@ -283,8 +291,15 @@ def _episode_loss_with_weights(
         if cfg.contrastive_weight > 0:
             embeddings = torch.cat([out.support_embeddings, out.query_embeddings], dim=0)
             labels = [_joint_label_from_item(item, cfg.joint_label_separator) for item in (list(episode.get("support_set", [])) + list(episode.get("query_set", [])))]
-            loss = loss + cfg.contrastive_weight * _supervised_contrastive_loss(embeddings, labels)
+            loss = loss + cfg.contrastive_weight * _supervised_contrastive_loss(embeddings, labels, temperature=cfg.contrastive_temperature)
             
+        if cfg.ortho_weight > 0:
+            # Orthogonal penalty between prototypes to enhance feature discriminativity
+            similarity = torch.matmul(out.prototypes, out.prototypes.T)
+            eye = torch.eye(out.prototypes.size(0), device=out.prototypes.device)
+            ortho_loss = torch.norm(similarity - eye, p='fro')
+            loss = loss + cfg.ortho_weight * ortho_loss
+
     preds = out.probabilities.argmax(dim=-1).tolist()
     targets = out.targets.detach().cpu().tolist()
     correct = sum(int(p == t) for p, t in zip(preds, targets))
@@ -402,8 +417,8 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
 
     load_checkpoint(model, checkpoint_path)
     
-    val_metrics, _ = evaluate_episodes(model, episodes_by_split["val"], cfg, "val", include_predictions=False)
-    test_metrics, _ = evaluate_episodes(model, episodes_by_split["test"], cfg, "test", include_predictions=False)
+    val_metrics, val_predictions = evaluate_episodes(model, episodes_by_split["val"], cfg, "val")
+    test_metrics, test_predictions = evaluate_episodes(model, episodes_by_split["test"], cfg, "test")
     
     protocol_metrics: Dict[str, Any] = {}
     for key, episodes in episodes_by_split.items():
@@ -427,5 +442,7 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
         checkpoint_path=checkpoint_path,
         val_metrics=val_metrics,
         test_metrics=test_metrics,
+        val_predictions=val_predictions,
+        test_predictions=test_predictions,
         prototype_bank=prototype_bank,
     )

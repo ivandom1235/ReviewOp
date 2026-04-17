@@ -14,10 +14,12 @@ from torch.nn import functional as F
 try:
     from .config import ProtonetConfig
     from .encoder import HybridTextEncoder, format_input_text
+    from .novelty_utils import compute_novelty_score
     from .projection_head import ProjectionHead
 except ImportError:
     from config import ProtonetConfig
     from encoder import HybridTextEncoder, format_input_text
+    from novelty_utils import compute_novelty_score
     from projection_head import ProjectionHead
 
 
@@ -119,7 +121,7 @@ class ProtonetRuntime:
 
     @classmethod
     def load(cls, bundle_path: str | Path) -> "ProtonetRuntime":
-        payload = torch.load(Path(bundle_path), map_location="cpu")
+        payload = torch.load(Path(bundle_path), map_location="cpu", weights_only=False)  # bundle stores non-tensor config objects
         cfg = _build_config(payload["config"])
         encoder_info = dict(payload.get("encoder") or {})
         encoder_backend = str(encoder_info.get("backend") or cfg.encoder_backend or "auto").strip().lower()
@@ -140,6 +142,8 @@ class ProtonetRuntime:
             encoder_state = payload["encoder_state"]
             if "state_dict" in encoder_state and encoder.model is not None:
                 encoder.model.load_state_dict(encoder_state["state_dict"])
+            if "pooling_head" in encoder_state and encoder.pooling_head is not None:
+                encoder.pooling_head.load_state_dict(encoder_state["pooling_head"])
         encoder.eval()
         projection.eval()
         prototype_bank = payload["prototype_bank"]
@@ -210,7 +214,7 @@ class ProtonetRuntime:
             distance_novelty = max(0.0, min(1.0, distance_sq / (distance_sq + 1.0)))
         energy_raw = float(rows[0].get("energy", 0.0)) if rows else 0.0
         energy_score = max(0.0, min(1.0, (energy_raw + 5.0) / 10.0))
-        novelty = max(0.0, min(1.0, 0.45 * distance_novelty + 0.25 * ambiguity + 0.20 * energy_score))
+        novelty = compute_novelty_score(distance_novelty, ambiguity, energy_score)
         evidence_quality = 1.0 if evidence_text.strip() else 0.0
         selective_conf = (
             self.cfg.selective_alpha * p1

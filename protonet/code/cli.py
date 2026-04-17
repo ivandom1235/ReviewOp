@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 try:
-    from .config import METADATA_ROOT, OUTPUT_ROOT, ProtonetConfig, resolve_default_input_dir, seed_everything
+    from .config import METADATA_ROOT, OUTPUT_ROOT, ProtonetConfig, env_value, resolve_default_input_dir, seed_everything
     from .dataset_reader import load_input_dataset, write_json, write_jsonl
     from .episode_builder import build_or_load_episode_sets
     from .evaluator import evaluate_episodes
@@ -15,7 +15,7 @@ try:
     from .trainer import load_checkpoint, train_model
     from .calibrate_novelty import calibrate_thresholds
 except ImportError:
-    from config import METADATA_ROOT, OUTPUT_ROOT, ProtonetConfig, resolve_default_input_dir, seed_everything
+    from config import METADATA_ROOT, OUTPUT_ROOT, ProtonetConfig, env_value, resolve_default_input_dir, seed_everything
     from dataset_reader import load_input_dataset, write_json, write_jsonl
     from episode_builder import build_or_load_episode_sets
     from evaluator import evaluate_episodes
@@ -23,14 +23,6 @@ except ImportError:
     from model import ProtoNetModel
     from trainer import load_checkpoint, train_model
     from calibrate_novelty import calibrate_thresholds
-
-
-def _env_value(*names: str, default: str | None = None) -> str | None:
-    for name in names:
-        value = os.getenv(name)
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    return default
 
 
 def _build_config(args: argparse.Namespace) -> ProtonetConfig:
@@ -71,6 +63,7 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         novelty_threshold=args.novelty_threshold,
         novelty_known_threshold=args.novelty_known_threshold,
         novelty_novel_threshold=args.novelty_novel_threshold,
+        ortho_weight=args.ortho_weight,
         novelty_calibration_path=Path(args.novelty_calibration_path) if args.novelty_calibration_path else (metadata_dir / "novelty_calibration_v2.json"),
         seed=args.seed,
         no_progress=args.no_progress,
@@ -79,6 +72,7 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         production_require_transformer=args.production_require_transformer,
         allow_model_download=args.allow_model_download,
         compile_model=args.compile_model,
+        train_encoder=args.train_encoder,
     )
 
 
@@ -103,16 +97,16 @@ def run_train_local(args: argparse.Namespace) -> dict[str, object]:
     episodes_by_split = build_or_load_episode_sets(rows_by_split, cfg)
     result = train_model(cfg, episodes_by_split)
 
+    # Calibrate using predictions already produced by train_model -- no extra eval pass needed.
     if cfg.save_predictions:
-        _, val_predictions = evaluate_episodes(result.model, episodes_by_split["val"], cfg, "val")
-        novelty_calibration = calibrate_thresholds(val_predictions)
+        novelty_calibration = calibrate_thresholds(result.val_predictions)
         cfg.novelty_known_threshold = float(novelty_calibration.get("thresholds", {}).get("T_known", cfg.novelty_known_threshold))
         cfg.novelty_novel_threshold = float(novelty_calibration.get("thresholds", {}).get("T_novel", cfg.novelty_novel_threshold))
         write_json(cfg.novelty_calibration_path, novelty_calibration)
-        val_metrics, val_predictions = evaluate_episodes(result.model, episodes_by_split["val"], cfg, "val")
-        test_metrics, test_predictions = evaluate_episodes(result.model, episodes_by_split["test"], cfg, "test")
-        write_jsonl(cfg.predictions_dir / "val_predictions.jsonl", val_predictions)
-        write_jsonl(cfg.predictions_dir / "test_predictions.jsonl", test_predictions)
+        val_metrics = result.val_metrics
+        test_metrics = result.test_metrics
+        write_jsonl(cfg.predictions_dir / "val_predictions.jsonl", result.val_predictions)
+        write_jsonl(cfg.predictions_dir / "test_predictions.jsonl", result.test_predictions)
     else:
         val_metrics = result.val_metrics
         test_metrics = result.test_metrics
@@ -209,31 +203,31 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--output-dir", type=str, default=None)
     common.add_argument("--metadata-dir", type=str, default=None)
     common.add_argument("--encoder-backend", choices=["auto", "transformer", "bow"], default="auto")
-    common.add_argument("--encoder-model-name", type=str, default=_env_value("REVIEWOP_PROTONET_ENCODER_MODEL", "PROTONET_ENCODER_MODEL", default="microsoft/deberta-v3-base") or "microsoft/deberta-v3-base")
+    common.add_argument("--encoder-model-name", type=str, default=env_value("REVIEWOP_PROTONET_ENCODER_MODEL", "PROTONET_ENCODER_MODEL", default="microsoft/deberta-v3-base") or "microsoft/deberta-v3-base")
     common.add_argument("--n-way", type=int, default=3)
     common.add_argument("--k-shot", type=int, default=2)
     common.add_argument("--q-query", type=int, default=2)
-    common.add_argument("--epochs", type=int, default=8)
-    common.add_argument("--learning-rate", type=float, default=5e-4)
-    common.add_argument("--encoder-learning-rate", type=float, default=1e-5)
+    common.add_argument("--epochs", type=int, default=12)
+    common.add_argument("--learning-rate", type=float, default=6e-4)
+    common.add_argument("--encoder-learning-rate", type=float, default=1.2e-5)
     common.add_argument("--warmup-epochs", type=int, default=1)
-    common.add_argument("--patience", type=int, default=3)
+    common.add_argument("--patience", type=int, default=4)
     common.add_argument("--max-train-episodes", type=int, default=120)
     common.add_argument("--max-eval-episodes", type=int, default=48)
-    common.add_argument("--contrastive-weight", type=float, default=0.15)
-    common.add_argument("--focal-gamma", type=float, default=2.0)
-    common.add_argument("--prototype-smoothing", type=float, default=0.05)
-    common.add_argument("--low-confidence-threshold", type=float, default=0.55)
-    common.add_argument("--selective-alpha", type=float, default=0.6)
-    common.add_argument("--selective-beta", type=float, default=0.25)
-    common.add_argument("--selective-gamma", type=float, default=0.1)
-    common.add_argument("--selective-delta", type=float, default=0.05)
-    common.add_argument("--abstain-threshold", type=float, default=0.55)
-    common.add_argument("--multi-label-margin", type=float, default=0.08)
+    common.add_argument("--contrastive-weight", type=float, default=0.22)
+    common.add_argument("--focal-gamma", type=float, default=1.8)
+    common.add_argument("--prototype-smoothing", type=float, default=0.08)
+    common.add_argument("--low-confidence-threshold", type=float, default=0.25)
+    common.add_argument("--selective-alpha", type=float, default=1.0)
+    common.add_argument("--selective-beta", type=float, default=0.0)
+    common.add_argument("--selective-gamma", type=float, default=0.0)
+    common.add_argument("--selective-delta", type=float, default=0.0)
+    common.add_argument("--abstain-threshold", type=float, default=0.01)
+    common.add_argument("--multi-label-margin", type=float, default=0.10)
     common.add_argument("--sentiment-pipeline", type=str, default="both", choices=["joint", "post_aspect", "both"])
-    common.add_argument("--novelty-threshold", type=float, default=0.45)
-    common.add_argument("--novelty-known-threshold", type=float, default=0.35)
-    common.add_argument("--novelty-novel-threshold", type=float, default=0.65)
+    common.add_argument("--novelty-threshold", type=float, default=0.70)
+    common.add_argument("--novelty-known-threshold", type=float, default=0.50)
+    common.add_argument("--novelty-novel-threshold", type=float, default=0.80)
     common.add_argument("--novelty-calibration-path", type=str, default=None)
     common.add_argument("--seed", type=int, default=42)
     common.add_argument("--no-progress", action="store_true")
@@ -242,6 +236,8 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--production-require-transformer", action="store_true")
     common.add_argument("--allow-model-download", action="store_true")
     common.add_argument("--compile-model", action="store_true")
+    common.add_argument("--no-train-encoder", action="store_false", dest="train_encoder", default=True)
+    common.add_argument("--ortho-weight", type=float, default=0.05)
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("train", help="Train, validate, test, and export", parents=[common])

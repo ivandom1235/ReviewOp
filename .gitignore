@@ -53,3 +53,4 @@ datasets/
 skills-lock.json
 report.txt
 dataset_builder/state/learned_ontology_*.json
+dataset_builder/state/*.json

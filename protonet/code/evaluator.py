@@ -14,6 +14,7 @@ import torch
 
 try:
     from .config import ProtonetConfig
+    from .novelty_utils import compute_novelty_score
     from .quality_signals import prediction_error_buckets, top_aspect_confusions
     from .progress import task_bar
 except ImportError:
@@ -25,6 +26,7 @@ except ImportError:
     sys.modules[_config_spec.name] = _config_module
     _config_spec.loader.exec_module(_config_module)
     ProtonetConfig = _config_module.ProtonetConfig
+    from novelty_utils import compute_novelty_score
     from quality_signals import prediction_error_buckets, top_aspect_confusions
     from progress import task_bar
 
@@ -207,6 +209,7 @@ def evaluate_episodes(
     split_name: str,
     *,
     include_predictions: bool = True,
+    compute_curves: bool = True,
 ) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
     model.eval()
     eval_temperature = float(model.temperature.detach().cpu().item())
@@ -295,13 +298,7 @@ def evaluate_episodes(
                     ambiguity_score = max(0.0, min(1.0, 1.0 - (p_top1 - p_top2)))
                     energy_raw = float((-eval_temperature * torch.logsumexp(row_logits, dim=0)).item())
                     energy_score = max(0.0, min(1.0, (energy_raw + 5.0) / 10.0))
-                    novelty_score = max(
-                        0.0,
-                        min(
-                            1.0,
-                            0.50 * distance_score + 0.30 * ambiguity_score + 0.20 * energy_score,
-                        ),
-                    )
+                    novelty_score = compute_novelty_score(distance_score, ambiguity_score, energy_score)
                     split_protocol = query_row.get("split_protocol") if isinstance(query_row, dict) else {}
                     novel_truth_label = 1 if bool(query_row.get("novel_acceptable", False)) else 0
                     novelty_truth.append(novel_truth_label)
@@ -430,7 +427,7 @@ def evaluate_episodes(
         )
     ) if cluster_pairs else 0.0
     open_set_curve = []
-    if predictions:
+    if predictions and compute_curves:
         quantiles = [0.2, 0.4, 0.6, 0.8, 1.0]
         novelty_array = np.asarray(novelty_scores if novelty_scores else [0.0], dtype=float)
         for q in quantiles:

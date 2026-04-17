@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import random
+import re
 from pathlib import Path
 from typing import Any
 
@@ -344,6 +345,137 @@ def _stable_stratified_keep(
     limit: int,
 ) -> list[dict[str, Any]]:
     return _stable_keep(rows, seed=seed, token=token, limit=limit)
+
+
+def _promotion_semantic_key(row: dict[str, Any]) -> tuple[str, str, tuple[str, ...], str]:
+    implicit = row.get("implicit", {}) or {}
+    aspects = tuple(
+        sorted(
+            {
+                re.sub(r"\s+", " ", normalize_whitespace(str(aspect)).lower()).strip()
+                for aspect in implicit.get("aspects", [])
+                if str(aspect).strip() and str(aspect) != "general"
+            }
+        )
+    )
+    review_text = str(row.get("source_text") or row.get("review_text") or "")
+    review_text_norm = re.sub(r"[^a-z0-9\s]+", " ", normalize_whitespace(review_text).lower())
+    review_text_norm = " ".join(review_text_norm.split())
+    return (
+        _benchmark_domain_family(str(_get_row_domain(row))),
+        str(implicit.get("dominant_sentiment") or row.get("sentiment") or "unknown").strip().lower(),
+        aspects,
+        review_text_norm,
+    )
+
+
+def _promotion_usefulness_score(
+    row: dict[str, Any],
+    *,
+    train_rows: list[dict[str, Any]],
+    candidate_aspects_by_domain: dict[str, list[str]] | None = None,
+) -> float:
+    implicit = row.get("implicit", {}) or {}
+    aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) != "general"]
+    review_reason = str(implicit.get("review_reason") or "").strip().lower()
+    domain_family = _benchmark_domain_family(str(_get_row_domain(row)))
+    sentiment = str(implicit.get("dominant_sentiment") or row.get("sentiment") or "unknown").strip().lower()
+    hardness = str(implicit.get("hardness_tier") or "").strip().upper()
+    domain_family_counts = Counter(_benchmark_domain_family(str(_get_row_domain(existing))) for existing in train_rows)
+    sentiment_counts = _train_sentiment_counts(train_rows)
+    aspect_counts = _aspect_counts(train_rows)
+    aspect_conf = implicit.get("aspect_confidence", {}) or {}
+    confidences = [float(value) for value in aspect_conf.values() if value is not None]
+    if not confidences:
+        confidences = [float(span.get("confidence", 0.0)) for span in list(implicit.get("spans") or []) if span.get("confidence") is not None]
+    max_confidence = max(confidences) if confidences else 0.0
+    sentiment_total = max(1, sum(sentiment_counts.values()))
+    sentiment_share = sentiment_counts.get(sentiment, 0) / sentiment_total
+
+    score = 0.0
+    if aspects:
+        score += 0.08
+        rare_aspect = min((aspect_counts.get(aspect, 0) for aspect in aspects), default=0)
+        if rare_aspect <= max(1, len(train_rows) // 12):
+            score += 0.12
+    if bool(row.get("abstain_acceptable", False)):
+        score += 0.22
+    if bool(row.get("novel_acceptable", False)):
+        score += 0.22
+    if review_reason in {"weak_support", "low_confidence", "domain_soft_mismatch"}:
+        score += 0.12
+    if hardness in {"H2", "H3"}:
+        score += 0.08 if hardness == "H2" else 0.12
+    if sentiment in sentiment_counts:
+        rare_sentiment = sentiment_counts.get(sentiment, 0)
+        if rare_sentiment <= max(1, len(train_rows) // 10):
+            score += 0.1
+        if sentiment in {"positive", "negative"} and sentiment_share <= 0.18:
+            score += 0.12
+        elif sentiment == "neutral" and sentiment_share >= 0.58:
+            score -= 0.08
+    if domain_family in _CORE_BENCHMARK_DOMAINS:
+        rare_family = domain_family_counts.get(domain_family, 0)
+        if rare_family <= max(1, len(train_rows) // 10):
+            score += 0.1
+    if not aspects:
+        score -= 0.08
+    if candidate_aspects_by_domain is not None and _row_domain_soft_mismatch(
+        row,
+        candidate_aspects_by_domain=candidate_aspects_by_domain,
+        accepted_support_types={
+            str(span.get("support_type") or "").strip()
+            for span in list(implicit.get("spans") or [])
+            if str(span.get("support_type") or "").strip()
+        } or {"exact", "near_exact", "gold"},
+        min_confidence=max_confidence,
+    ):
+        score += 0.08
+    if not aspects and (bool(row.get("abstain_acceptable", False)) or bool(row.get("novel_acceptable", False))):
+        score += 0.1
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def _rank_promotion_candidates(
+    rows: list[dict[str, Any]],
+    *,
+    base_rows: list[dict[str, Any]],
+    seed: int,
+    token: str,
+    candidate_aspects_by_domain: dict[str, list[str]] | None = None,
+    duplicate_stats: Counter[str] | None = None,
+) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+
+    seen_keys = {_promotion_semantic_key(row) for row in base_rows}
+    key_counts: Counter[tuple[str, str, tuple[str, ...], str]] = Counter()
+    best_by_key: dict[tuple[str, str, tuple[str, ...], str], tuple[float, str, dict[str, Any]]] = {}
+    for index, row in enumerate(rows):
+        key = _promotion_semantic_key(row)
+        key_counts[key] += 1
+        if key in seen_keys:
+            continue
+        score = _promotion_usefulness_score(
+            row,
+            train_rows=base_rows,
+            candidate_aspects_by_domain=candidate_aspects_by_domain,
+        )
+        stable = stable_id(seed, token, index, row.get("id") or row.get("source_text") or "")
+        current = best_by_key.get(key)
+        if current is None or (score, stable) > (current[0], current[1]):
+            best_by_key[key] = (score, stable, row)
+
+    if duplicate_stats is not None:
+        existing_duplicate_rows = sum(count for key, count in key_counts.items() if key in seen_keys)
+        semantic_duplicate_rows = sum(count - 1 for key, count in key_counts.items() if key not in seen_keys and count > 1)
+        if existing_duplicate_rows:
+            duplicate_stats["rejected_existing_semantic_duplicate"] += existing_duplicate_rows
+        if semantic_duplicate_rows:
+            duplicate_stats["rejected_semantic_duplicate"] += semantic_duplicate_rows
+
+    ordered = sorted(best_by_key.values(), key=lambda item: (-item[0], item[1]))
+    return [row for _, _, row in ordered]
 
 
 def _train_sentiment_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -1080,6 +1212,43 @@ def _row_domain_valid_for_train(
     return all(aspect in allowed_latents for aspect in row_aspects)
 
 
+def _row_domain_soft_mismatch(
+    row: dict[str, Any],
+    *,
+    candidate_aspects_by_domain: dict[str, list[str]],
+    accepted_support_types: set[str],
+    min_confidence: float,
+) -> bool:
+    if _row_domain_valid_for_train(row=row, candidate_aspects_by_domain=candidate_aspects_by_domain):
+        return False
+    implicit = row.get("implicit", {}) or {}
+    aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) != "general"]
+    spans = list(implicit.get("spans") or [])
+    if not aspects or not spans:
+        return False
+    if any(str(span.get("support_type") or "") not in accepted_support_types for span in spans):
+        return False
+    aspect_conf = implicit.get("aspect_confidence", {}) or {}
+    confidences = [float(value) for value in aspect_conf.values() if value is not None]
+    if not confidences:
+        confidences = [float(span.get("confidence", 0.0)) for span in spans if span.get("confidence") is not None]
+    if not confidences:
+        return False
+    if max(confidences) < max(0.45, float(min_confidence) * 0.85):
+        return False
+    if str(implicit.get("review_reason") or "") in {"boundary_false_positive", "implicit_not_ready"}:
+        return False
+    explicit = row.get("explicit", {}) or {}
+    explicit_aspects = {
+        str(aspect).strip().lower()
+        for aspect in list(explicit.get("aspects") or [])
+        if str(aspect).strip()
+    }
+    if explicit_aspects and any(str(aspect).strip().lower() in explicit_aspects for aspect in aspects):
+        return False
+    return True
+
+
 def _row_grounded_non_general(
     row: dict[str, Any],
     *,
@@ -1117,6 +1286,38 @@ def _split_train_review_filter(
     dropped_hard_rows: list[dict[str, Any]] = []
     if mode_name == "keep":
         kept_rows = list(train_rows)
+    elif mode_name == "salvage_non_general":
+        domain_map = candidate_aspects_by_domain or {}
+        accepted_support = {str(value).strip() for value in accepted_support_types if str(value).strip()}
+        if not accepted_support:
+            accepted_support = {"exact", "near_exact", "gold"}
+        kept_rows = []
+        for row in train_rows:
+            implicit = row.get("implicit", {}) or {}
+            # Keep strict passes
+            if not bool(implicit.get("needs_review")):
+                kept_rows.append(row)
+                continue
+            
+            review_reason = str(implicit.get("review_reason") or "")
+            # Always drop hard failures
+            if review_reason == "implicit_not_ready":
+                dropped_hard_rows.append(row)
+                continue
+            
+            # Salvage non-general rows that were traditionally dropped
+            aspects = list(implicit.get("aspects") or [])
+            is_general = (aspects == ["general"])
+            
+            if not is_general and review_reason in {"low_confidence", "weak_support", "domain_leakage", "domain_soft_mismatch"}:
+                kept_rows.append(row)
+            elif (
+                _row_grounded_non_general(row, accepted_support_types=accepted_support, min_confidence=min_confidence)
+                and _row_domain_valid_for_train(row=row, candidate_aspects_by_domain=domain_map)
+            ):
+                kept_rows.append(row)
+            else:
+                dropped_soft_rows.append(row)
     elif mode_name == "reasoned_strict":
         domain_map = candidate_aspects_by_domain or {}
         accepted_support = {str(value).strip() for value in accepted_support_types if str(value).strip()}
@@ -1131,6 +1332,17 @@ def _split_train_review_filter(
             review_reason = str(implicit.get("review_reason") or "")
             if review_reason == "implicit_not_ready":
                 dropped_hard_rows.append(row)
+                continue
+            if review_reason in {"domain_leakage", "domain_soft_mismatch"}:
+                if _row_domain_soft_mismatch(
+                    row,
+                    candidate_aspects_by_domain=domain_map,
+                    accepted_support_types=accepted_support,
+                    min_confidence=min_confidence,
+                ):
+                    dropped_soft_rows.append(row)
+                else:
+                    dropped_hard_rows.append(row)
                 continue
             if review_reason in {"fallback_general", "weak_support", "low_confidence"}:
                 dropped_soft_rows.append(row)
@@ -1770,6 +1982,8 @@ def _strict_topup_recovery(
     stage_c_confidence_threshold: float,
     staged_recovery: bool,
     allow_weak_support_in_stage_c: bool,
+    allow_domain_soft_mismatch: bool = True,
+    general_usefulness_threshold: float = 0.2,
     accepted_support_types: tuple[str, ...],
     candidate_aspects_by_domain: dict[str, list[str]],
     seed: int,
@@ -1826,6 +2040,8 @@ def _strict_topup_recovery(
             "rejected_support_type": 0,
             "rejected_duplicate": 0,
             "rejected_weak_support_stage_policy": 0,
+            "rejected_existing_semantic_duplicate": 0,
+            "rejected_semantic_duplicate": 0,
         }
     )
     for row in candidate_rows:
@@ -1836,8 +2052,17 @@ def _strict_topup_recovery(
         existing_ids.add(row_id)
         unique_candidates.append(row)
 
+    ranked_candidates = _rank_promotion_candidates(
+        unique_candidates,
+        base_rows=train_rows,
+        seed=seed,
+        token="train-topup-promotion",
+        candidate_aspects_by_domain=candidate_aspects_by_domain,
+        duplicate_stats=rejection_breakdown,
+    )
     aspect_counts = _aspect_counts(train_rows)
     sentiment_counts = _train_sentiment_counts(train_rows)
+    domain_family_counts = Counter(_benchmark_domain_family(str(_get_row_domain(row))) for row in train_rows)
     support_rank = {"gold": 3, "exact": 2, "near_exact": 1}
 
     def _row_rank(row: dict[str, Any]) -> tuple[float, float, float, float, str]:
@@ -1849,10 +2074,15 @@ def _strict_topup_recovery(
         rarity = min((aspect_counts.get(aspect, 0) for aspect in aspects), default=0)
         sentiment = str(row.get("implicit", {}).get("dominant_sentiment") or "unknown")
         sentiment_rarity = sentiment_counts.get(sentiment, 0)
+        usefulness = _promotion_usefulness_score(
+            row,
+            train_rows=train_rows,
+            candidate_aspects_by_domain=candidate_aspects_by_domain,
+        )
         stable = stable_id(seed, "topup-rank", row.get("id") or row.get("source_text") or "")
-        return (-best_support, -max_conf, rarity, sentiment_rarity, stable)
+        return (-usefulness, -best_support, -max_conf, rarity + domain_family_counts.get(_benchmark_domain_family(str(_get_row_domain(row))), 0), sentiment_rarity, stable)
 
-    ordered_candidates = sorted(unique_candidates, key=_row_rank)
+    ordered_candidates = sorted(ranked_candidates, key=_row_rank)
     selected: list[dict[str, Any]] = []
     recovered_by_reason: Counter[str] = Counter()
     recovered_support: Counter[str] = Counter()
@@ -1870,10 +2100,17 @@ def _strict_topup_recovery(
         stage_defs.append(("B", float(stage_b_confidence_threshold), False))
         stage_defs.append(("C", float(stage_c_confidence_threshold), bool(allow_weak_support_in_stage_c)))
 
-    def _reject_reason(row: dict[str, Any], *, threshold: float, weak_allowed: bool) -> str | None:
+    def _reject_reason(row: dict[str, Any], *, stage_name: str, threshold: float, weak_allowed: bool) -> str | None:
         implicit = row.get("implicit", {}) or {}
         aspects = [str(aspect) for aspect in implicit.get("aspects", [])]
+        usefulness = _promotion_usefulness_score(
+            row,
+            train_rows=train_rows,
+            candidate_aspects_by_domain=candidate_aspects_by_domain,
+        )
         if not aspects or aspects == ["general"]:
+            if stage_name == "C" and usefulness >= float(general_usefulness_threshold):
+                return None
             return "rejected_general"
         spans = list(implicit.get("spans") or [])
         if not spans:
@@ -1881,7 +2118,16 @@ def _strict_topup_recovery(
         if any(str(span.get("support_type") or "") not in accepted_support for span in spans):
             return "rejected_support_type"
         if not _row_domain_valid_for_train(row=row, candidate_aspects_by_domain=candidate_aspects_by_domain):
-            return "rejected_domain_invalid"
+            if not (
+                allow_domain_soft_mismatch
+                and _row_domain_soft_mismatch(
+                    row,
+                    candidate_aspects_by_domain=candidate_aspects_by_domain,
+                    accepted_support_types=accepted_support,
+                    min_confidence=threshold,
+                )
+            ):
+                return "rejected_domain_invalid"
         if not _row_grounded_non_general(row, accepted_support_types=accepted_support, min_confidence=threshold):
             return "rejected_low_confidence"
         if bool(implicit.get("needs_review")) and str(implicit.get("review_reason") or "") == "weak_support" and not weak_allowed:
@@ -1904,7 +2150,7 @@ def _strict_topup_recovery(
                 progress_seen_ids.add(row_id)
             if row_id in selected_ids:
                 continue
-            reason = _reject_reason(row, threshold=stage_threshold, weak_allowed=weak_allowed)
+            reason = _reject_reason(row, stage_name=stage_name, threshold=stage_threshold, weak_allowed=weak_allowed)
             if reason is not None:
                 continue
             selected.append(row)
@@ -1927,7 +2173,7 @@ def _strict_topup_recovery(
         if progress_bar is not None and row_id not in progress_seen_ids:
             progress_bar.update(1)
             progress_seen_ids.add(row_id)
-        reason = _reject_reason(row, threshold=final_threshold, weak_allowed=final_weak_allowed)
+        reason = _reject_reason(row, stage_name=used_stage if used_stage != "none" else "C", threshold=final_threshold, weak_allowed=final_weak_allowed)
         if reason is None:
             continue
         rejection_breakdown[reason] += 1
@@ -2157,7 +2403,7 @@ def _build_review_set_template(rows: list[dict[str, Any]], *, size: int, seed: i
     return samples
 
 
-_QUALITY_BORDERLINE_REASONS = {"weak_support", "low_confidence"}
+_QUALITY_BORDERLINE_REASONS = {"weak_support", "low_confidence", "domain_soft_mismatch"}
 _QUALITY_REJECT_REASONS = {
     "implicit_not_ready",
     "fallback_general",
@@ -2186,6 +2432,7 @@ def _quality_recovery_eligible(
     accepted_support_types: tuple[str, ...],
     candidate_aspects_by_domain: dict[str, list[str]] | None = None,
     allow_weak_support: bool = False,
+    allow_domain_soft_mismatch: bool = False,
 ) -> tuple[bool, list[str]]:
     reason_codes = _quality_reason_codes(
         row,
@@ -2201,7 +2448,16 @@ def _quality_recovery_eligible(
         accepted_support = {"exact", "near_exact", "gold"}
 
     if not _row_domain_valid_for_train(row=row, candidate_aspects_by_domain=candidate_aspects_by_domain or {}):
-        return False, reason_codes
+        if not (
+            allow_domain_soft_mismatch
+            and _row_domain_soft_mismatch(
+                row,
+                candidate_aspects_by_domain=candidate_aspects_by_domain or {},
+                accepted_support_types=accepted_support,
+                min_confidence=recovery_confidence_threshold,
+            )
+        ):
+            return False, reason_codes
     if not _row_grounded_non_general(
         row,
         accepted_support_types=accepted_support,
@@ -2236,6 +2492,7 @@ def _collect_recoverable_quality_rows(
             accepted_support_types=accepted_support_types,
             candidate_aspects_by_domain=candidate_aspects_by_domain,
             allow_weak_support=allow_weak_support,
+            allow_domain_soft_mismatch=True,
         )
         bucket = _quality_row_bucket(reason_codes)
         if bucket == "borderline":
@@ -2274,7 +2531,7 @@ def _quality_reason_codes(
     explicit = row.get("explicit", {}) or {}
     review_reason = str(implicit.get("review_reason") or "").strip()
     reasons: list[str] = []
-    if review_reason:
+    if review_reason and review_reason not in {"domain_leakage", "domain_soft_mismatch"}:
         reasons.append(review_reason)
 
     aspects = [str(aspect) for aspect in implicit.get("aspects", []) if str(aspect) != "general"]
@@ -2301,7 +2558,18 @@ def _quality_reason_codes(
         reasons.append("boundary_false_positive")
 
     if candidate_aspects_by_domain is not None and not _row_domain_valid_for_train(row=row, candidate_aspects_by_domain=candidate_aspects_by_domain):
-        reasons.append("domain_leakage")
+        if _row_domain_soft_mismatch(
+            row,
+            candidate_aspects_by_domain=candidate_aspects_by_domain,
+            accepted_support_types={str(value).strip() for value in accepted_support_types if str(value).strip()} or {"exact", "near_exact", "gold"},
+            min_confidence=min_confidence,
+        ):
+            reasons.append("domain_soft_mismatch")
+        else:
+            if review_reason in {"domain_leakage", "domain_soft_mismatch"}:
+                reasons.append("domain_leakage")
+            else:
+                reasons.append("domain_leakage")
 
     explicit_aspects = {
         str(aspect).strip().lower()
@@ -2327,6 +2595,70 @@ def _quality_row_bucket(reason_codes: list[str]) -> str | None:
     return "rejected"
 
 
+def _quality_decision_record(
+    row: dict[str, Any],
+    *,
+    min_confidence: float,
+    recovery_confidence_threshold: float,
+    accepted_support_types: tuple[str, ...],
+    candidate_aspects_by_domain: dict[str, list[str]] | None = None,
+    allow_weak_support_in_recovery: bool = False,
+) -> dict[str, Any]:
+    reason_codes = _quality_reason_codes(
+        row,
+        min_confidence=min_confidence,
+        accepted_support_types=accepted_support_types,
+        candidate_aspects_by_domain=candidate_aspects_by_domain,
+    )
+    bucket = _quality_row_bucket(reason_codes)
+    if bucket == "borderline":
+        decision = "silver"
+    elif bucket == "rejected":
+        decision = "hard_reject"
+    else:
+        decision = "train_keep"
+    eligible, eligible_reasons = _quality_recovery_eligible(
+        row,
+        min_confidence=min_confidence,
+        recovery_confidence_threshold=recovery_confidence_threshold,
+        accepted_support_types=accepted_support_types,
+        candidate_aspects_by_domain=candidate_aspects_by_domain,
+        allow_weak_support=allow_weak_support_in_recovery,
+        allow_domain_soft_mismatch=True,
+    )
+    aspect_conf = row.get("implicit", {}).get("aspect_confidence", {}) or {}
+    confidences = [float(value) for value in aspect_conf.values() if value is not None]
+    if not confidences:
+        confidences = [
+            float(span.get("confidence", 0.0))
+            for span in list(row.get("implicit", {}).get("spans") or [])
+            if span.get("confidence") is not None
+        ]
+    quality_score = round(max(confidences) if confidences else 0.0, 4)
+    usefulness_score = 0.0
+    implicit = row.get("implicit", {}) or {}
+    if len([aspect for aspect in implicit.get("aspects", []) if str(aspect) != "general"]) > 1:
+        usefulness_score += 0.18
+    if str(implicit.get("review_reason") or "") in {"weak_support", "low_confidence", "domain_soft_mismatch"}:
+        usefulness_score += 0.16
+    if bool(row.get("abstain_acceptable", False)):
+        usefulness_score += 0.2
+    if bool(row.get("novel_acceptable", False)):
+        usefulness_score += 0.2
+    if str(row.get("domain") or "").strip().lower() in {"electronics", "restaurant", "telecom"}:
+        usefulness_score += 0.08
+    return {
+        "row": dict(row),
+        "decision": decision,
+        "bucket": bucket or decision,
+        "reason_codes": reason_codes,
+        "recovery_eligible": bool(eligible),
+        "recovery_reason_codes": eligible_reasons,
+        "quality_score": quality_score,
+        "usefulness_score": round(min(1.0, usefulness_score), 4),
+    }
+
+
 def _build_quality_analysis_artifact(
     train_rows: list[dict[str, Any]],
     final_train_rows: list[dict[str, Any]],
@@ -2338,61 +2670,84 @@ def _build_quality_analysis_artifact(
     allow_weak_support_in_recovery: bool = False,
 ) -> dict[str, Any]:
     final_ids = {str(row.get("id") or "") for row in final_train_rows}
-    excluded_rows = [row for row in train_rows if str(row.get("id") or "") not in final_ids]
-    borderline_rows: list[dict[str, Any]] = []
-    rejected_rows: list[dict[str, Any]] = []
+    train_keep_rows: list[dict[str, Any]] = []
+    train_keep_records: list[dict[str, Any]] = []
+    silver_rows: list[dict[str, Any]] = []
+    hard_reject_rows: list[dict[str, Any]] = []
     recoverable_rows: list[dict[str, Any]] = []
+    decision_records: list[dict[str, Any]] = []
     reason_counts: Counter[str] = Counter()
+    decision_counts: Counter[str] = Counter()
+    review_queue_rows: list[dict[str, Any]] = []
 
-    for row in excluded_rows:
-        reason_codes = _quality_reason_codes(
+    for row in train_rows:
+        record = _quality_decision_record(
             row,
             min_confidence=min_confidence,
+            recovery_confidence_threshold=recovery_confidence_threshold,
             accepted_support_types=accepted_support_types,
             candidate_aspects_by_domain=candidate_aspects_by_domain,
+            allow_weak_support_in_recovery=allow_weak_support_in_recovery,
         )
-        bucket = _quality_row_bucket(reason_codes)
-        payload = {
-            "row": dict(row),
-            "reason_codes": reason_codes,
-        }
-        for code in reason_codes:
+        row_id = str(row.get("id") or "")
+        if row_id in final_ids:
+            final_record = dict(record)
+            final_record["source_decision"] = final_record.get("decision")
+            final_record["source_bucket"] = final_record.get("bucket")
+            final_record["decision"] = "train_keep"
+            final_record["bucket"] = "train_keep"
+            train_keep_rows.append(dict(row))
+            train_keep_records.append(final_record)
+            decision_records.append(final_record)
+            decision_counts["train_keep"] += 1
+            continue
+        decision_counts[str(record["decision"])] += 1
+        for code in record["reason_codes"]:
             reason_counts[code] += 1
-        if bucket == "borderline":
-            borderline_rows.append(payload)
-            eligible, _ = _quality_recovery_eligible(
-                row,
-                min_confidence=min_confidence,
-                recovery_confidence_threshold=recovery_confidence_threshold,
-                accepted_support_types=accepted_support_types,
-                candidate_aspects_by_domain=candidate_aspects_by_domain,
-                allow_weak_support=allow_weak_support_in_recovery,
-            )
-            if eligible:
-                recoverable_rows.append(payload)
+        review_queue_rows.append(record)
+        decision_records.append(record)
+        if record["decision"] == "silver":
+            silver_rows.append(record)
+            if record["recovery_eligible"]:
+                recoverable_rows.append(record)
         else:
-            rejected_rows.append(payload)
+            hard_reject_rows.append(record)
 
     return {
         "generated_at": utc_now_iso(),
         "train_rows": len(train_rows),
         "final_train_rows": len(final_train_rows),
-        "excluded_rows": len(excluded_rows),
-        "borderline_count": len(borderline_rows),
+        "excluded_rows": len(train_rows) - len(final_train_rows),
+        "train_keep_count": len(train_keep_rows),
+        "silver_count": len(silver_rows),
+        "hard_reject_count": len(hard_reject_rows),
+        "borderline_count": len(silver_rows),
         "recoverable_count": len(recoverable_rows),
-        "rejected_count": len(rejected_rows),
+        "rejected_count": len(hard_reject_rows),
         "reason_group_counts": dict(reason_counts),
-        "borderline_rows": borderline_rows,
+        "decision_counts": dict(decision_counts),
+        "decision_records": decision_records,
+        "silver_rows": silver_rows,
+        "borderline_rows": silver_rows,
+        "train_keep_rows": train_keep_rows,
+        "train_keep_records": train_keep_records,
         "recoverable_rows": recoverable_rows,
-        "rejected_rows": rejected_rows,
+        "hard_reject_rows": hard_reject_rows,
+        "rejected_rows": hard_reject_rows,
+        "review_queue_rows": review_queue_rows,
         "summary": {
             "train_rows": len(train_rows),
             "final_train_rows": len(final_train_rows),
-            "excluded_rows": len(excluded_rows),
-            "borderline_count": len(borderline_rows),
+            "excluded_rows": len(train_rows) - len(final_train_rows),
+            "train_keep_count": len(train_keep_rows),
+            "silver_count": len(silver_rows),
+            "hard_reject_count": len(hard_reject_rows),
+            "borderline_count": len(silver_rows),
             "recoverable_count": len(recoverable_rows),
-            "rejected_count": len(rejected_rows),
+            "rejected_count": len(hard_reject_rows),
             "reason_group_counts": dict(reason_counts),
+            "decision_counts": dict(decision_counts),
+            "decision_record_count": len(decision_records),
         },
     }
 
@@ -3583,6 +3938,11 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         candidate_aspects_by_domain=candidate_aspects_by_domain_train,
         allow_weak_support=cfg.train_topup_allow_weak_support_in_stage_c,
     )
+    candidate_aspects_by_domain_train = _expand_domain_candidates_from_rows(
+        rows=train_built + train_quarantine_recoverable_rows,
+        candidate_aspects_by_domain=candidate_aspects_by_domain_train,
+        max_new_terms_per_domain=12,
+    )
     train_export_rows, train_leakage_filter_stats_before_salvage = _strict_train_domain_leakage_filter(
         train_export_rows,
         candidate_aspects_by_domain=candidate_aspects_by_domain_train,
@@ -3614,6 +3974,13 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         llm_provider=llm_provider,
         llm_model_name=cfg.llm_model_name,
     )
+    salvaged_rows = _rank_promotion_candidates(
+        salvaged_rows,
+        base_rows=train_export_rows,
+        seed=cfg.random_seed,
+        token="train-salvage-promotion",
+        candidate_aspects_by_domain=candidate_aspects_by_domain_train,
+    )
     salvaged_ids = {str(row.get("id") or "") for row in salvaged_rows}
     train_topup_candidates = [
         row for row in (train_general_policy_dropped_rows + train_review_dropped_soft_rows + train_review_dropped_hard_rows)
@@ -3641,6 +4008,13 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
     )
     train_stage_counts["after_sentiment_balance"] = len(train_export_rows)
     progress.step("train export policies: sentiment balance")
+    train_topup_candidates = _rank_promotion_candidates(
+        train_topup_candidates,
+        base_rows=train_export_rows,
+        seed=cfg.random_seed,
+        token="train-topup-promotion",
+        candidate_aspects_by_domain=candidate_aspects_by_domain_train,
+    )
     with tqdm(
         total=len(train_topup_candidates),
         desc="train export policies: topup recovery",
@@ -3964,10 +4338,17 @@ async def run_pipeline(cfg: BuilderConfig) -> dict[str, Any]:
         "train_rows": quality_analysis_artifact["train_rows"],
         "final_train_rows": quality_analysis_artifact["final_train_rows"],
         "excluded_rows": quality_analysis_artifact["excluded_rows"],
+        "train_keep_rows": quality_analysis_artifact["train_keep_count"],
+        "silver_pool_rows": quality_analysis_artifact["silver_count"],
+        "hard_reject_rows": quality_analysis_artifact["hard_reject_count"],
+        "train_keep_count": quality_analysis_artifact["train_keep_count"],
+        "silver_count": quality_analysis_artifact["silver_count"],
+        "hard_reject_count": quality_analysis_artifact["hard_reject_count"],
         "borderline_count": quality_analysis_artifact["borderline_count"],
         "recoverable_count": quality_analysis_artifact["recoverable_count"],
         "rejected_count": quality_analysis_artifact["rejected_count"],
         "reason_group_counts": quality_analysis_artifact["reason_group_counts"],
+        "decision_counts": quality_analysis_artifact["decision_counts"],
     }
     explicit_metrics = aspect_metrics(train_export_rows)
     report_context = build_report_context(
@@ -4169,10 +4550,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--unseen-domain-leakage-row-rate-max", type=float, default=0.02)
     parser.add_argument("--train-fallback-general-policy", type=str, default="cap", choices=["keep", "cap", "drop"])
     parser.add_argument("--train-fallback-general-cap-ratio", type=float, default=0.15)
-    parser.add_argument("--train-review-filter-mode", type=str, default="reasoned_strict", choices=["keep", "drop_needs_review", "reasoned_strict"])
+    parser.add_argument("--train-review-filter-mode", type=str, default="reasoned_strict", choices=["keep", "drop_needs_review", "reasoned_strict", "salvage_non_general"])
     parser.add_argument("--train-salvage-mode", type=str, default="recover_non_general", choices=["off", "recover_non_general"])
-    parser.add_argument("--train-salvage-confidence-threshold", type=float, default=0.56)
-    parser.add_argument("--train-salvage-accepted-support-types", type=str, default="exact,near_exact,gold")
+    parser.add_argument("--train-salvage-confidence-threshold", type=float, default=0.5)
+    parser.add_argument("--train-salvage-accepted-support-types", type=str, default="exact,near_exact,gold,symptom_based,paraphrastic,domain_consistent_weak")
     parser.add_argument(
         "--train-sentiment-balance-mode",
         type=str,
@@ -4185,16 +4566,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-max-positive-ratio", type=float, default=0.5)
     parser.add_argument("--train-neutral-max-ratio", type=float, default=0.58)
     parser.add_argument("--train-topup-recovery-mode", type=str, default="strict_topup", choices=["off", "strict_topup"])
-    parser.add_argument("--train-topup-confidence-threshold", type=float, default=0.58)
+    parser.add_argument("--train-topup-confidence-threshold", type=float, default=0.54)
     parser.add_argument("--train-topup-staged-recovery", dest="train_topup_staged_recovery", action="store_true")
     parser.add_argument("--no-train-topup-staged-recovery", dest="train_topup_staged_recovery", action="store_false")
     parser.set_defaults(train_topup_staged_recovery=True)
-    parser.add_argument("--train-topup-stage-b-confidence-threshold", type=float, default=0.54)
+    parser.add_argument("--train-topup-stage-b-confidence-threshold", type=float, default=0.5)
     parser.add_argument("--train-topup-allow-weak-support-in-stage-c", dest="train_topup_allow_weak_support_in_stage_c", action="store_true")
     parser.add_argument("--no-train-topup-allow-weak-support-in-stage-c", dest="train_topup_allow_weak_support_in_stage_c", action="store_false")
     parser.set_defaults(train_topup_allow_weak_support_in_stage_c=True)
-    parser.add_argument("--train-topup-stage-c-confidence-threshold", type=float, default=0.52)
-    parser.add_argument("--train-topup-allowed-support-types", type=str, default="exact,near_exact,gold")
+    parser.add_argument("--train-topup-stage-c-confidence-threshold", type=float, default=0.48)
+    parser.add_argument("--train-topup-allowed-support-types", type=str, default="exact,near_exact,gold,symptom_based,paraphrastic,domain_consistent_weak")
     parser.add_argument("--train-target-min-rows", type=int, default=1600)
     parser.add_argument("--train-target-max-rows", type=int, default=2000)
     parser.add_argument("--strict-implicit-enabled", dest="strict_implicit_enabled", action="store_true")

@@ -22,13 +22,20 @@ def _benchmark_artifact_summary(build: dict[str, Any]) -> dict[str, Any]:
         path = benchmark_dir / f"{split}.jsonl"
         file_counts[split] = len(read_jsonl(path)) if path.exists() else 0
     file_counts["total"] = sum(file_counts[split] for split in ("train", "val", "test"))
-    report_counts = dict(build.get("benchmark_artifact_counts") or build.get("benchmark_summary", {}).get("split_counts", {}))
-    report_counts["total"] = int(build.get("benchmark_summary", {}).get("rows", 0))
+    raw_report_counts = dict(build.get("benchmark_artifact_counts") or build.get("benchmark_summary", {}).get("split_counts", {}))
+    report_counts = {split: int(raw_report_counts.get(split, 0)) for split in ("train", "val", "test")}
+    report_counts["total"] = int(build.get("benchmark_summary", {}).get("rows", raw_report_counts.get("total", 0)))
+    protocol_counts = {
+        key: int(value)
+        for key, value in raw_report_counts.items()
+        if key not in {"train", "val", "test", "total"}
+    }
     return {
         "available": True,
         "benchmark_dir": str(benchmark_dir),
         "file_counts": file_counts,
         "report_counts": report_counts,
+        "protocol_counts": protocol_counts,
         "counts_match": file_counts == report_counts,
     }
 
@@ -253,6 +260,12 @@ def _build_scorecard(build: dict[str, Any], quality: dict[str, Any], previous: d
             },
             "sentiment_constraints": train_sentiment_constraints,
         },
+        "quality_tiering": {
+            "silver_pool_rows": int(build.get("output_quality", {}).get("silver_count", 0)),
+            "train_keep_rows": int(build.get("output_quality", {}).get("train_keep_count", 0)),
+            "hard_reject_rows": int(build.get("output_quality", {}).get("hard_reject_count", 0)),
+            "decision_counts": dict(build.get("output_quality", {}).get("decision_counts", {})),
+        },
         "pipeline_behavior": {
             "conditioning_strategy": {
                 "train_domain_conditioning_mode": build.get("train_domain_conditioning_mode"),
@@ -289,6 +302,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
     overview = report["dataset_overview"]["size_and_coverage"]
     quality = report["core_quality_metrics"]
     integrity = report["training_set_integrity"]
+    tiering = report.get("quality_tiering", {})
     verdict = report["verdict"]
     lines: list[str] = []
     lines.append("# DATASET QUALITY REPORT (ABSA PIPELINE)")
@@ -323,6 +337,9 @@ def _render_markdown(report: dict[str, Any]) -> str:
     lines.append("## 4. Training Set Integrity")
     lines.append(f"- Train leakage rows: {quality['domain_leakage']['train_domain_leakage_rows']}")
     lines.append(f"- Train top-up rows added: {integrity['filtering_effects']['train_topup_stats'].get('topup_rows_added', 0)}")
+    lines.append(f"- Silver pool rows: {tiering.get('silver_pool_rows', 0)}")
+    lines.append(f"- Train-keep rows: {tiering.get('train_keep_rows', 0)}")
+    lines.append(f"- Hard rejects: {tiering.get('hard_reject_rows', 0)}")
     lines.append(f"- Sentiment constraints achieved: {integrity['sentiment_constraints'].get('achieved', {})}")
     lines.append("")
     lines.append("## 5. Failure Analysis")

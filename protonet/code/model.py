@@ -28,6 +28,7 @@ class EpisodeForwardOutput:
     probabilities: torch.Tensor
     support_embeddings: torch.Tensor
     query_embeddings: torch.Tensor
+    prototypes: torch.Tensor
 
 
 def _item_joint_label(item: Dict[str, Any], separator: str) -> str:
@@ -95,6 +96,13 @@ class ProtoNetModel(nn.Module):
                 if key and (not self.training):
                     self.precomputed_embeddings[key] = tensor.detach().cpu()
 
+        # Guard: ensure every slot was filled (encoding failure leaves None entries)
+        none_slots = [i for i, v in enumerate(cached_outputs) if v is None]
+        if none_slots:
+            raise RuntimeError(
+                f"encode_items: {len(none_slots)} slots unfilled after encoding "
+                f"(indices {none_slots[:5]}). Encoding likely failed for those items."
+            )
         return torch.stack(cached_outputs, dim=0)
 
     def episode_forward(self, episode: Dict[str, Any]) -> EpisodeForwardOutput:
@@ -134,7 +142,16 @@ class ProtoNetModel(nn.Module):
         prototypes = (1.0 - self.cfg.prototype_smoothing) * prototypes + self.cfg.prototype_smoothing * global_mean
         prototypes = F.normalize(prototypes, p=2, dim=-1)
 
-        logits = -torch.cdist(query_embeddings, prototypes, p=2).pow(2) / self.temperature
+        # Dynamic Temperature Scaling (Entropy-based)
+        # We calculate the entropy of the support set relative to the prototypes to estimate task difficulty.
+        support_to_proto_dist = torch.cdist(support_embeddings, prototypes, p=2).pow(2)
+        support_probs = torch.softmax(-support_to_proto_dist / self.temperature, dim=-1)
+        # Mean entropy over support set
+        avg_entropy = -(support_probs * torch.log(support_probs + 1e-8)).sum(dim=-1).mean()
+        # Scale temperature: higher entropy (uncertainty) -> higher temperature (softer boundaries)
+        scaling_factor = torch.exp(avg_entropy * 0.1) # Hyperparameter 0.1 for sensitivity
+        
+        logits = -torch.cdist(query_embeddings, prototypes, p=2).pow(2) / (self.temperature * scaling_factor)
         targets = torch.tensor([label_to_index[label] for label in query_labels], dtype=torch.long, device=self.cfg.device)
         probabilities = torch.softmax(logits, dim=-1)
         prediction_indices = probabilities.argmax(dim=-1).tolist()
@@ -147,6 +164,7 @@ class ProtoNetModel(nn.Module):
             probabilities=probabilities.detach().cpu(),
             support_embeddings=support_embeddings,
             query_embeddings=query_embeddings,
+            prototypes=prototypes,
         )
 
     def export_description(self) -> Dict[str, object]:

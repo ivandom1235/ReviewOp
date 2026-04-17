@@ -90,6 +90,25 @@ def write_pipeline_outputs(
     write_json(cfg.reports_dir / "aspect_registry_run.json", run_registry)
     write_json(cfg.reports_dir / "aspect_registry_promoted.json", promoted_registry)
     write_json(cfg.reports_dir / "quality_analysis.json", quality_analysis_artifact)
+    write_jsonl(
+        cfg.reports_dir / "silver_pool.jsonl",
+        [dict(item.get("row") or {}, decision=item.get("decision"), reason_codes=item.get("reason_codes", []), quality_score=item.get("quality_score"), usefulness_score=item.get("usefulness_score")) for item in quality_analysis_artifact.get("silver_rows", [])],
+    )
+    write_jsonl(
+        cfg.reports_dir / "quality_review_queue.jsonl",
+        [
+            {
+                **dict(item.get("row") or {}),
+                "decision": item.get("decision"),
+                "bucket": item.get("bucket"),
+                "reason_codes": item.get("reason_codes", []),
+                "recovery_eligible": item.get("recovery_eligible", False),
+                "quality_score": item.get("quality_score"),
+                "usefulness_score": item.get("usefulness_score"),
+            }
+            for item in quality_analysis_artifact.get("review_queue_rows", [])
+        ],
+    )
     from synthetic_generation import write_synthetic_outputs
 
     write_synthetic_outputs(
@@ -166,6 +185,10 @@ def write_pipeline_outputs(
         "train_reinference_stats": report.get("train_reinference_stats", {}),
         "train_review_dropped_soft_rows": report.get("train_review_dropped_soft_rows", 0),
         "train_review_dropped_hard_rows": report.get("train_review_dropped_hard_rows", 0),
+        "silver_pool_rows": len(quality_analysis_artifact.get("silver_rows", [])),
+        "hard_reject_rows": len(quality_analysis_artifact.get("hard_reject_rows", [])),
+        "train_keep_rows": len(quality_analysis_artifact.get("train_keep_rows", [])),
+        "decision_counts": quality_analysis_artifact.get("decision_counts", {}),
         "size_recovery_stage": report.get("size_recovery_stage", "none"),
         "size_recovery_shortfall_remaining": report.get("size_recovery_shortfall_remaining", 0),
         "topup_effectiveness": report.get("topup_effectiveness", {}),

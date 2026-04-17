@@ -363,7 +363,8 @@ class PersistentCache:
                 pass
 
 
-GLOBAL_LLM_CACHE = PersistentCache()
+_REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
+GLOBAL_LLM_CACHE = PersistentCache(cache_file=str(_REPO_ROOT / ".llm_cache.json"))
 
 
 def flush_llm_cache() -> None:
@@ -478,7 +479,7 @@ If no new aspects are found, return [].
     cached_val = GLOBAL_LLM_CACHE.get(cache_key, bypass=bypass_cache)
     if cached_val:
         try: return json.loads(cached_val)
-        except: pass
+        except (json.JSONDecodeError, ValueError): pass
 
     try:
         res = await provider.generate(prompt, model_name, temperature=0.3, bypass_cache=bypass_cache)

@@ -308,7 +308,9 @@ def build_or_load_episode_sets(
         cached = _load_cached_episodes(cfg, split)
         if cached is not None:
             try:
-                for episode in cached:
+                # PERF-2: Only validate the first few episodes on warm start.
+                # Every episode was already validated when the cache was created.
+                for episode in cached[:2]:
                     validate_episode_row(episode, cfg)
             except ValueError:
                 cached = None
@@ -337,7 +339,7 @@ def build_or_load_episode_sets(
                 cached = _load_cached_episodes(cfg, split, protocol)
                 if cached is not None:
                     try:
-                        for episode in cached:
+                        for episode in cached[:2]:
                             validate_episode_row(episode, cfg)
                     except ValueError:
                         cached = None

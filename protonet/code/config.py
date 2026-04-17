@@ -24,7 +24,8 @@ METADATA_ROOT = PROTONET_ROOT / "metadata"
 BENCHMARK_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output" / "benchmark" / "ambiguity_grounded"
 
 
-def _env_value(*names: str, default: str | None = None) -> str | None:
+def env_value(*names: str, default: str | None = None) -> str | None:
+    """Read an environment variable from a list of possible names."""
     for name in names:
         value = os.getenv(name)
         if value is not None and str(value).strip():
@@ -49,7 +50,7 @@ class ProtonetConfig:
     predictions_dir: Path = OUTPUT_ROOT / "predictions"
 
     encoder_backend: str = "auto"
-    encoder_model_name: str = _env_value("REVIEWOP_PROTONET_ENCODER_MODEL", "PROTONET_ENCODER_MODEL", default="microsoft/deberta-v3-base") or "microsoft/deberta-v3-base"
+    encoder_model_name: str = env_value("REVIEWOP_PROTONET_ENCODER_MODEL", "PROTONET_ENCODER_MODEL", default="microsoft/deberta-v3-base") or "microsoft/deberta-v3-base"
     bow_dim: int = 512
     max_length: int = 160
     projection_dim: int = 256
@@ -74,6 +75,8 @@ class ProtonetConfig:
     batch_size_hint: int = 1
     use_amp: bool = True
     contrastive_weight: float = 0.22
+    contrastive_temperature: float = 0.2
+    ortho_weight: float = 0.05
     focal_gamma: float = 1.8
     prototype_smoothing: float = 0.08
     low_confidence_threshold: float = 0.25
