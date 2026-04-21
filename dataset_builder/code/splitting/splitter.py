@@ -6,6 +6,7 @@ from typing import Iterable, List, Sequence
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from row_contracts import DedupChecked, SplitAssigned
 
 
 def _safe_stratify(values: Sequence[str] | None) -> List[str] | None:
@@ -244,13 +245,13 @@ def grouped_split(
         novel_penalty = abs(proj_novel - float(target_meta["novel_rows"])) / max(1.0, float(target_meta["novel_rows"]) if float(target_meta["novel_rows"]) > 0 else 1.0)
 
         return (
-            0.32 * row_penalty
-            + 0.22 * label_penalty
-            + 0.16 * domain_penalty
-            + 0.12 * hard_penalty
+            0.28 * row_penalty
+            + 0.20 * label_penalty
+            + 0.14 * domain_penalty
+            + 0.10 * hard_penalty
             + 0.08 * multi_penalty
-            + 0.06 * abstain_penalty
-            + 0.04 * novel_penalty
+            + 0.08 * abstain_penalty
+            + 0.12 * novel_penalty
         )
 
     def _apply(split: str, group_key_value: str) -> None:
@@ -325,31 +326,72 @@ def grouped_split(
     return train, val, test
 
 
-def grouped_leakage_report(
-    rows: List[dict],
+def v7_split_pipeline(
+    rows: List[DedupChecked],
     *,
-    group_key: str,
-    split_key: str = "split",
-) -> dict:
-    train_groups = {str(row.get(group_key) or "unknown") for row in rows if str(row.get(split_key, "train")) == "train"}
-    val_groups = {str(row.get(group_key) or "unknown") for row in rows if str(row.get(split_key, "train")) == "val"}
-    test_groups = {str(row.get(group_key) or "unknown") for row in rows if str(row.get(split_key, "train")) == "test"}
-    overlap_train_val = sorted(train_groups & val_groups)
-    overlap_train_test = sorted(train_groups & test_groups)
-    overlap_val_test = sorted(val_groups & test_groups)
+    train_ratio: float,
+    val_ratio: float,
+    test_ratio: float,
+    random_seed: int,
+    group_key: str = "group_id",
+) -> List[SplitAssigned]:
+    """V7-specific split pipeline using grouped_split logic but with typed contracts."""
+    train_rows, val_rows, test_rows = grouped_split(
+        [r.model_dump() for r in rows], # Temp convert to dict for existing grouped_split compat
+        group_key=group_key,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+        random_seed=random_seed
+    )
+    
+    # Assign splits back to typed rows
+    id_to_split = {}
+    for r in train_rows: id_to_split[r["row_id"]] = "train"
+    for r in val_rows: id_to_split[r["row_id"]] = "val"
+    for r in test_rows: id_to_split[r["row_id"]] = "test"
+    
+    results = []
+    for r in rows:
+        results.append(SplitAssigned(
+            **r.model_dump(),
+            split=id_to_split.get(r.row_id, "none")
+        ))
+    return results
+
+def grouped_leakage_report(train_or_all: List[dict], val: List[dict] | None = None, test: List[dict] | None = None, *, group_key: str = "group_id") -> dict[str, Any]:
+    """Audit for group_id leakage across splits. Supports either (train, val, test) or (all_rows)."""
+    if val is None and test is None:
+        # Unified list mode
+        rows = train_or_all
+        train_rows = [r for r in rows if r.get("split") == "train"]
+        val_rows = [r for r in rows if r.get("split") == "val"]
+        test_rows = [r for r in rows if r.get("split") == "test"]
+    else:
+        # Three-list mode
+        train_rows = train_or_all
+        val_rows = val or []
+        test_rows = test or []
+
+    def _get_groups(rows: List[dict]) -> set[str]:
+        return set(str(r.get(group_key) or "") for r in rows if (r.get(group_key) or ""))
+
+    train_groups = _get_groups(train_rows)
+    val_groups = _get_groups(val_rows)
+    test_groups = _get_groups(test_rows)
+    
+    leakage_train_val = train_groups & val_groups
+    leakage_train_test = train_groups & test_groups
+    leakage_val_test = val_groups & test_groups
+    
+    total_leakage = len(leakage_train_val) + len(leakage_train_test) + len(leakage_val_test)
+    
     return {
-        "group_key": group_key,
-        "train_groups": len(train_groups),
-        "val_groups": len(val_groups),
-        "test_groups": len(test_groups),
+        "leakage_ok": total_leakage == 0,
+        "total_leaked_groups": total_leakage,
         "overlap_counts": {
-            "train_val": len(overlap_train_val),
-            "train_test": len(overlap_train_test),
-            "val_test": len(overlap_val_test),
-        },
-        "overlap_samples": {
-            "train_val": overlap_train_val[:20],
-            "train_test": overlap_train_test[:20],
-            "val_test": overlap_val_test[:20],
-        },
+            "train_val": len(leakage_train_val),
+            "train_test": len(leakage_train_test),
+            "val_test": len(leakage_val_test)
+        }
     }

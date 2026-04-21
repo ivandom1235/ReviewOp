@@ -8,9 +8,9 @@ from typing import Dict, List
 import pandas as pd
 
 try:
-    from .utils import token_count
-except ImportError:  # pragma: no cover
-    from utils import token_count
+    from ..utils.utils import token_count
+except (ImportError, ValueError):  # pragma: no cover
+    from utils.utils import token_count
 
 
 DATE_HINT_RE = re.compile(r"^\s*(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}-\d{2}-\d{2}T.+)\s*$")

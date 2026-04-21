@@ -16,7 +16,7 @@ def assemble_pipeline_report(*, context: ReportContext) -> dict[str, Any]:
     evaluation = pipeline_state["evaluation"]
     governance = pipeline_state["governance"]
     report = {
-        "pipeline_version": "6.0-v6-only",
+        "pipeline_version": "7.0-v7-diagnostic",
         "output_version": cfg.output_version,
         "generated_at": context.generated_at,
         "run_profile": context.run_profile,
@@ -151,6 +151,7 @@ def assemble_pipeline_report(*, context: ReportContext) -> dict[str, Any]:
             "benchmark_val_non_empty": int(len(benchmark["rows_by_split"].get("val", []))) > 0,
             "benchmark_grounded_evidence_ok": float(benchmark["metadata"].get("grounded_evidence_rate", 0.0)) >= 0.98,
             "benchmark_duplicate_rate_ok": float(benchmark["metadata"].get("duplicate_interpretation_rate", 1.0)) <= 0.01,
+            "benchmark_duplicate_logical_row_rate_adjusted_ok": float(benchmark["metadata"].get("duplicate_logical_row_rate_adjusted", 1.0)) <= 0.45,
             "benchmark_thermal_share_ok": float(benchmark["metadata"].get("thermal_share", 1.0)) <= 0.35,
             "benchmark_domain_coverage_ok": bool(benchmark["metadata"].get("benchmark_domain_coverage_ok", True)),
             "benchmark_family_floor_ok": bool(benchmark["metadata"].get("family_floor_policy", {}).get("applied", False))

@@ -17,11 +17,23 @@ try:
     from .encoder import HybridTextEncoder, format_input_text
     from .novelty_utils import compute_novelty_score
     from .projection_head import ProjectionHead
+    from .selective_decisions import calibrate_novelty_thresholds, decide_selective_routing
 except ImportError:
-    from config import ProtonetConfig
+    import importlib.util
+    import sys
+
+    _config_path = Path(__file__).resolve().with_name("config.py")
+    _config_spec = importlib.util.spec_from_file_location("protonet_local_config", _config_path)
+    if _config_spec is None or _config_spec.loader is None:  # pragma: no cover
+        raise
+    _config_module = importlib.util.module_from_spec(_config_spec)
+    sys.modules[_config_spec.name] = _config_module
+    _config_spec.loader.exec_module(_config_module)
+    ProtonetConfig = _config_module.ProtonetConfig
     from encoder import HybridTextEncoder, format_input_text
     from novelty_utils import compute_novelty_score
     from projection_head import ProjectionHead
+    from selective_decisions import calibrate_novelty_thresholds, decide_selective_routing
 
 
 CLAUSE_SPLIT_RE = re.compile(r"(?<=[\.\!\?])\s+|[;,]\s+")
@@ -88,51 +100,42 @@ class ProtonetRuntime:
 
     def _load_novelty_calibration(self, bundled: Dict[str, Any] | None = None) -> Dict[str, Any]:
         if isinstance(bundled, dict) and bundled:
-            t_known = float(bundled.get("thresholds", {}).get("T_known", self.cfg.novelty_known_threshold))
-            t_novel = float(bundled.get("thresholds", {}).get("T_novel", self.cfg.novelty_novel_threshold))
-            if t_known > t_novel:
-                t_known, t_novel = t_novel, t_known
+            result = calibrate_novelty_thresholds(
+                novelty_calibration=bundled,
+                default_known=self.cfg.novelty_known_threshold,
+                default_novel=self.cfg.novelty_novel_threshold,
+            )
             return {
-                "scorer": str(bundled.get("scorer", "distance_energy")),
-                "T_known": float(max(0.0, min(1.0, t_known))),
-                "T_novel": float(max(0.0, min(1.0, t_novel))),
+                "scorer": str(result.get("source", "distance_energy")),
+                "T_known": float(result["T_known"]),
+                "T_novel": float(result["T_novel"]),
                 "version": str(bundled.get("version", "v2")),
                 "snapshot_hash": bundled.get("validation_snapshot_hash"),
+                "applicable": bool(result.get("applicable", False)),
+                "reason": result.get("reason"),
             }
         path = self.cfg.novelty_calibration_path
         if not isinstance(path, Path):
-            return {
-                "scorer": "distance_energy",
-                "T_known": float(self.cfg.novelty_known_threshold),
-                "T_novel": float(self.cfg.novelty_novel_threshold),
-                "version": "default",
-            }
+            return {"scorer": "distance_energy", "T_known": float(self.cfg.novelty_known_threshold), "T_novel": float(self.cfg.novelty_novel_threshold), "version": "default", "applicable": False, "reason": "missing_file"}
         if not path.exists():
-            return {
-                "scorer": "distance_energy",
-                "T_known": float(self.cfg.novelty_known_threshold),
-                "T_novel": float(self.cfg.novelty_novel_threshold),
-                "version": "default",
-            }
+            return {"scorer": "distance_energy", "T_known": float(self.cfg.novelty_known_threshold), "T_novel": float(self.cfg.novelty_novel_threshold), "version": "default", "applicable": False, "reason": "missing_file"}
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            return {
-                "scorer": "distance_energy",
-                "T_known": float(self.cfg.novelty_known_threshold),
-                "T_novel": float(self.cfg.novelty_novel_threshold),
-                "version": "default",
-            }
-        t_known = float(payload.get("thresholds", {}).get("T_known", self.cfg.novelty_known_threshold))
-        t_novel = float(payload.get("thresholds", {}).get("T_novel", self.cfg.novelty_novel_threshold))
-        if t_known > t_novel:
-            t_known, t_novel = t_novel, t_known
+            return {"scorer": "distance_energy", "T_known": float(self.cfg.novelty_known_threshold), "T_novel": float(self.cfg.novelty_novel_threshold), "version": "default", "applicable": False, "reason": "invalid_file"}
+        result = calibrate_novelty_thresholds(
+            novelty_calibration=payload,
+            default_known=self.cfg.novelty_known_threshold,
+            default_novel=self.cfg.novelty_novel_threshold,
+        )
         return {
             "scorer": str(payload.get("scorer", "distance_energy")),
-            "T_known": float(max(0.0, min(1.0, t_known))),
-            "T_novel": float(max(0.0, min(1.0, t_novel))),
+            "T_known": float(result["T_known"]),
+            "T_novel": float(result["T_novel"]),
             "version": str(payload.get("version", "v2")),
             "snapshot_hash": payload.get("validation_snapshot_hash"),
+            "applicable": bool(result.get("applicable", False)),
+            "reason": result.get("reason"),
         }
 
     @staticmethod
@@ -263,17 +266,18 @@ class ProtonetRuntime:
         t_known = float(self.novelty_calibration.get("T_known", self.cfg.novelty_known_threshold))
         t_novel = float(self.novelty_calibration.get("T_novel", self.cfg.novelty_novel_threshold))
         decision_band = "known"
-        if novelty >= t_novel:
-            decision_band = "novel"
-        elif novelty > t_known:
-            decision_band = "boundary"
-
-        if decision_band == "boundary":
-            decision = "abstain"
-        elif decision_band == "novel":
+        selective_route = decide_selective_routing(
+            novelty_score=novelty,
+            selective_confidence=selective_conf,
+            abstain_threshold=float(self.cfg.abstain_threshold),
+            known_threshold=t_known,
+            novel_threshold=t_novel,
+        )
+        decision_band = selective_route.decision_band
+        if selective_route.route_novel:
             decision = "novel"
             accepted.append(dict(rows[0]))
-        elif selective_conf < float(self.cfg.abstain_threshold):
+        elif selective_route.route_boundary:
             decision = "abstain"
         else:
             margin = float(self.cfg.multi_label_margin)
@@ -290,7 +294,7 @@ class ProtonetRuntime:
         if decision == "abstain":
             abstained_predictions.append(
                 {
-                    "reason": "boundary" if decision_band == "boundary" else "low_selective_confidence",
+                    "reason": selective_route.abstain_reason or "low_selective_confidence",
                     "confidence": float(max(0.0, min(1.0, selective_conf))),
                     "ambiguity_score": float(ambiguity),
                 }

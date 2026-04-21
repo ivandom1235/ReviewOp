@@ -52,6 +52,8 @@ def build_blocking_reasons(
         blocking_reasons.append({"code": "BENCHMARK_EVIDENCE_NOT_GROUNDED", "message": "Benchmark evidence grounding rate is below required threshold."})
     if not bool(validation.get("benchmark_duplicate_rate_ok")):
         blocking_reasons.append({"code": "BENCHMARK_DUPLICATE_INTERPRETATIONS", "message": "Benchmark still contains duplicate interpretations."})
+    if not bool(validation.get("benchmark_duplicate_logical_row_rate_adjusted_ok")):
+        blocking_reasons.append({"code": "BENCHMARK_LOGICAL_DUPLICATION", "message": "Benchmark logical duplication remains too high after adjustment."})
     if not bool(validation.get("benchmark_thermal_share_ok")):
         blocking_reasons.append({"code": "BENCHMARK_THERMAL_OVERCONCENTRATION", "message": "Thermal aspect share remains over concentrated."})
     if not bool(validation.get("benchmark_domain_coverage_ok")):

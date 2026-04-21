@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from typing import Iterable
 
 try:
-    from .utils import normalize_whitespace, split_sentences, tokenize
-except ImportError:  # pragma: no cover
-    from utils import normalize_whitespace, split_sentences, tokenize
+    from ..utils.utils import normalize_whitespace, split_sentences, tokenize
+except (ImportError, ValueError):  # pragma: no cover
+    from utils.utils import normalize_whitespace, split_sentences, tokenize
 
 
 @dataclass

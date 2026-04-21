@@ -21,7 +21,18 @@ except Exception:  # pragma: no cover
 try:
     from .config import ProtonetConfig
 except ImportError:
-    from config import ProtonetConfig
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    _config_path = Path(__file__).resolve().with_name("config.py")
+    _config_spec = importlib.util.spec_from_file_location("protonet_local_config", _config_path)
+    if _config_spec is None or _config_spec.loader is None:  # pragma: no cover
+        raise
+    _config_module = importlib.util.module_from_spec(_config_spec)
+    sys.modules[_config_spec.name] = _config_module
+    _config_spec.loader.exec_module(_config_module)
+    ProtonetConfig = _config_module.ProtonetConfig
 
 
 SPECIAL_TOKENS = ["[E_START]", "[E_END]"]

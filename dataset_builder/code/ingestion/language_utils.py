@@ -6,9 +6,9 @@ from collections import Counter
 from typing import Iterable
 
 try:
-    from .utils import normalize_whitespace, tokenize
-except ImportError:  # pragma: no cover
-    from utils import normalize_whitespace, tokenize
+    from ..utils.utils import normalize_whitespace, tokenize
+except (ImportError, ValueError):  # pragma: no cover
+    from utils.utils import normalize_whitespace, tokenize
 
 
 DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")

@@ -8,9 +8,11 @@ import pandas as pd
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 
 try:
-    from .utils import normalize_whitespace, token_count
-except ImportError:  # pragma: no cover
-    from utils import normalize_whitespace, token_count
+    from utils.utils import normalize_whitespace, token_count
+except ImportError:
+    from ..utils.utils import normalize_whitespace, token_count
+
+from row_contracts import Prepared
 
 
 @dataclass
@@ -147,24 +149,24 @@ def fit_explicit_artifacts(train_frame: pd.DataFrame, numeric_columns: List[str]
     return ExplicitArtifacts(numeric=numeric, categorical=categorical, datetime=datetime, text=text)
 
 
+try:
+    from row_contracts import Prepared, Grounded, GroundedInterpretation
+except ImportError:
+    from ..row_contracts import Prepared, Grounded, GroundedInterpretation
+
+
 def build_explicit_row(
-    row: Dict[str, Any],
+    row: Prepared | dict[str, Any],
     *,
     artifacts: ExplicitArtifacts,
-    numeric_columns: List[str],
-    categorical_columns: List[str],
-    datetime_columns: List[str],
-    text_column: str | None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
+    """Extract explicit features from a row."""
+    row_data = row if isinstance(row, dict) else row.model_dump()
+    
     explicit: Dict[str, Any] = {}
-    explicit.update(artifacts.numeric.transform(row))
-    explicit.update(artifacts.categorical.transform(row))
-    explicit.update(artifacts.datetime.transform(row))
-    explicit.update(artifacts.text.transform(row))
-    return {
-        "id": row.get("id"),
-        "split": row.get("split"),
-        "source_file": row.get("source_file"),
-        "source_text": str(row.get(text_column, "")).strip() if text_column else "",
-        "explicit": explicit,
-    }
+    explicit.update(artifacts.numeric.transform(row_data))
+    explicit.update(artifacts.categorical.transform(row_data))
+    explicit.update(artifacts.datetime.transform(row_data))
+    explicit.update(artifacts.text.transform(row_data))
+    
+    return explicit

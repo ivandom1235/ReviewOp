@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from typing import Any
 
 try:
-    from .utils import normalize_whitespace, tokenize, write_jsonl
-except ImportError:  # pragma: no cover
-    from utils import normalize_whitespace, tokenize, write_jsonl
+    from ..utils.utils import normalize_whitespace, tokenize, write_jsonl
+except (ImportError, ValueError):  # pragma: no cover
+    from utils.utils import normalize_whitespace, tokenize, write_jsonl
 
 
 DEFAULT_DOMAIN_ASPECTS: dict[str, list[str]] = {
@@ -31,6 +31,21 @@ DEFAULT_DOMAIN_ASPECTS: dict[str, list[str]] = {
     "delivery": ["delivery_speed", "package_condition", "support_quality", "value"],
     "beauty": ["service_quality", "cleanliness", "value", "wait_time"],
     "gaming": ["performance", "content_quality", "community_quality", "value"],
+}
+
+PARAPHRASE_BANK: dict[str, list[str]] = {
+    "positive": [
+        "I was pleased with the {aspect} in this {domain} experience.",
+        "The {aspect} worked well and made this {domain} review stand out.",
+    ],
+    "negative": [
+        "I was frustrated by the {aspect} in this {domain} experience.",
+        "The {aspect} kept this {domain} interaction from being acceptable.",
+    ],
+    "neutral": [
+        "The {aspect} felt ordinary in this {domain} experience.",
+        "The {aspect} was present but not especially memorable in this {domain} context.",
+    ],
 }
 
 POSITIVE_TEMPLATES = [
@@ -62,6 +77,10 @@ def _template_pool(sentiment: str) -> list[str]:
     if sentiment == "negative":
         return NEGATIVE_TEMPLATES
     return NEUTRAL_TEMPLATES
+
+
+def _paraphrase_pool(sentiment: str) -> list[str]:
+    return PARAPHRASE_BANK.get(sentiment, PARAPHRASE_BANK["neutral"])
 
 
 def _realism_gate(text: str) -> bool:
@@ -105,7 +124,7 @@ def _evaluate_sample(*, text: str, domain: str, aspect: str, sentiment: str, see
     if not _sentiment_gate(text, sentiment):
         reasons.append("sentiment_consistency_failed")
 
-    if _diversity_score(text) < 0.45:
+    if _diversity_score(text) < 0.55:
         reasons.append("lexical_diversity_failed")
 
     return SyntheticGateDecision(accepted=not reasons, reasons=reasons)
@@ -138,15 +157,24 @@ def generate_synthetic_multidomain(
         for index, sentiment in enumerate(sentiment_plan):
             aspect = aspects[index % len(aspects)]
             templates = _template_pool(sentiment)
+            paraphrases = _paraphrase_pool(sentiment)
             template = templates[index % len(templates)]
-            text = template.format(aspect=aspect.replace("_", " "), domain=domain.replace("_", " "))
+            paraphrase = paraphrases[index % len(paraphrases)]
+            intended_role = "train" if sentiment != "neutral" else "silver"
+            text = paraphrase.format(aspect=aspect.replace("_", " "), domain=domain.replace("_", " "))
+            if index % 2 == 0:
+                text = template.format(aspect=aspect.replace("_", " "), domain=domain.replace("_", " "))
             decision = _evaluate_sample(text=text, domain=domain, aspect=aspect, sentiment=sentiment, seen_keys=seen_keys)
             row = {
                 "id": f"syn_{domain}_{index}",
                 "domain": domain,
                 "text": text,
+                "generation_source": "explicit_to_implicit_paraphrase" if index % 2 else "template_rewrite",
+                "generator_policy": f"{sentiment}_challenge_aware",
+                "intended_role": intended_role,
                 "target_aspect": aspect,
                 "target_sentiment": sentiment,
+                "evidence_span": text[: min(len(text), 96)],
             }
             if decision.accepted:
                 accepted.append(row)
@@ -168,6 +196,7 @@ def generate_synthetic_multidomain(
         "sentiment_mix_target": mix,
         "sentiment_mix_accepted": dict(Counter(row["target_sentiment"] for row in accepted)),
         "domain_mix_accepted": dict(Counter(row["domain"] for row in accepted)),
+        "paraphrase_bank_sizes": {sentiment: len(items) for sentiment, items in PARAPHRASE_BANK.items()},
     }
     return accepted, rejected, audit
 

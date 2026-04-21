@@ -9,11 +9,11 @@ import pandas as pd
 from tqdm import tqdm
 
 try:
-    from .contracts import BuilderConfig
-    from .utils import stable_id
-except ImportError:  # pragma: no cover
+    from ..contracts import BuilderConfig
+    from ..utils.utils import stable_id
+except (ImportError, ValueError):  # pragma: no cover
     from contracts import BuilderConfig
-    from utils import stable_id
+    from utils.utils import stable_id
 
 _CORE_BENCHMARK_DOMAINS = ("electronics", "restaurant", "telecom")
 

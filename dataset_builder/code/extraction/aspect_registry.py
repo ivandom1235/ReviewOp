@@ -6,8 +6,8 @@ from typing import Any
 
 try:
     from .utils import normalize_whitespace
-except ImportError:  # pragma: no cover
-    from utils import normalize_whitespace
+except (ImportError, ValueError):  # pragma: no cover
+    from utils.utils import normalize_whitespace
 
 ASPECT_REGISTRY_VERSION = "v1"
 
@@ -17,17 +17,33 @@ RESTAURANT_CANONICAL_ASPECTS = {
     "price", "cleanliness", "wait_time", "location"
 }
 
+_GENERIC_CANONICAL_LABELS = {
+    "good",
+    "quality",
+    "misc",
+    "other",
+    "stuff",
+    "thing",
+    "general",
+}
+
 _RESTAURANT_LATENT_MAP = {
     "sensory quality": "food_quality",
     "food": "food_quality",
     "taste": "food_quality",
+    "meal": "food_quality",
+    "meals": "food_quality",
+    "menu": "food_quality",
     "service quality": "service_speed",
     "service": "service_speed",
+    "staff": "service_speed",
+    "wait staff": "service_speed",
     "timeliness": "wait_time",
     "wait time": "wait_time",
     "speed": "service_speed",
     "comfort": "ambience",
     "environment": "ambience",
+    "decor": "ambience",
     "cleanliness": "cleanliness",
     "hygiene": "cleanliness",
     "value": "price",
@@ -48,6 +64,15 @@ def _to_canonical_token(text: str) -> str:
     token = _norm(text).replace("-", " ").replace("/", " ")
     token = "_".join(part for part in token.split(" ") if part)
     return token
+
+
+def _is_registry_worthy_canonical_aspect(*, domain: str, canonical_aspect: str) -> bool:
+    canonical = _norm(canonical_aspect)
+    if not canonical or canonical in _GENERIC_CANONICAL_LABELS:
+        return False
+    if is_restaurant_domain(domain):
+        return canonical in RESTAURANT_CANONICAL_ASPECTS
+    return True
 
 from pathlib import Path
 import json
@@ -181,7 +206,9 @@ def canonicalize_domain_aspect(*, domain: str, aspect_label: str, surface_ration
         return None
 
     canonical = _to_canonical_token(latent or surface)
-    return canonical or None
+    if not canonical or not _is_registry_worthy_canonical_aspect(domain=domain, canonical_aspect=canonical):
+        return None
+    return canonical
 
 
 def _entry_template(*, canonical_label: str, alias: str, sentiment: str, run_ts: str) -> dict[str, Any]:
@@ -219,7 +246,7 @@ def build_run_registry(*, rows: list[dict[str, Any]], run_id: str, run_ts: str) 
             surface = str(span.get("aspect") or span.get("surface_rationale_tag") or span.get("evidence_text") or "")
             sentiment = _norm(span.get("sentiment") or implicit.get("dominant_sentiment") or "neutral") or "neutral"
             canonical = canonicalize_domain_aspect(domain=domain, aspect_label=latent, surface_rationale_tag=surface)
-            if not canonical:
+            if not canonical or not _is_registry_worthy_canonical_aspect(domain=domain, canonical_aspect=canonical):
                 continue
 
             bucket = per_domain[domain]
@@ -333,6 +360,8 @@ def resolve_domain_canonical_aspect(
 ) -> str | None:
     candidate = canonicalize_domain_aspect(domain=domain, aspect_label=latent_aspect, surface_rationale_tag=surface_rationale_tag)
     if not candidate:
+        return None
+    if not _is_registry_worthy_canonical_aspect(domain=domain, canonical_aspect=candidate):
         return None
 
     if not enforce_registry_membership:

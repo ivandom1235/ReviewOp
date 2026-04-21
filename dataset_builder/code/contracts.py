@@ -47,7 +47,7 @@ class BuilderConfig:
     model_family: str = "heuristic_latent"
     augmentation_mode: str = "none"
     prompt_mode: str = "constrained"
-    output_version: str = "v6"
+    output_version: str = "v7"
     reset_output: bool = True
     high_difficulty: bool = False
     adversarial_refine: bool = False

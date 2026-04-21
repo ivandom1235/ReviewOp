@@ -38,6 +38,7 @@ QUALITY_GATES = {
     "gold_span_overlap_f1_min": 0.4,
     "benchmark_implicit_purity_rate_min": 0.7,
     "benchmark_ontology_compatibility_rate_min": 0.9,
+    "benchmark_duplicate_logical_row_rate_adjusted_max": 0.45,
     "worst_domain_f1_min": 0.4,
 }
 NOVELTY_GATES = {
@@ -79,6 +80,7 @@ def metrics_from_report(report: dict[str, Any]) -> dict[str, Any]:
         "benchmark_multi_gold_label_rate": float(benchmark_gold.get("multi_gold_label_rate", 0.0)),
         "benchmark_grounded_evidence_rate": float(benchmark_gold.get("grounded_evidence_rate", 0.0)),
         "benchmark_duplicate_interpretation_rate": float(benchmark_gold.get("duplicate_interpretation_rate", 0.0)),
+        "benchmark_duplicate_logical_row_rate_adjusted": float(report.get("benchmark_summary", {}).get("duplicate_logical_row_rate_adjusted", 1.0)),
         "benchmark_implicit_purity_rate": float(benchmark_gold.get("implicit_purity_rate", 0.0)),
         "benchmark_ontology_compatibility_rate": float(benchmark_gold.get("ontology_compatibility_rate", 0.0)),
         "worst_domain_f1": float(report.get("robust_training_eval", {}).get("groupdro", {}).get("worst_domain_f1", 0.0)),
@@ -142,6 +144,7 @@ def meets_quality_gates(metrics: dict[str, Any], *, quality_gates: dict[str, Any
         and metrics["gold_span_overlap_f1"] >= quality_gates["gold_span_overlap_f1_min"]
         and metrics["benchmark_implicit_purity_rate"] >= quality_gates["benchmark_implicit_purity_rate_min"]
         and metrics["benchmark_ontology_compatibility_rate"] >= quality_gates["benchmark_ontology_compatibility_rate_min"]
+        and metrics["benchmark_duplicate_logical_row_rate_adjusted"] <= quality_gates["benchmark_duplicate_logical_row_rate_adjusted_max"]
         and metrics["worst_domain_f1"] >= quality_gates["worst_domain_f1_min"]
         and not metrics["promotion_guard_blocked"]
     )

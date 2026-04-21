@@ -17,6 +17,7 @@ try:
     from .novelty_utils import compute_novelty_score
     from .quality_signals import prediction_error_buckets, top_aspect_confusions
     from .progress import task_bar
+    from .selective_decisions import decide_selective_routing
     from .evaluation_utils import (
         aspect_from_joint as _aspect_from_joint,
         compact_mode_metrics as _compact_mode_metrics,
@@ -38,6 +39,7 @@ except ImportError:
     from novelty_utils import compute_novelty_score
     from quality_signals import prediction_error_buckets, top_aspect_confusions
     from progress import task_bar
+    from selective_decisions import decide_selective_routing
     from evaluation_utils import (
         aspect_from_joint as _aspect_from_joint,
         compact_mode_metrics as _compact_mode_metrics,
@@ -154,12 +156,15 @@ def evaluate_episodes(
                     novel_truth_label = 1 if bool(query_row.get("novel_acceptable", False)) else 0
                     novelty_truth.append(novel_truth_label)
                     novelty_scores.append(float(novelty_score))
-                    decision_band = "known"
-                    if novelty_score >= float(cfg.novelty_novel_threshold):
-                        decision_band = "novel"
-                    elif novelty_score > float(cfg.novelty_known_threshold):
-                        decision_band = "boundary"
-                    routing = "novel" if decision_band == "novel" else "known"
+                    selective_route = decide_selective_routing(
+                        novelty_score=float(novelty_score),
+                        selective_confidence=float(selective_conf),
+                        abstain_threshold=float(cfg.abstain_threshold),
+                        known_threshold=float(cfg.novelty_known_threshold),
+                        novel_threshold=float(cfg.novelty_novel_threshold),
+                    )
+                    decision_band = selective_route.decision_band
+                    routing = "novel" if selective_route.route_novel else "known"
                     novelty_pred.append(1 if routing == "novel" else 0)
                     evidence_hint = ""
                     domain_hint = "unknown"
@@ -203,6 +208,7 @@ def evaluate_episodes(
                         },
                         "routing": routing,
                         "decision_band": decision_band,
+                        "abstain_reason": selective_route.abstain_reason,
                         "split_protocol": split_protocol if isinstance(split_protocol, dict) else {},
                         "benchmark_ambiguity_score": float(query_row.get("benchmark_ambiguity_score", 0.0)) if isinstance(query_row, dict) else 0.0,
                         "abstain_acceptable": bool(query_row.get("abstain_acceptable", False)) if isinstance(query_row, dict) else False,
