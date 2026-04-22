@@ -110,6 +110,10 @@ def assemble_pipeline_report(*, context: ReportContext) -> dict[str, Any]:
         "size_recovery_stage": train["topup_stats"].get("size_recovery_stage", "none"),
         "size_recovery_shortfall_remaining": train["topup_stats"].get("size_recovery_shortfall_remaining", 0),
         "quality_analysis_summary": context.quality_analysis_summary,
+        "implicit_rejection_reason_counts": context.quality_analysis_summary.get(
+            "implicit_rejection_reason_counts",
+            context.quality_analysis_summary.get("reason_group_counts", {}),
+        ),
         "train_general_dominance_rate": context.train_general_dominance_rate,
         **context.train_domain_leakage_metrics,
         **context.eval_domain_leakage_metrics,

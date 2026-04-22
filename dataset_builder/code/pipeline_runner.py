@@ -34,6 +34,14 @@ except ImportError as e:
 from extraction.explicit_features import fit_explicit_artifacts, ExplicitArtifacts
 import asyncio
 
+
+def run_pipeline_sync(cfg: Any, *, pipeline: Any) -> Any:
+    result = pipeline(cfg)
+    if asyncio.iscoroutine(result):
+        return asyncio.run(result)
+    return result
+
+
 async def run_v7_pipeline_from_cfg(cfg: BuilderConfig) -> dict[str, Any]:
     """Orchestrate the V7 dataset builder pipeline."""
     

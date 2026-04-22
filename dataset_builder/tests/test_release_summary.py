@@ -20,7 +20,13 @@ class ReleaseSummaryTests(unittest.TestCase):
                 "generated_at": "2026-04-20T00:00:00Z",
                 "run_profile": "research",
                 "artifact_mode": "research_release",
-                "output_quality": {"silver_count": 3, "train_keep_count": 10, "hard_reject_count": 2, "recoverable_count": 1},
+                "output_quality": {
+                    "silver_count": 3,
+                    "train_keep_count": 10,
+                    "hard_reject_count": 2,
+                    "recoverable_count": 1,
+                    "implicit_rejection_reason_counts": {"low_mapping_confidence": 7},
+                },
                 "strict_artifacts": {"strict_train_rows": 42},
                 "blocking_reasons": [{"code": "TRAIN_DOMAIN_LEAKAGE"}],
                 "validation": {"benchmark_artifact_counts_match": True},
@@ -40,6 +46,7 @@ class ReleaseSummaryTests(unittest.TestCase):
         self.assertTrue(summary["blocked"])
         self.assertEqual(summary["blocking_codes"], ["TRAIN_DOMAIN_LEAKAGE"])
         self.assertTrue(summary["benchmark_artifact_counts_match"])
+        self.assertEqual(summary["implicit_rejection_reason_counts"], {"low_mapping_confidence": 7})
 
     def test_sampled_research_runs_are_not_reported_as_debug_blocked(self) -> None:
         from build_dataset import _resolve_promotion_eligibility

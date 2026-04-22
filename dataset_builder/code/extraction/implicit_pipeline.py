@@ -492,7 +492,10 @@ async def build_implicit_row(
             local_start = clause.lower().find(matched_surface.lower())
             if local_start == -1: continue
             absolute_start = int(clause_start + local_start)
-            spans.append({"aspect": matched_surface, "latent_label": latent, "evidence_text": clause, "evidence_span": [absolute_start, absolute_start + len(matched_surface)], "sentiment": clause_sentiment, "confidence": match["confidence"], "support_type": match["support_type"], "label_type": match["label_type"], "source": match["source"], "hardness": match["hardness"], "leakage_flags": sorted(flags)})
+            absolute_end = int(absolute_start + len(matched_surface))
+            if absolute_start < 0 or absolute_end <= absolute_start or absolute_end > len(processed_text):
+                continue
+            spans.append({"aspect": matched_surface, "latent_label": latent, "evidence_text": clause, "evidence_span": [absolute_start, absolute_end], "sentiment": clause_sentiment, "confidence": match["confidence"], "support_type": match["support_type"], "label_type": match["label_type"], "source": match["source"], "hardness": match["hardness"], "leakage_flags": sorted(flags), "span_quality": "exact_sentence_match"})
 
     # Purity Filter: If an aspect was detected as both explicit and implicit in the SAME row,
     # and the explicit evidence is strong, we prefer explicit and may suppress the 'implicit' tag 

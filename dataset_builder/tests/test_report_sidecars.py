@@ -39,6 +39,26 @@ class ReportSidecarTests(unittest.TestCase):
                 {"reason": "rare_domain", "count": 1},
             ],
         )
+        self.assertEqual(sidecar["implicit_rejection_reason_counts"], {})
+
+    def test_why_not_promoted_sidecar_exposes_implicit_rejection_reason_counts(self) -> None:
+        from exporters import _why_not_promoted_sidecar
+
+        sidecar = _why_not_promoted_sidecar(
+            {
+                "decision_counts": {"train_keep": 1, "review_queue": 1, "hard_reject": 0},
+                "review_queue_rows": [{"reason_codes": ["low_mapping_confidence"]}],
+                "hard_reject_rows": [],
+                "train_keep_rows": [{}],
+                "silver_rows": [],
+                "implicit_rejection_reason_counts": {"low_mapping_confidence": 4, "weak_evidence": 2},
+            }
+        )
+
+        self.assertEqual(
+            sidecar["implicit_rejection_reason_counts"],
+            {"low_mapping_confidence": 4, "weak_evidence": 2},
+        )
 
 
 if __name__ == "__main__":

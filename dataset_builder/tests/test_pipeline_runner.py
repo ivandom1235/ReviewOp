@@ -35,6 +35,51 @@ class PipelineRunnerTests(unittest.TestCase):
             {"cfg": "demo-cfg", "status": "ok"},
         )
 
+    def test_benchmark_metadata_exposes_semantic_guardrail_metrics(self) -> None:
+        from build_dataset import _build_benchmark_instances
+
+        rows = [
+            {
+                "id": "guardrail-1",
+                "domain": "restaurant",
+                "review_text": "Service was slow but the food was fresh.",
+                "source_text": "Service was slow but the food was fresh.",
+                "gold_interpretations": [
+                    {
+                        "aspect_label": "service_speed",
+                        "sentiment": "negative",
+                        "evidence_text": "Service was slow",
+                        "evidence_span": [-1, -1],
+                        "annotator_support": 2,
+                        "source": "synthetic",
+                        "label_type": "implicit",
+                    }
+                ],
+                "implicit": {
+                    "aspects": ["service_speed"],
+                    "spans": [
+                        {
+                            "latent_label": "service_speed",
+                            "evidence_text": "Service was slow",
+                            "support_type": "exact",
+                            "confidence": 0.95,
+                        }
+                    ],
+                },
+                "split": "train",
+                "group_id": "restaurant_guardrail_1",
+                "abstain_acceptable": True,
+                "novel_acceptable": False,
+            }
+        ]
+        assignments = {"guardrail-1": {"random": "train", "grouped": "train", "domain_holdout": "train"}}
+        _, metadata, _ = _build_benchmark_instances(rows, assignments, enforce_registry_membership=False)
+
+        self.assertIn("implicit_purity_rate", metadata)
+        self.assertIn("ontology_compatibility_rate", metadata)
+        self.assertIn("light_repair_count", metadata)
+        self.assertIn("hard_span_failure_count", metadata)
+
 
 if __name__ == "__main__":
     unittest.main()

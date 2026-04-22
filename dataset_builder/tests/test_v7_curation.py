@@ -17,11 +17,11 @@ class CurationV7Tests(unittest.TestCase):
         g_rows = [
             Grounded(
                 row_id="R1", review_text="Excellent battery", domain="elect", group_id="G1",
-                interpretations=[GroundedInterpretation(aspect="power", sentiment="positive", interpretation_type="explicit", confidence=1.0, evidence_span="battery")]
+                interpretations=[GroundedInterpretation(aspect="power", sentiment="positive", interpretation_type="explicit", confidence=1.0, evidence_text="battery", evidence_span=[10, 17])]
             ),
             Grounded(
                 row_id="R2", review_text="Excellent battery", domain="elect", group_id="G2",
-                interpretations=[GroundedInterpretation(aspect="power", sentiment="positive", interpretation_type="explicit", confidence=1.0, evidence_span="battery")]
+                interpretations=[GroundedInterpretation(aspect="power", sentiment="positive", interpretation_type="explicit", confidence=1.0, evidence_text="battery", evidence_span=[10, 17])]
             )
         ]
         
@@ -40,6 +40,42 @@ class CurationV7Tests(unittest.TestCase):
         # Verify deduplication worked
         self.assertTrue(d_rows[1].is_duplicate)
         self.assertEqual(d_rows[1].duplicate_of, "R1")
+
+    def test_sanitize_gold_spans_marks_light_repair(self) -> None:
+        from build_dataset import _sanitize_gold_interpretation_spans
+
+        cleaned, repaired, hard_failures = _sanitize_gold_interpretation_spans(
+            "Food was delicious and service was slow.",
+            [
+                {
+                    "aspect_label": "food_quality",
+                    "evidence_text": "service was slow",
+                    "evidence_span": [-1, -1],
+                }
+            ],
+        )
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(hard_failures, 0)
+        self.assertEqual(cleaned[0]["span_quality"], "light_repair")
+
+    def test_sanitize_gold_spans_drops_hard_failures(self) -> None:
+        from build_dataset import _sanitize_gold_interpretation_spans
+
+        cleaned, repaired, hard_failures = _sanitize_gold_interpretation_spans(
+            "Food was delicious and service was slow.",
+            [
+                {
+                    "aspect_label": "food_quality",
+                    "evidence_text": "nonexistent phrase",
+                    "evidence_span": [-1, -1],
+                }
+            ],
+        )
+
+        self.assertEqual(repaired, 0)
+        self.assertEqual(hard_failures, 1)
+        self.assertEqual(cleaned, [])
 
 if __name__ == "__main__":
     unittest.main()

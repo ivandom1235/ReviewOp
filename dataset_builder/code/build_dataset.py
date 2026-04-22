@@ -29,6 +29,7 @@ try:
         ASPECT_REGISTRY_VERSION,
         build_run_registry,
         canonicalize_domain_aspect,
+        resolve_domain_canonical_mapping,
         resolve_domain_canonical_aspect,
         resolve_registry_version,
         restaurant_ontology_compatible,
@@ -95,6 +96,7 @@ except ImportError:  # pragma: no cover
         ASPECT_REGISTRY_VERSION,
         build_run_registry,
         canonicalize_domain_aspect,
+        resolve_domain_canonical_mapping,
         resolve_domain_canonical_aspect,
         resolve_registry_version,
         restaurant_ontology_compatible,
@@ -972,8 +974,9 @@ def _safe_absolute_span(review_text: str, evidence_text: str, surface_text: str 
 def _sanitize_gold_interpretation_spans(
     review_text: str,
     interpretations: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, int]:
     repaired = 0
+    hard_failures = 0
     cleaned: list[dict[str, Any]] = []
     for item in interpretations:
         row = dict(item)
@@ -985,11 +988,27 @@ def _sanitize_gold_interpretation_spans(
             end = int(span[1] if span[1] is not None else -1)
             if start < 0 or end < start or end > len(review_text):
                 valid = False
-        if not valid:
-            row["evidence_span"] = _safe_absolute_span(review_text, evidence_text)
-            repaired += 1
-        cleaned.append(row)
-    return cleaned, repaired
+        if valid:
+            row["span_quality"] = str(row.get("span_quality") or "exact_sentence_match")
+            cleaned.append(row)
+            continue
+        if evidence_text and review_text:
+            repaired_span = _safe_absolute_span(review_text, evidence_text)
+            if (
+                isinstance(repaired_span, list)
+                and len(repaired_span) == 2
+                and int(repaired_span[0]) >= 0
+                and int(repaired_span[1]) > int(repaired_span[0])
+                and int(repaired_span[1]) <= len(review_text)
+            ):
+                row["evidence_span"] = repaired_span
+                row["span_quality"] = "light_repair"
+                repaired += 1
+                cleaned.append(row)
+                continue
+        hard_failures += 1
+        continue
+    return cleaned, repaired, hard_failures
 
 
 def _aspect_registry_state_path() -> Path:
@@ -1032,6 +1051,11 @@ def _normalize_interpretation_contract(
         or ""
     ).strip()
     latent = str(item.get("aspect_label") or item.get("aspect") or "").strip()
+    mapping = resolve_domain_canonical_mapping(
+        domain=domain,
+        latent_aspect=latent,
+        surface_rationale_tag=surface_rationale_tag,
+    )
     canonical = resolve_domain_canonical_aspect(
         registry=registry,
         domain=domain,
@@ -1063,6 +1087,8 @@ def _normalize_interpretation_contract(
     item["fallback_used"] = fallback_used
     item["fallback_reason"] = fallback_reason or ("rule_lexicon_fallback" if fallback_used else "")
     item["domain_canonical_aspect"] = canonical
+    item["canonical_mapping_source"] = str((mapping or {}).get("mapping_source") or "unknown")
+    item["canonical_mapping_confidence"] = float((mapping or {}).get("mapping_confidence") or 0.0)
     item["surface_rationale_tag"] = surface_rationale_tag
     item["registry_version"] = resolve_registry_version(registry)
     hardness_tier = _normalize_hardness_tier(item.get("hardness_tier"))
@@ -3152,6 +3178,7 @@ def _build_benchmark_instances(
     deferred_review_rows: list[dict[str, Any]] = []
     interpretation_source_counter: Counter[str] = Counter()
     invalid_span_repaired = 0
+    hard_span_failures = 0
     implicit_interpretation_count = 0
     explicit_interpretation_count = 0
     fallback_only_implicit_count = 0
@@ -3276,9 +3303,10 @@ def _build_benchmark_instances(
                 filtered_interpretations.append(normalized)
 
         gold_interpretations = filtered_interpretations
-        gold_interpretations, repaired_count = _sanitize_gold_interpretation_spans(review_text, gold_interpretations)
+        gold_interpretations, repaired_count, hard_failures = _sanitize_gold_interpretation_spans(review_text, gold_interpretations)
         gold_interpretations = _collapse_cross_mode_gold_interpretations(gold_interpretations)
         invalid_span_repaired += repaired_count
+        hard_span_failures += hard_failures
         if not gold_interpretations:
             deferred_review_rows.append(
                 {
@@ -3506,6 +3534,8 @@ def _build_benchmark_instances(
         "hardness_distribution": {tier: int(count) for tier, count in benchmark_hardness_counts.items()},
         "grouped_split_leakage": grouped_leakage_report(leakage_rows, group_key="group_id"),
         "invalid_span_repaired_count": int(invalid_span_repaired),
+        "light_repair_count": int(invalid_span_repaired),
+        "hard_span_failure_count": int(hard_span_failures),
         "group_id_source_distribution": {
             "source_identity_rate": round(local_group_source_counts.get("source_identity", 0) / max(1, len(all_bench)), 4),
             "parent_review_identity_rate": round(local_group_source_counts.get("parent_review_identity", 0) / max(1, len(all_bench)), 4),

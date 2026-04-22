@@ -37,6 +37,8 @@ _RESTAURANT_LATENT_MAP = {
     "service quality": "service_speed",
     "service": "service_speed",
     "staff": "service_speed",
+    "waiter": "service_speed",
+    "waitress": "service_speed",
     "wait staff": "service_speed",
     "timeliness": "wait_time",
     "wait time": "wait_time",
@@ -53,6 +55,47 @@ _RESTAURANT_LATENT_MAP = {
     "portion size": "portion_size",
     "location": "location",
     "atmosphere": "ambience",
+}
+
+_ELECTRONICS_LATENT_MAP = {
+    "battery": "battery_life",
+    "battery backup": "battery_life",
+    "battery timing": "battery_life",
+    "power": "battery_life",
+    "heat": "thermal",
+    "overheating": "thermal",
+    "gets hot": "thermal",
+    "lag": "performance",
+    "slow performance": "performance",
+    "hangs": "performance",
+    "display": "display",
+    "screen": "display",
+    "screen quality": "display",
+    "brightness": "display",
+    "keyboard": "keyboard",
+    "typing feel": "keyboard",
+    "speaker": "audio",
+    "sound": "audio",
+    "audio": "audio",
+}
+
+_ELECTRONICS_SURFACE_MAP = {
+    "battery backup": "battery_life",
+    "battery timing": "battery_life",
+    "battery life": "battery_life",
+    "overheating": "thermal",
+    "gets hot": "thermal",
+    "slow performance": "performance",
+    "screen quality": "display",
+    "typing feel": "keyboard",
+}
+
+_BROAD_GENERIC_LABELS = {
+    "service",
+    "quality",
+    "food",
+    "experience",
+    "thing",
 }
 
 
@@ -185,30 +228,59 @@ def is_restaurant_domain(domain: str) -> bool:
 
 
 def canonicalize_domain_aspect(*, domain: str, aspect_label: str, surface_rationale_tag: str = "") -> str | None:
-    latent = _norm(aspect_label)
+    mapping = resolve_domain_canonical_mapping(
+        domain=domain,
+        latent_aspect=aspect_label,
+        surface_rationale_tag=surface_rationale_tag,
+    )
+    if not mapping:
+        return None
+    return str(mapping.get("canonical_label") or "").strip() or None
+
+
+def resolve_domain_canonical_mapping(
+    *,
+    domain: str,
+    latent_aspect: str,
+    surface_rationale_tag: str = "",
+) -> dict[str, Any] | None:
+    latent = _norm(latent_aspect)
     surface = _norm(surface_rationale_tag)
+    canonical_domain = _norm(domain)
 
     if not latent and not surface:
+        return None
+    if latent in _BROAD_GENERIC_LABELS:
         return None
 
     if is_restaurant_domain(domain):
         mapped = _RESTAURANT_LATENT_MAP.get(latent)
         if mapped:
-            return mapped
+            return {"canonical_label": mapped, "mapping_source": "domain_map", "mapping_confidence": 0.95}
         if "portion" in surface or "size" in surface:
-            return "portion_size"
+            return {"canonical_label": "portion_size", "mapping_source": "surface_rule", "mapping_confidence": 0.9}
         if "service" in surface or "wait" in surface or "slow" in surface or "quick" in surface:
-            return "service_speed"
-        if any(tok in surface for tok in ("food", "taste", "flavor", "dish", "meal")):
-            return "food_quality"
+            return {"canonical_label": "service_speed", "mapping_source": "surface_rule", "mapping_confidence": 0.9}
+        if any(tok in surface for tok in ("food", "taste", "flavor", "dish", "meal", "fresh")):
+            return {"canonical_label": "food_quality", "mapping_source": "surface_rule", "mapping_confidence": 0.9}
         if any(tok in surface for tok in ("ambience", "atmosphere", "noise", "music", "clean")):
-            return "ambience"
+            return {"canonical_label": "ambience", "mapping_source": "surface_rule", "mapping_confidence": 0.88}
         return None
 
+    if canonical_domain in {"electronics", "laptop", "laptops"}:
+        mapped = _ELECTRONICS_LATENT_MAP.get(latent)
+        if mapped:
+            return {"canonical_label": mapped, "mapping_source": "domain_map", "mapping_confidence": 0.95}
+        for symptom, mapped_surface in _ELECTRONICS_SURFACE_MAP.items():
+            if symptom in surface:
+                return {"canonical_label": mapped_surface, "mapping_source": "surface_rule", "mapping_confidence": 0.9}
+
     canonical = _to_canonical_token(latent or surface)
-    if not canonical or not _is_registry_worthy_canonical_aspect(domain=domain, canonical_aspect=canonical):
+    if not canonical or canonical in _BROAD_GENERIC_LABELS:
         return None
-    return canonical
+    if not _is_registry_worthy_canonical_aspect(domain=domain, canonical_aspect=canonical):
+        return None
+    return {"canonical_label": canonical, "mapping_source": "token_normalization", "mapping_confidence": 0.8}
 
 
 def _entry_template(*, canonical_label: str, alias: str, sentiment: str, run_ts: str) -> dict[str, Any]:
@@ -358,7 +430,12 @@ def resolve_domain_canonical_aspect(
     surface_rationale_tag: str,
     enforce_registry_membership: bool = False,
 ) -> str | None:
-    candidate = canonicalize_domain_aspect(domain=domain, aspect_label=latent_aspect, surface_rationale_tag=surface_rationale_tag)
+    mapping = resolve_domain_canonical_mapping(
+        domain=domain,
+        latent_aspect=latent_aspect,
+        surface_rationale_tag=surface_rationale_tag,
+    )
+    candidate = str((mapping or {}).get("canonical_label") or "").strip()
     if not candidate:
         return None
     if not _is_registry_worthy_canonical_aspect(domain=domain, canonical_aspect=candidate):

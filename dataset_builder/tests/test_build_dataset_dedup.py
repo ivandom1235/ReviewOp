@@ -94,6 +94,27 @@ class BenchmarkDedupTests(unittest.TestCase):
         self.assertEqual(meals["domain_canonical_aspect"], "food_quality")
         self.assertEqual(wait_staff["aspect_label"], "service_speed")
         self.assertEqual(meals["aspect_label"], "food_quality")
+        self.assertIn("canonical_mapping_source", wait_staff)
+        self.assertIn("canonical_mapping_confidence", wait_staff)
+        self.assertGreaterEqual(float(wait_staff["canonical_mapping_confidence"]), 0.85)
+
+    def test_normalize_interpretation_contract_rejects_generic_aspect(self) -> None:
+        from build_dataset import _normalize_interpretation_contract
+
+        normalized = _normalize_interpretation_contract(
+            interpretation={
+                "aspect_label": "quality",
+                "sentiment": "negative",
+                "evidence_text": "quality was bad",
+                "label_type": "implicit",
+                "source": "synthetic",
+            },
+            domain="restaurant",
+            registry={"registry_version": "v1", "domains": {}},
+            enforce_registry_membership=False,
+        )
+
+        self.assertIsNone(normalized)
 
     def test_cross_mode_duplicates_drop_explicit_copy_when_implicit_exists(self) -> None:
         from build_dataset import _collapse_cross_mode_gold_interpretations
@@ -295,8 +316,9 @@ class BenchmarkDedupTests(unittest.TestCase):
         interpretations = _build_gold_interpretations(row)
         self.assertEqual(len(interpretations), 1)
         self.assertNotEqual(interpretations[0]["evidence_span"], [-1, -1])
-        _, repaired = _sanitize_gold_interpretation_spans(row["source_text"], interpretations)
+        _, repaired, hard_failures = _sanitize_gold_interpretation_spans(row["source_text"], interpretations)
         self.assertEqual(repaired, 0)
+        self.assertEqual(hard_failures, 0)
 
     def test_placeholder_review_text_is_not_strict_train_eligible(self) -> None:
         from build_dataset import _strict_row_passes, _train_floor_row_passes

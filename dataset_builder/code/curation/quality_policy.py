@@ -2,12 +2,23 @@ from __future__ import annotations
 
 from typing import Any
 
+try:
+    from extraction.aspect_registry import canonicalize_domain_aspect
+except ImportError:  # pragma: no cover
+    from ..extraction.aspect_registry import canonicalize_domain_aspect
+
+
+TIER_1_SUPPORT_TYPES = {"exact", "near_exact", "gold"}
+TIER_2_SUPPORT_TYPES = {"symptom_based", "paraphrastic"}
+TIER_3_SUPPORT_TYPES = {"domain_consistent_weak", "vector_semantic", "llm_reasoning", "discovered"}
 
 _QUALITY_REJECT_REASONS = {
     "domain_leakage",
     "explicit_contamination",
     "invalid_aspect",
     "fallback_general",
+    "mapping_fail",
+    "tier3_support_primary_disallowed",
 }
 
 _QUALITY_BORDERLINE_REASONS = {
@@ -15,7 +26,39 @@ _QUALITY_BORDERLINE_REASONS = {
     "low_confidence",
     "weak_support",
     "general_only",
+    "unsupported_support_type",
+    "low_mapping_confidence",
+    "weak_evidence",
 }
+
+
+def _support_tier(support_type: str) -> int:
+    support = str(support_type or "").strip().lower()
+    if support in TIER_1_SUPPORT_TYPES:
+        return 1
+    if support in TIER_2_SUPPORT_TYPES:
+        return 2
+    if support in TIER_3_SUPPORT_TYPES:
+        return 3
+    return 99
+
+
+def _max_mapping_confidence(row: dict[str, Any], spans: list[dict[str, Any]]) -> float:
+    candidates: list[float] = []
+    row_level = row.get("implicit", {}).get("canonical_mapping_confidence")
+    if row_level is not None:
+        try:
+            candidates.append(float(row_level))
+        except (TypeError, ValueError):
+            pass
+    for span in spans:
+        value = span.get("mapping_confidence")
+        if value is not None:
+            try:
+                candidates.append(float(value))
+            except (TypeError, ValueError):
+                continue
+    return max(candidates) if candidates else 1.0
 
 
 def quality_reason_codes(
@@ -24,6 +67,7 @@ def quality_reason_codes(
     min_confidence: float,
     accepted_support_types: tuple[str, ...],
     candidate_aspects_by_domain: dict[str, list[str]] | None = None,
+    policy_mode: str = "primary",
 ) -> list[str]:
     implicit = row.get("implicit", {}) or {}
     explicit = row.get("explicit", {}) or {}
@@ -38,15 +82,41 @@ def quality_reason_codes(
         reasons.append("general_only")
     if not spans:
         reasons.append("no_spans")
-    if spans and any(str(span.get("support_type") or "") not in accepted_support_types for span in spans):
+    weak_evidence = spans and all(
+        _support_tier(str(span.get("support_type") or "")) > 1
+        and not str(span.get("evidence_text") or span.get("clause") or "").strip()
+        for span in spans
+    )
+    if weak_evidence:
+        reasons.append("weak_evidence")
+
+    accepted = {str(value).strip() for value in accepted_support_types if str(value).strip()}
+    if spans and any(str(span.get("support_type") or "") not in accepted for span in spans):
         reasons.append("unsupported_support_type")
 
     aspect_conf = implicit.get("aspect_confidence", {}) or {}
     confidences = [float(value) for value in aspect_conf.values() if value is not None]
     if not confidences:
         confidences = [float(span.get("confidence", 0.0)) for span in spans if span.get("confidence") is not None]
-    if confidences and max(confidences) < float(min_confidence):
+    max_conf = max(confidences) if confidences else 0.0
+
+    tiers = [_support_tier(str(span.get("support_type") or "")) for span in spans]
+    has_tier2 = any(tier == 2 for tier in tiers)
+    has_tier3 = any(tier == 3 for tier in tiers)
+    if policy_mode == "primary" and has_tier3:
+        reasons.append("tier3_support_primary_disallowed")
+    if has_tier2 and max_conf < max(float(min_confidence) + 0.08, 0.68):
         reasons.append("low_confidence")
+    elif confidences and max_conf < float(min_confidence):
+        reasons.append("low_confidence")
+    if has_tier3 and all(tier == 3 for tier in tiers):
+        reasons.append("weak_support")
+
+    mapping_conf = _max_mapping_confidence(row, spans)
+    if has_tier2 and mapping_conf < 0.9:
+        reasons.append("low_mapping_confidence")
+    elif not has_tier2 and mapping_conf < 0.85:
+        reasons.append("low_mapping_confidence")
 
     if review_reason == "implicit_not_ready" or not bool(implicit.get("implicit_ready", True)):
         reasons.append("implicit_not_ready")
@@ -59,7 +129,7 @@ def quality_reason_codes(
         if _row_domain_soft_mismatch(
             row,
             candidate_aspects_by_domain=candidate_aspects_by_domain,
-            accepted_support_types={str(value).strip() for value in accepted_support_types if str(value).strip()} or {"exact", "near_exact", "gold"},
+            accepted_support_types=accepted or {"exact", "near_exact", "gold"},
             min_confidence=min_confidence,
         ):
             reasons.append("domain_soft_mismatch")
@@ -74,8 +144,10 @@ def quality_reason_codes(
     if explicit_aspects and any(str(aspect).strip().lower() in explicit_aspects for aspect in aspects):
         reasons.append("explicit_contamination")
 
-    if any(not _is_valid_latent_aspect(aspect) for aspect in aspects):
+    if any(not _is_valid_latent_aspect(aspect=aspect, domain=str(row.get("domain") or "")) for aspect in aspects):
         reasons.append("invalid_aspect")
+    if any(_mapping_failed(aspect=aspect, domain=str(row.get("domain") or ""), spans=spans) for aspect in aspects):
+        reasons.append("mapping_fail")
 
     return list(dict.fromkeys(reasons))
 
@@ -98,12 +170,14 @@ def quality_decision_record(
     accepted_support_types: tuple[str, ...],
     candidate_aspects_by_domain: dict[str, list[str]] | None = None,
     allow_weak_support_in_recovery: bool = False,
+    policy_mode: str = "primary",
 ) -> dict[str, Any]:
     reason_codes = quality_reason_codes(
         row,
         min_confidence=min_confidence,
         accepted_support_types=accepted_support_types,
         candidate_aspects_by_domain=candidate_aspects_by_domain,
+        policy_mode=policy_mode,
     )
     bucket = quality_row_bucket(reason_codes)
     if bucket == "borderline":
@@ -134,7 +208,7 @@ def quality_decision_record(
     implicit = row.get("implicit", {}) or {}
     if len([aspect for aspect in implicit.get("aspects", []) if str(aspect) != "general"]) > 1:
         usefulness_score += 0.18
-    if str(implicit.get("review_reason") or "") in {"weak_support", "low_confidence", "domain_soft_mismatch"}:
+    if str(implicit.get("review_reason") or "") in {"weak_support", "low_confidence", "domain_soft_mismatch", "domain_mismatch"}:
         usefulness_score += 0.16
     if bool(row.get("abstain_acceptable", False)):
         usefulness_score += 0.2
@@ -219,6 +293,7 @@ def quality_analysis_artifact(
         "recoverable_count": len(recoverable_rows),
         "rejected_count": len(hard_reject_rows),
         "reason_group_counts": dict(reason_counts),
+        "implicit_rejection_reason_counts": dict(reason_counts),
         "decision_counts": dict(decision_counts),
         "decision_records": decision_records,
         "silver_rows": silver_rows,
@@ -273,9 +348,38 @@ def _quality_recovery_eligible(
     allow_weak_support: bool = False,
     allow_domain_soft_mismatch: bool = True,
 ) -> tuple[bool, list[str]]:
-    return False, []
+    reasons: list[str] = []
+    implicit = row.get("implicit", {}) or {}
+    spans = list(implicit.get("spans") or [])
+    if not spans:
+        return False, ["no_spans"]
+    accepted = {str(value).strip() for value in accepted_support_types if str(value).strip()}
+    if any(str(span.get("support_type") or "").strip() not in accepted for span in spans):
+        return False, ["unsupported_support_type"]
+    max_conf = max((float(span.get("confidence", 0.0) or 0.0) for span in spans), default=0.0)
+    if max_conf < float(recovery_confidence_threshold):
+        reasons.append("low_confidence")
+    tiers = [_support_tier(str(span.get("support_type") or "")) for span in spans]
+    has_tier3 = any(tier == 3 for tier in tiers)
+    if has_tier3 and not allow_weak_support:
+        reasons.append("weak_support_disallowed")
+    mapping_conf = _max_mapping_confidence(row, spans)
+    if has_tier3 and mapping_conf < 0.9:
+        reasons.append("low_mapping_confidence")
+    elif not has_tier3 and mapping_conf < 0.85:
+        reasons.append("low_mapping_confidence")
+    return (len(reasons) == 0), reasons
 
 
-def _is_valid_latent_aspect(aspect: str) -> bool:
-    return bool(str(aspect).strip())
+def _is_valid_latent_aspect(*, aspect: str, domain: str) -> bool:
+    return bool(canonicalize_domain_aspect(domain=domain, aspect_label=aspect, surface_rationale_tag=aspect))
 
+
+def _mapping_failed(*, aspect: str, domain: str, spans: list[dict[str, Any]]) -> bool:
+    surface = ""
+    for span in spans:
+        latent = str(span.get("latent_label") or span.get("aspect") or "").strip().lower()
+        if latent == str(aspect).strip().lower():
+            surface = str(span.get("aspect") or span.get("surface_rationale_tag") or span.get("evidence_text") or "")
+            break
+    return canonicalize_domain_aspect(domain=domain, aspect_label=aspect, surface_rationale_tag=surface) is None
