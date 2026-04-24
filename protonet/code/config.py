@@ -21,7 +21,7 @@ CODE_ROOT = PROTONET_ROOT / "code"
 INPUT_ROOT = PROTONET_ROOT / "input"
 OUTPUT_ROOT = PROTONET_ROOT / "output"
 METADATA_ROOT = PROTONET_ROOT / "metadata"
-BENCHMARK_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output" / "benchmark" / "ambiguity_grounded"
+BENCHMARK_INPUT_ROOT = REPO_ROOT / "dataset_builder" / "output"
 
 
 def env_value(*names: str, default: str | None = None) -> str | None:

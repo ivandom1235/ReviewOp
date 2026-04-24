@@ -1,113 +1,85 @@
 # ProtoNet
 
-`protonet` trains, evaluates, exports, and serves the prototype-network model used by ReviewOp for implicit aspect classification. It consumes benchmark JSONL artifacts from `dataset_builder` and exports a runtime bundle that the backend can load.
+`protonet` is the core Few-Shot Learning (FSL) engine for ReviewOp. It trains and serves Prototypical Networks for implicit aspect classification, featuring selective routing for novelty detection and joint aspect-sentiment modeling.
 
-## Inputs and Outputs
+## Architecture & Code Map
 
-Input dataset directory:
+The system follows a clean, CLI-driven pipeline from benchmark ingestion to production export:
 
-```text
-dataset_builder/output/benchmark/<dataset>/
-```
-
-Expected input files:
-
-- `train.jsonl`
-- `val.jsonl`
-- `test.jsonl`
-- `metadata.json`
-
-Primary exported model bundle:
-
-```text
-protonet/metadata/model_bundle.pt
-```
-
-Intermediate training outputs are usually written under `protonet/output/` or the path passed through `--output-dir`.
-
-## Code Map
-
-| Path | Responsibility |
+| Component | Responsibility |
 | --- | --- |
-| `code/cli.py` | Main command-line interface for train, evaluate, and export workflows. |
-| `code/training.py` | Training loop and model optimization logic. |
-| `code/training_utils.py` | Shared helpers for training setup and reusable training operations. |
-| `code/evaluation.py` | Evaluation flow and metrics generation. |
-| `code/evaluation_utils.py` | Shared helpers for evaluation and reporting. |
-| `code/export.py` | Model bundle export logic. |
-| `runtime/` | Runtime bundle loading and inference helpers. |
-| `http_api.py` | Optional local HTTP API for ProtoNet inference. |
-| `metadata/` | Default location for exported runtime bundle metadata. |
+| `code/cli.py` | Unified entry point for `train`, `eval`, and `export` commands. |
+| `code/trainer.py` | Training loop with episodic sampling, contrastive learning, and early stopping. |
+| `code/evaluator.py` | Multi-split evaluation with selective routing (abstain/novel/known) logic. |
+| `code/model.py` | ProtoNet architecture with flexible encoder backends and projection heads. |
+| `code/encoder.py` | Sentence embeddings via Transformers (DeBERTa-v3) or fast Bag-of-Words (BoW). |
+| `code/dataset_reader.py` | Robust ingestion of ReviewOp Benchmark artifacts (`manifest.json` aware). |
+| `code/episode_builder.py` | Deterministic N-way K-shot episode construction with joint-label support. |
+| `code/selective_decisions.py` | Logic for selective routing based on distance, energy, and ambiguity. |
+| `code/export_bundle.py` | Packaging of weights, prototype banks, and calibration for production. |
+| `code/calibrate_novelty.py` | Automatic threshold optimization for "None of the Above" (novelty) detection. |
+| `code/runtime_infer.py` | High-performance inference engine for backend integration. |
 
-## Training Workflow
+## Key Features
 
-Run the commands in this section from the repository root.
+- **Joint Labeling**: Predicts `aspect__sentiment` pairs as single semantic units.
+- **Selective Routing**: Implements a three-band decision model:
+    - **Known**: Confident prediction within the supported label set.
+    - **Novel**: Confident "None of the Above" detection (Energy/Distance based).
+    - **Abstain**: Uncertain or ambiguous examples (Ambiguity/Confidence based).
+- **Hardness Awareness**: Pipeline is aware of H0-H3 hardness tiers in the benchmark.
+- **Multi-Split Evaluation**: Automatically reports metrics for Random, Grouped, and Domain Holdout protocols.
 
-Train a model:
+## Inputs & Outputs
 
+### Inputs
+Consumes standard artifacts from `dataset_builder/output/`:
+- `train.jsonl`, `val.jsonl`, `test.jsonl`
+- `manifest.json` (Required for contract verification)
+
+### Outputs
+- `protonet/output/checkpoints/`: Model weights (`best.pt`).
+- `protonet/output/predictions/`: Detailed inference logs including novelty scores.
+- `protonet/metadata/model_bundle.pt`: Unified artifact for production deployment.
+- `protonet/metadata/novelty_calibration_v2.json`: Optimized routing thresholds.
+
+## Workflow Commands
+
+### 1. Train
+Trains the model and automatically calibrates novelty thresholds:
 ```powershell
-python protonet\code\cli.py train --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded --output-dir protonet\output
+python protonet\code\cli.py train --input-dir dataset_builder\output --epochs 12 --n-way 3 --k-shot 2
 ```
 
-Evaluate the trained model:
-
+### 2. Evaluate
+Run detailed evaluation on a specific split:
 ```powershell
-python protonet\code\cli.py eval --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded --checkpoint protonet\output\checkpoints\best.pt --split test
+python protonet\code\cli.py eval --input-dir dataset_builder\output --checkpoint protonet\output\checkpoints\best.pt --split test
 ```
 
-Export a backend-loadable bundle:
-
+### 3. Export
+Manually re-export a production bundle:
 ```powershell
-python protonet\code\cli.py export --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded --checkpoint protonet\output\checkpoints\best.pt
+python protonet\code\cli.py export --checkpoint protonet\output\checkpoints\best.pt
 ```
 
-Inspect all supported flags:
+## Advanced Configuration
 
+The CLI supports extensive hyperparameter tuning:
+- `--encoder-backend`: Choose between `auto`, `transformer`, or `bow`.
+- `--contrastive-weight`: Balance between classification and embedding separation.
+- `--novelty-threshold`: Base threshold for novelty detection.
+- `--low-confidence-threshold`: Threshold for the "Abstain" band.
+- `--multi-label-margin`: Margin for detecting multi-interpretation ambiguity.
+
+## Development
+
+### Unit Tests
 ```powershell
-python protonet\code\cli.py --help
+pytest protonet/tests
 ```
 
-## Runtime Usage
-
-The backend loads ProtoNet through the implicit-aspect client when implicit inference is enabled.
-
-Relevant environment variables:
-
-| Variable | Purpose |
-| --- | --- |
-| `REVIEWOP_ENABLE_IMPLICIT` | Enables or disables implicit-aspect inference in the backend. |
-| `REVIEWOP_TRUSTED_BUNDLE_ROOTS` | Adds trusted filesystem roots for bundle loading. |
-
-Bundle loading is intentionally restricted to trusted roots because PyTorch model bundles may require object deserialization. Only load bundles produced by this project or from a trusted source.
-
-## Optional Local HTTP Service
-
-Run the ProtoNet HTTP API directly:
-
+### Import Verification
 ```powershell
-python -m uvicorn protonet.http_api:app --host 127.0.0.1 --port 8010
+python -c "from protonet.code.runtime_infer import ProtonetRuntime; print('Protonet Runtime OK')"
 ```
-
-This service is useful for isolated model testing. The main ReviewOp backend can also load the exported bundle directly without running this separate service.
-
-## Validation
-
-Basic import check:
-
-```powershell
-python -c "from protonet.runtime import load_bundle; print('protonet import ok')"
-```
-
-Recommended validation before using a new bundle:
-
-1. Train on the target benchmark directory.
-2. Evaluate on validation and test splits.
-3. Export the bundle.
-4. Confirm the backend can import and load the bundle with the expected environment settings.
-5. Run one backend inference request that exercises implicit-aspect predictions.
-
-## Relationship to Other Folders
-
-- `dataset_builder` produces the benchmark data used here.
-- `backend` loads the exported bundle for hybrid explicit/implicit inference.
-- `frontend` displays the inference and analytics output returned by the backend.

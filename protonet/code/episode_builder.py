@@ -29,7 +29,7 @@ except ImportError:
 
 
 def build_joint_label(row: Dict[str, Any], separator: str = "__") -> str:
-    aspect = str(row.get("aspect") or row.get("implicit_aspect") or "unknown").strip()
+    aspect = str(row.get("aspect_canonical") or row.get("aspect") or row.get("implicit_aspect") or "unknown").strip()
     sentiment = str(row.get("sentiment") or "neutral").strip().lower() or "neutral"
     return f"{aspect}{separator}{sentiment}"
 
@@ -58,6 +58,13 @@ def validate_episode_row(episode: Dict[str, Any], cfg: ProtonetConfig) -> None:
     overlap = support_ids.intersection(query_ids)
     if overlap:
         raise ValueError(f"Episode {episode.get('episode_id', 'unknown')} leaks review ids: {sorted(overlap)[:3]}")
+    support_groups = {str(item.get("group_id") or "").strip() for item in support}
+    query_groups = {str(item.get("group_id") or "").strip() for item in query}
+    if "" in support_groups or "" in query_groups:
+        raise ValueError(f"Episode {episode.get('episode_id', 'unknown')} has missing group ids")
+    group_overlap = support_groups.intersection(query_groups)
+    if group_overlap:
+        raise ValueError(f"Episode {episode.get('episode_id', 'unknown')} leaks group ids: {sorted(group_overlap)[:3]}")
     labels = episode.get("labels", [])
     if len(labels) != episode.get("n_way"):
         raise ValueError(f"Episode {episode.get('episode_id', 'unknown')} has mismatched labels and n_way")
@@ -109,8 +116,8 @@ def _dedupe_by_parent(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen: set[str] = set()
     out: List[Dict[str, Any]] = []
     for row in rows:
-        parent = str(row.get("parent_review_id") or row.get("record_id") or row.get("example_id"))
-        if parent in seen:
+        parent = str(row.get("group_id") or row.get("parent_review_id") or row.get("record_id") or row.get("example_id"))
+        if not parent or parent in seen:
             continue
         seen.add(parent)
         out.append(row)
@@ -135,6 +142,7 @@ def _eligible_labels(grouped: Dict[str, List[Dict[str, Any]]], cfg: ProtonetConf
 
 
 def _episode_row_from_example(row: Dict[str, Any], role: str, cfg: ProtonetConfig) -> Dict[str, Any]:
+    aspect = row.get("aspect_canonical") or row.get("aspect") or row.get("implicit_aspect")
     return {
         "example_id": row.get("example_id"),
         "parent_review_id": row.get("parent_review_id"),
@@ -144,9 +152,15 @@ def _episode_row_from_example(row: Dict[str, Any], role: str, cfg: ProtonetConfi
         "domain": row.get("domain", "unknown"),
         "domain_family": row.get("domain_family", ""),
         "group_id": row.get("group_id", ""),
-        "aspect": row.get("aspect") or row.get("implicit_aspect"),
+        "aspect": aspect,
+        "aspect_raw": row.get("aspect_raw") or row.get("aspect") or row.get("implicit_aspect"),
+        "latent_family": row.get("latent_family", "unknown"),
+        "aspect_canonical": aspect,
         "sentiment": str(row.get("sentiment") or "neutral").lower(),
         "label_type": row.get("label_type", "explicit"),
+        "support_type": row.get("support_type", "unknown"),
+        "mapping_source": row.get("mapping_source", "unknown"),
+        "quality_flags": list(row.get("quality_flags") or []),
         "confidence": float(row.get("confidence", 1.0)),
         "hardness_tier": str(row.get("hardness_tier") or "H0").upper(),
         "annotation_source": row.get("annotation_source", "unknown"),
@@ -182,6 +196,7 @@ def _select_rows_excluding(
     filtered = [
         row for row in rows
         if str(row.get("parent_review_id") or row.get("record_id") or row.get("example_id")) not in excluded_parent_ids
+        and str(row.get("group_id") or "").strip() not in excluded_parent_ids
     ]
     return _select_rows(filtered, count, seed, salt)
 
@@ -226,10 +241,11 @@ def _build_episodes_for_split(split: str, rows: List[Dict[str, Any]], cfg: Proto
                 str(row.get("parent_review_id") or row.get("record_id") or row.get("example_id"))
                 for row in support_examples
             }
+            support_groups_for_label = {str(row.get("group_id") or "").strip() for row in support_examples}
             query_examples = _select_rows_excluding(
                 _weighted_rows(bucket),
                 cfg.q_query,
-                excluded_parent_ids=support_parent_ids.union(support_ids_for_label),
+                excluded_parent_ids=support_parent_ids.union(support_ids_for_label).union(support_groups_for_label),
                 seed=cfg.seed + attempt,
                 salt=f"{split}:{label}:query",
             )
@@ -237,10 +253,12 @@ def _build_episodes_for_split(split: str, rows: List[Dict[str, Any]], cfg: Proto
                 can_build = False
                 break
             support_parent_ids.update(support_ids_for_label)
+            support_parent_ids.update(support_groups_for_label)
             query_parent_ids.update(
                 str(row.get("parent_review_id") or row.get("record_id") or row.get("example_id"))
                 for row in query_examples
             )
+            query_parent_ids.update(str(row.get("group_id") or "").strip() for row in query_examples)
             support_set.extend(_episode_row_from_example(row, "support", cfg) for row in support_examples)
             query_set.extend(_episode_row_from_example(row, "query", cfg) for row in query_examples)
         if not can_build:

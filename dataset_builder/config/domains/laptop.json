@@ -1,0 +1,23 @@
+{
+    "broad_labels": ["good", "bad", "quality", "works", "laptop", "computer"],
+    "latent_families": {
+        "power": ["battery", "charging", "charger", "power", "plug", "cord"],
+        "display": ["screen", "display", "brightness", "color", "pixels", "dim"],
+        "performance": ["slow", "lag", "fast", "crash", "performance", "speed", "stutter"],
+        "audio": ["sound", "audio", "volume", "speakers", "bass", "muffled"]
+    },
+    "domain_maps": {
+        "battery": "battery_life",
+        "charge": "battery_life",
+        "screen": "display",
+        "monitor": "display",
+        "light": "portability",
+        "weight": "portability",
+        "speed": "performance",
+        "fast": "performance",
+        "trackpad": "mouse",
+        "touchpad": "mouse",
+        "keys": "keyboard",
+        "typing": "keyboard"
+    }
+}

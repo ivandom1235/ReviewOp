@@ -1,0 +1,18 @@
+{
+    "broad_labels": ["good", "bad", "quality", "works"],
+    "latent_families": {
+        "power": ["battery", "charging", "charger", "power", "plug", "cord"],
+        "display": ["screen", "display", "brightness", "color", "pixels", "dim"],
+        "performance": ["slow", "lag", "fast", "crash", "performance", "speed", "stutter"]
+    },
+    "domain_maps": {
+        "battery": "battery_life",
+        "charge": "battery_life",
+        "screen": "display",
+        "monitor": "display",
+        "light": "portability",
+        "weight": "portability",
+        "speed": "performance",
+        "fast": "performance"
+    }
+}

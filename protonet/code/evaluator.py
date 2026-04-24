@@ -158,7 +158,7 @@ def evaluate_episodes(
                     novelty_scores.append(float(novelty_score))
                     selective_route = decide_selective_routing(
                         novelty_score=float(novelty_score),
-                        selective_confidence=float(selective_conf),
+                        selective_confidence=float(confidence),
                         abstain_threshold=float(cfg.abstain_threshold),
                         known_threshold=float(cfg.novelty_known_threshold),
                         novel_threshold=float(cfg.novelty_novel_threshold),

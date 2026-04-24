@@ -25,7 +25,7 @@ except ImportError:
 
 
 VALID_SPLITS = ("train", "val", "test")
-REQUIRED_BENCHMARK_FILES = tuple(f"{split}.jsonl" for split in VALID_SPLITS) + ("metadata.json",)
+REQUIRED_BENCHMARK_FILES = tuple(f"{split}.jsonl" for split in VALID_SPLITS) + ("manifest.json",)
 
 
 @dataclass
@@ -111,7 +111,7 @@ def validate_benchmark_artifacts(input_dir: Path) -> None:
         f"Input directory: {input_dir}\n"
         f"Missing files:\n{missing_lines}\n"
         "Generate them with:\n"
-        f"python dataset_builder\\code\\build_dataset.py --input-dir dataset_builder\\input --output-dir {output_dir_hint}"
+        f"python dataset_builder\\scripts\\build_benchmark.py --input dataset_builder\\input --output-dir {output_dir_hint}"
     )
 
 
@@ -137,6 +137,18 @@ def _label_from_interpretation(
     if not evidence_text:
         evidence_text = review_text
     evidence_span, evidence_fallback_used = _normalize_evidence_span(interp.get("evidence_span"), review_text, evidence_text)
+    aspect_raw = str(interp.get("aspect_raw") or interp.get("aspect_label") or interp.get("aspect") or "unknown").strip()
+    aspect_canonical = str(
+        interp.get("aspect_canonical")
+        or interp.get("domain_canonical_aspect")
+        or interp.get("aspect_label")
+        or interp.get("aspect")
+        or aspect_raw
+    ).strip()
+    latent_family = str(interp.get("latent_family") or "unknown").strip()
+    label_type = str(interp.get("label_type") or interp.get("interpretation_type") or "implicit").strip().lower()
+    if label_type not in {"explicit", "implicit", "verified"}:
+        label_type = "implicit"
     return {
         "example_id": f"{instance_id}_g{idx}",
         "parent_review_id": instance_id,
@@ -150,11 +162,17 @@ def _label_from_interpretation(
         "group_id": str(interp.get("group_id") or ""),
         "hardness_tier": str(interp.get("hardness_tier") or "H0"),
         "annotation_source": str(interp.get("annotation_source") or "unknown"),
-        "aspect": str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip(),
-        "implicit_aspect": str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip(),
+        "aspect": aspect_canonical,
+        "implicit_aspect": aspect_canonical,
+        "aspect_raw": aspect_raw,
+        "latent_family": latent_family,
+        "aspect_canonical": aspect_canonical,
         "sentiment": sentiment,
-        "label_type": "implicit",
-        "confidence": float(interp.get("annotator_support", 1)),
+        "label_type": label_type,
+        "confidence": float(interp.get("canonical_confidence", interp.get("annotator_support", 1))),
+        "support_type": str(interp.get("support_type") or "unknown"),
+        "mapping_source": str(interp.get("mapping_source") or "unknown"),
+        "quality_flags": list(interp.get("quality_flags") or []),
         "split": split,
         "abstain_acceptable": bool(abstain_acceptable),
         "ambiguity_type": str(ambiguity_type or "").strip() or None,
@@ -176,7 +194,7 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> tuple[Lis
     novel_counter = 0
     abstain_counter = 0
     for index, row in enumerate(rows):
-        instance_id = str(row.get("instance_id") or "").strip()
+        instance_id = str(row.get("instance_id") or row.get("review_id") or "").strip()
         review_text = str(row.get("review_text") or "").strip()
         domain = str(row.get("domain") or "unknown")
         if not instance_id or not review_text:
@@ -205,7 +223,14 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> tuple[Lis
         for interp in interpretations:
             if not isinstance(interp, dict):
                 continue
-            aspect = str(interp.get("aspect_label") or interp.get("aspect") or "unknown").strip()
+            aspect = str(
+                interp.get("aspect_canonical")
+                or interp.get("domain_canonical_aspect")
+                or interp.get("aspect_label")
+                or interp.get("aspect")
+                or interp.get("aspect_raw")
+                or "unknown"
+            ).strip()
             sentiment = _normalize_sentiment(interp.get("sentiment"))
             gold_joint_labels.append(f"{aspect}__{sentiment}")
         for interp_idx, interp in enumerate(interpretations, start=1):

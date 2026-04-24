@@ -1,0 +1,12 @@
+{
+    "broad_labels": ["good", "bad", "quality", "works", "thing", "use", "item", "product"],
+    "latent_families": {
+        "performance": ["slow", "fast", "works", "broken", "lag", "speed", "reliable"],
+        "usability": ["easy", "hard", "simple", "complex", "intuitive", "user"],
+        "value": ["price", "cost", "cheap", "expensive", "value", "worth", "money"],
+        "aesthetics": ["look", "feel", "design", "style", "beautiful", "ugly"],
+        "quality": ["durable", "sturdy", "flimsy", "cheaply", "well-made", "premium"],
+        "service": ["support", "help", "contact", "response", "staff"]
+    },
+    "domain_maps": {}
+}

@@ -1,4 +1,0 @@
-# P0 uses only the Python standard library, plus python-dotenv for env management and rich for progress.
-python-dotenv==1.2.2
-rich==14.3.3
-

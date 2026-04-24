@@ -54,3 +54,11 @@ skills-lock.json
 report.txt
 dataset_builder/state/learned_ontology_*.json
 dataset_builder/state/*.json
+.llm_cache.db 
+docs/ 
+tests/
+.vscode/
+.pytest_cache/
+*.zip
+*.json
+*.db

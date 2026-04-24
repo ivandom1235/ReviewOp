@@ -1,0 +1,21 @@
+{
+    "broad_labels": ["food", "service", "good", "bad", "quality", "place", "thing"],
+    "latent_families": {
+        "service_quality": ["support", "staff", "service", "help", "waiter", "rude", "friendly"],
+        "food_quality": ["taste", "delicious", "food", "dish", "menu", "fresh"],
+        "ambiance": ["atmosphere", "decor", "vibe", "music", "noise", "clean"]
+    },
+    "domain_maps": {
+        "food": "food_quality",
+        "dish": "food_quality",
+        "menu": "food_quality",
+        "waiter": "service",
+        "staff": "service",
+        "service": "service",
+        "price": "value",
+        "cheap": "value",
+        "atmosphere": "ambiance",
+        "decor": "ambiance",
+        "vibe": "ambiance"
+    }
+}

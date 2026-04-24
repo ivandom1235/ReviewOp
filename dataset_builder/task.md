@@ -1,0 +1,37 @@
+# dataset_builder Implementation Progress
+
+- [x] **Task 1: Orchestrator Refactor (The "Pipes")**
+    - [x] Step 1: Write the failing test for the orchestrator sequence
+    - [x] Step 2: Run test to verify it fails
+    - [x] Step 3: Define Stage interfaces and refactor `run_builder_pipeline`
+    - [x] Step 4: Update `build_benchmark.py` to delegate to the new orchestrator
+    - [x] Step 5: Run tests and commit
+- [x] **Task 2: Stage A - Explicit Extraction (spaCy)**
+    - [x] Step 1: Write failing tests for syntactic extraction
+    - [x] Step 2: Implement singleton spaCy model loader
+    - [x] Step 3: Implement noun chunk and modifier-head extraction rules
+    - [x] Step 4: Run tests and commit
+- [x] **Task 3: Stage B & C - Implicit & Evidence**
+    - [x] Step 1: Write failing tests for symptom-based cue inference
+    - [x] Step 2: Implement soft-prior latent family mapping
+    - [x] Step 3: Implement sentence splitting and evidence span validation
+    - [x] Step 4: Run tests and commit
+- [x] **Task 4: Stage D - Multi-LLM Verifier (Claude Support)**
+    - [x] Step 1: Write failing tests for Claude-based verification
+    - [x] Step 2: Implement `BaseLLMClient` and `ProviderFactory`
+    - [x] Step 3: Implement `AnthropicVerifier` and update CLI flags
+    - [x] Step 4: Run tests and commit
+- [x] **Task 5: Stage E & F - Canonicalization & Benchmark Split**
+    - [x] Step 1: Write failing tests for lexical fragment collapse
+    - [x] Step 2: Implement H0-H3 hardness scoring
+    - [x] Step 3: Implement hard leakage and split-balance gates
+    - [x] Step 4: Run tests and commit
+- [x] **Task 6: Performance Optimization**
+    - [x] Step 1: Implement disk-based caching for LLM responses
+    - [x] Step 2: Use `ProcessPoolExecutor` for Stage A (spaCy)
+    - [x] Step 3: Benchmark end-to-end run time
+    - [x] Step 4: Commit and finalize
+- [x] **Task 7: Final Verification & Cleanup**
+    - [x] Step 1: Run full test suite
+    - [x] Step 2: Remove old `dataset_builder` reference code
+    - [x] Step 3: Update `README.md`
