@@ -1,5 +1,6 @@
 from __future__ import annotations
 import hashlib
+import hmac
 import secrets
 from datetime import datetime, timedelta
 from typing import Tuple, Optional
@@ -14,14 +15,40 @@ class IdentityManager:
     and session lifecycle management.
     """
     SESSION_HOURS = 24 * 7
+    PBKDF2_ITERATIONS = 600_000
 
     def hash_password(self, password: str, salt: str) -> str:
-        return hashlib.pbkdf2_hmac(
+        digest = hashlib.pbkdf2_hmac(
             "sha256", 
             password.encode("utf-8"), 
             salt.encode("utf-8"), 
-            120_000
+            self.PBKDF2_ITERATIONS
         ).hex()
+        return f"pbkdf2_sha256${self.PBKDF2_ITERATIONS}${digest}"
+
+    def verify_password(self, password: str, salt: str, password_hash: str) -> bool:
+        stored = str(password_hash or "")
+        if stored.startswith("pbkdf2_sha256$"):
+            try:
+                _algorithm, iterations_text, digest = stored.split("$", 2)
+                iterations = int(iterations_text)
+            except ValueError:
+                return False
+            candidate = hashlib.pbkdf2_hmac(
+                "sha256",
+                password.encode("utf-8"),
+                salt.encode("utf-8"),
+                iterations,
+            ).hex()
+            return hmac.compare_digest(candidate, digest)
+
+        legacy = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            120_000,
+        ).hex()
+        return hmac.compare_digest(legacy, stored)
 
     def hash_session_token(self, token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -47,7 +74,7 @@ class IdentityManager:
         if not user:
             return None, None
             
-        if self.hash_password(password, user.password_salt) != user.password_hash:
+        if not self.verify_password(password, user.password_salt, user.password_hash):
             return None, None
             
         token = self.issue_session(db, user)

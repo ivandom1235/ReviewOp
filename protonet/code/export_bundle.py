@@ -41,7 +41,53 @@ def export_model_bundle(
         "novelty_calibration": novelty_calibration or {},
     }
     torch.save(payload, bundle_path)
+    export_safe_model_bundle(
+        output_dir=cfg.metadata_dir / "model_bundle_safe",
+        config=payload["config"],
+        encoder=payload["encoder"],
+        projection_state_dict=payload["projection_state_dict"],
+        prototype_bank=payload["prototype_bank"],
+        temperature=payload["temperature"],
+        encoder_state=payload.get("encoder_state"),
+        metrics=metrics,
+        history=history,
+        novelty_calibration=payload["novelty_calibration"],
+    )
     return bundle_path
+
+
+def export_safe_model_bundle(
+    *,
+    output_dir: Path,
+    config: Dict[str, Any],
+    encoder: Dict[str, Any],
+    projection_state_dict: Dict[str, Any],
+    prototype_bank: Dict[str, Any],
+    temperature: float,
+    encoder_state: Dict[str, Any] | None = None,
+    metrics: Dict[str, Any] | None = None,
+    history: List[Dict[str, Any]] | None = None,
+    novelty_calibration: Dict[str, Any] | None = None,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    labels = list(prototype_bank.get("labels") or [])
+    metadata = {
+        "bundle_version": "2.0",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "temperature": float(temperature),
+        "metrics": metrics or {},
+        "history": history or [],
+        "novelty_calibration": novelty_calibration or {},
+    }
+    write_json(output_dir / "metadata.json", metadata)
+    write_json(output_dir / "config.json", config)
+    write_json(output_dir / "encoder.json", encoder)
+    write_json(output_dir / "label_map.json", {"labels": labels})
+    torch.save(projection_state_dict, output_dir / "projection_state.pt")
+    torch.save({"labels": labels, "prototypes": prototype_bank["prototypes"]}, output_dir / "prototype_bank.pt")
+    if encoder_state:
+        torch.save(encoder_state, output_dir / "encoder_state.pt")
+    return output_dir
 
 
 def export_report(

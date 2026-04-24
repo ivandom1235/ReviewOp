@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import logging
+import os
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,15 +44,19 @@ async def lifespan(app: FastAPI):
 
     from core.db import SessionLocal
 
-    if settings.app_env.lower() in {"dev", "demo", "local"}:
+    try:
+        db = SessionLocal()
         try:
-            db = SessionLocal()
-            try:
-                seed_default_accounts(db)
-            finally:
-                db.close()
-        except OperationalError as exc:
-            logger.warning("Default account seeding skipped because the database is unavailable: %s", exc)
+            seed_default_accounts(
+                db,
+                app_env=settings.app_env,
+                seed_demo_users=str(os.getenv("SEED_DEMO_USERS") or os.getenv("REVIEWOP_SEED_DEMO_USERS") or "").lower()
+                in {"1", "true", "yes", "on"},
+            )
+        finally:
+            db.close()
+    except OperationalError as exc:
+        logger.warning("Default account seeding check skipped because the database is unavailable: %s", exc)
 
     services = load_application_services()
     app.state.services = services

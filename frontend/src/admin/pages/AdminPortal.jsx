@@ -4,6 +4,8 @@ import GraphExplorer from "./GraphExplorer";
 import ReviewExplorer from "./ReviewExplorer";
 import AlertsPage from "./AlertsPage";
 import AlertDetailPage from "./AlertDetailPage";
+import NeedsReviewPage from "./NeedsReviewPage";
+import NovelCandidatesPage from "./NovelCandidatesPage";
 import UserReviewsInsights from "./UserReviewsInsights";
 import ExportsPage from "./ExportsPage";
 import { useAdminPortal } from "./useAdminPortal";
@@ -34,6 +36,8 @@ export default function AdminPortal() {
     evidenceRows,
     aspectDetail,
     alerts,
+    needsReviewRows,
+    novelCandidateRows,
     impactMatrix,
     segmentRows,
     weeklySummary,
@@ -69,7 +73,7 @@ export default function AdminPortal() {
           <div className="flex flex-wrap items-center gap-2">
             {pageNav.map((name) => (
               <button key={name} type="button" onClick={() => setActivePage(name)} className={`rounded-xl px-3 py-2 text-sm font-semibold ${activePage === name ? "bg-emerald-500 text-slate-950" : isDark ? "bg-slate-800 text-slate-200" : "bg-slate-200 text-slate-700"}`}>
-                {name === "AspectAnalytics" ? "Analytics" : name}
+                {name === "AspectAnalytics" ? "Analytics" : name === "NeedsReview" ? "Needs Review" : name === "NovelCandidates" ? "Novel" : name}
               </button>
             ))}
           </div>
@@ -103,6 +107,8 @@ export default function AdminPortal() {
           {activePage === "GraphExplorer" ? <GraphExplorer graph={batchGraph} graphFilters={graphFilters} setGraphFilters={setGraphFilters} onApplyFilters={applyBatchGraphFilters} onResetFilters={resetBatchGraphFilters} graphLoading={graphLoading} filterOptions={graphFilterOptions} isDark={isDark} /> : null}
           {activePage === "ReviewExplorer" ? <ReviewExplorer reviewText={reviewText} setReviewText={setReviewText} onSubmit={handleSingleSubmit} loading={loading} output={singleOutput} reviewGraph={reviewGraph} batchFile={batchFile} setBatchFile={setBatchFile} onBatchSubmit={handleBatchSubmit} jobStatus={jobStatus} kpis={kpis} leaderboardRows={leaderboardRows} impactRows={impactMatrix} segmentRows={segmentRows} weeklySummary={weeklySummary} alerts={alerts} evidenceRows={evidenceRows} onOpenGraph={() => setActivePage("GraphExplorer")} onOpenAnalytics={() => setActivePage("AspectAnalytics")} isDark={isDark} /> : null}
           {activePage === "Alerts" ? <AlertsPage alerts={alerts} isDark={isDark} onAlertClick={handleAlertClick} onAlertClear={handleAlertClear} /> : null}
+          {activePage === "NeedsReview" ? <NeedsReviewPage rows={needsReviewRows} isDark={isDark} /> : null}
+          {activePage === "NovelCandidates" ? <NovelCandidatesPage rows={novelCandidateRows} isDark={isDark} /> : null}
           {activePage === "UserReviews" ? <UserReviewsInsights summary={userReviewSummary} list={userReviewList} isDark={isDark} /> : null}
           {activePage === "Exports" ? <ExportsPage isDark={isDark} onExportJson={handleExportJson} onExportPdf={handleExportPdf} exportPayload={exportPayload} exportFilters={exportFilters} setExportFilters={setExportFilters} loading={exportLoading} onRefreshExport={() => refreshExportPreview(exportFilters)} /> : null}
           {activePage === "AlertDetail" ? <AlertDetailPage alert={selectedAlert} isDark={isDark} onBack={() => setActivePage("Alerts")} /> : null}

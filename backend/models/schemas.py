@@ -430,3 +430,5 @@ class SubmitReviewOut(BaseModel):
     product_id: str
     linked_review_id: Optional[int] = None
     reply_to_review_id: Optional[int] = None
+    job_id: Optional[str] = None
+    analysis_status: Optional[str] = None

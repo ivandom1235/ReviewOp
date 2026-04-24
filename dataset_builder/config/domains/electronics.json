@@ -1,18 +1,36 @@
 {
     "broad_labels": ["good", "bad", "quality", "works"],
     "latent_families": {
-        "power": ["battery", "charging", "charger", "power", "plug", "cord"],
+        "power": ["battery", "charging", "charger", "power", "plug", "cord", "week", "days"],
         "display": ["screen", "display", "brightness", "color", "pixels", "dim"],
         "performance": ["slow", "lag", "fast", "crash", "performance", "speed", "stutter"]
     },
     "domain_maps": {
         "battery": "battery_life",
         "charge": "battery_life",
+        "power": "battery_life",
+        "week": "battery_life",
         "screen": "display",
         "monitor": "display",
         "light": "portability",
         "weight": "portability",
         "speed": "performance",
-        "fast": "performance"
+        "fast": "performance",
+        "phone": "phone",
+        "build": "build_quality"
+    },
+    "modifier_maps": {
+        "phone": {
+            "fragile": "build_quality",
+            "solid": "build_quality",
+            "light": "portability",
+            "heavy": "portability"
+        },
+        "feel": {
+            "fragile": "build_quality"
+        },
+        "it": {
+            "fragile": "build_quality"
+        }
     }
 }

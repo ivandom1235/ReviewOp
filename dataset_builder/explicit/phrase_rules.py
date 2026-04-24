@@ -24,7 +24,9 @@ def extract_noun_chunks(text: str) -> list[dict[str, Any]]:
         chunks.append({
             "text": text_val.strip(),
             "span": (start_char, chunk.end_char),
-            "root": chunk.root.text
+            "aspect_anchor": chunk.root.text.lower(),
+            "anchor_source": "noun_chunk_root",
+            "modifier_terms": tuple(t.text.lower() for t in chunk if t.pos_ in ("ADJ", "VERB") and t != chunk.root)
         })
     return chunks
 
@@ -46,26 +48,26 @@ def extract_dependency_phrases(text: str) -> list[dict[str, Any]]:
                     phrases.append({
                         "text": phrase_text,
                         "span": (start, end),
-                        "type": "adj_noun"
+                        "type": "adj_noun",
+                        "aspect_anchor": token.text.lower(),
+                        "modifier_terms": (child.text.lower(),),
+                        "anchor_source": "adj_noun"
                     })
         
-        # Rule 2: Predicative Adjective (e.g. "quality is amazing" or "experience is good")
+        # Rule 2: Predicative Adjective (e.g. "quality is amazing")
         if token.pos_ in ("ADJ", "NOUN") and token.dep_ in ("acomp", "attr"):
-            # Find the subject via the head verb
             head = token.head
             if head.pos_ in ("AUX", "VERB") or head.lemma_ == "be":
                 for child in head.children:
                     if child.dep_ == "nsubj":
-                        # Find the full noun chunk for the subject if it exists
-                        subj_text = child.text
-                        subj_start = child.idx
-                        subj_end = child.idx + len(child.text)
+                        # Anchor is the subject root
+                        anchor_text = child.text.lower()
+                        subj_start, subj_end = child.idx, child.idx + len(child.text)
                         
                         for chunk in doc.noun_chunks:
                             if child in chunk:
-                                subj_text = chunk.text
-                                subj_start = chunk.start_char
-                                subj_end = chunk.end_char
+                                anchor_text = chunk.root.text.lower()
+                                subj_start, subj_end = chunk.start_char, chunk.end_char
                                 break
                         
                         start = min(subj_start, token.idx)
@@ -74,7 +76,10 @@ def extract_dependency_phrases(text: str) -> list[dict[str, Any]]:
                         phrases.append({
                             "text": phrase_text,
                             "span": (start, end),
-                            "type": "nsubj_acomp"
+                            "type": "nsubj_acomp",
+                            "aspect_anchor": anchor_text,
+                            "modifier_terms": (token.text.lower(),),
+                            "anchor_source": "nsubj_acomp"
                         })
 
         # Rule 3: Verb with a direct object (e.g. "improved quality")
@@ -87,7 +92,10 @@ def extract_dependency_phrases(text: str) -> list[dict[str, Any]]:
                     phrases.append({
                         "text": phrase_text,
                         "span": (start, end),
-                        "type": "verb_dobj"
+                        "type": "verb_dobj",
+                        "aspect_anchor": child.text.lower(),
+                        "modifier_terms": (token.text.lower(),),
+                        "anchor_source": "verb_dobj"
                     })
                     
     return phrases

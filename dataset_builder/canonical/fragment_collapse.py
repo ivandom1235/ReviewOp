@@ -11,7 +11,7 @@ def collapse_same_evidence_fragments(items: list[Interpretation]) -> tuple[list[
     kept: list[Interpretation] = []
     dropped = 0
     for bucket in buckets.values():
-        ordered = sorted(bucket, key=lambda item: (len(item.aspect_canonical), item.canonical_confidence), reverse=True)
+        ordered = sorted(bucket, key=lambda item: (1 if item.pattern_id else 0, len(item.aspect_canonical), item.canonical_confidence), reverse=True)
         winner = ordered[0]
         kept.append(winner)
         for loser in ordered[1:]:

@@ -1,0 +1,38 @@
+explicit_easy:
+  min_rows: 5
+  required_source_types:
+    - explicit
+  evidence_exact_match_rate: 1.0
+  max_unknown_canonical_rate: 0.0
+
+implicit_learned:
+  min_rows: 4
+  required_source_types:
+    - implicit_learned
+  require_matched_pattern: true
+  require_pattern_id: true
+  evidence_exact_match_rate: 1.0
+  max_unknown_canonical_rate: 0.0
+
+implicit_json_fallback:
+  min_rows: 3
+  required_source_types:
+    - implicit_json
+  forbid_source_types:
+    - implicit_learned
+  evidence_exact_match_rate: 1.0
+
+ambiguity_boundary:
+  min_rows: 3
+  ambiguity_score_min: 0.1
+  evidence_exact_match_rate: 1.0
+
+abstain_required:
+  min_rows: 3
+  abstain_acceptable_rate: 1.0
+
+novelty_h3:
+  min_rows: 4
+  min_novel_or_boundary_rows: 1
+  min_h3_rows: 1
+  evidence_exact_match_rate: 1.0

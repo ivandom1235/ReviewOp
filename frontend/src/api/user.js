@@ -1,4 +1,4 @@
-import { authHeaders, request } from "./request";
+import { authHeaders, request } from "./request.js";
 
 export async function registerUser(username, password) {
   return request("/user/auth/register", {
@@ -66,6 +66,12 @@ export async function submitReview(token, payload) {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders(token) },
     body: JSON.stringify(payload),
+  });
+}
+
+export async function getMyReviewJob(token, jobId) {
+  return request(`/user/jobs/${encodeURIComponent(jobId)}`, {
+    headers: { ...authHeaders(token) },
   });
 }
 

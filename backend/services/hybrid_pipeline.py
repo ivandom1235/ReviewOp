@@ -54,9 +54,11 @@ def _persist_final_predictions(db: Session, review_obj, final_predictions: List[
     db.expire(review_obj, ["predictions"])
 
     for row in final_predictions:
+        aspect = str(row.get("aspect_raw") or row.get("aspect") or "").strip()
+        cluster = str(row.get("aspect_cluster") or row.get("aspect") or row.get("aspect_raw") or "").strip()
         prediction = Prediction(
-            aspect_raw=str(row.get("aspect_raw") or "").strip(),
-            aspect_cluster=str(row.get("aspect_cluster") or row.get("aspect_raw") or "").strip(),
+            aspect_raw=aspect,
+            aspect_cluster=cluster,
             sentiment=str(row.get("sentiment") or "neutral").strip().lower(),
             confidence=float(row.get("confidence", 0.0)),
             rationale=str(row.get("rationale") or "").strip() or None,

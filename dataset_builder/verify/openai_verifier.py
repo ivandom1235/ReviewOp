@@ -61,9 +61,10 @@ class OpenAIVerifier:
             if action == "keep" and idx is not None and 0 <= idx < len(orig):
                 new_gold.append(orig[idx])
             elif action == "add":
-                # LLM suggested a new one
+                aspect_raw = dec.get("aspect", "unknown")
+                # Populate anchor fields for later canonicalization
                 new_gold.append(Interpretation(
-                    aspect_raw=dec.get("aspect", "unknown"),
+                    aspect_raw=aspect_raw,
                     aspect_canonical="unknown",
                     latent_family="unknown",
                     label_type="implicit",
@@ -72,7 +73,9 @@ class OpenAIVerifier:
                     evidence_span=[0, len(row.review_text)],
                     source="llm_verifier",
                     support_type="contextual",
-                    source_type="implicit_llm"
+                    source_type="implicit_llm",
+                    aspect_anchor=aspect_raw.split()[-1].lower() if aspect_raw != "unknown" else None,
+                    anchor_source="llm_added"
                 ))
             # drop and merge are handled by omission or specific logic
             # for now we keep it simple to avoid metadata loss

@@ -15,6 +15,9 @@ from services.evidence import find_evidence_for_aspect
 from services.kg_build import KGBuilder, KGConfig
 from services.open_aspect import extract_open_aspects
 
+_GRAPH_REFRESH_THREADS: dict[str, threading.Thread] = {}
+_GRAPH_REFRESH_LOCK = threading.Lock()
+
 
 def _safe_extract_aspects(text: str, max_aspects: int = 8) -> list[str]:
     logger = logging.getLogger(__name__)
@@ -162,6 +165,7 @@ def split_selective_states(predictions: list[dict]) -> dict:
     seen_abstained: set[str] = set()
     seen_novel: set[str] = set()
     for row in predictions or []:
+        routing = str(row.get("routing") or "known").lower()
         for abstained_row in row.get("abstained_predictions") or []:
             if not isinstance(abstained_row, dict):
                 continue
@@ -170,14 +174,15 @@ def split_selective_states(predictions: list[dict]) -> dict:
                 continue
             seen_abstained.add(abstained_key)
             abstained.append(abstained_row)
-        if bool(row.get("abstain")) or str(row.get("decision") or "").lower() == "abstain":
+        if bool(row.get("abstain")) or str(row.get("decision") or "").lower() == "abstain" or routing == "boundary":
             abstained_key = stable_key(row)
             if abstained_key not in seen_abstained:
                 seen_abstained.add(abstained_key)
                 abstained.append(row)
             continue
-        accepted.append(row)
-        if str(row.get("routing") or "known") == "novel":
+        if routing == "known":
+            accepted.append(row)
+        elif routing == "novel" and not row.get("novel_candidates"):
             novel_key = stable_key(row)
             if novel_key not in seen_novel:
                 seen_novel.add(novel_key)
@@ -203,6 +208,12 @@ def _refresh_corpus_graph_task(domain: str | None) -> None:
 
 def schedule_corpus_graph_refresh(domain: str | None) -> threading.Thread:
     logger = logging.getLogger(__name__)
+    scope = domain or "all"
+    with _GRAPH_REFRESH_LOCK:
+        existing = _GRAPH_REFRESH_THREADS.get(scope)
+        if existing is not None:
+            logger.info("Reusing in-flight corpus graph refresh thread %s", existing.name)
+            return existing
     thread_name = f"corpus-graph-refresh-{domain or 'all'}-{int(time.time() * 1000)}"
 
     def _worker() -> None:
@@ -221,8 +232,13 @@ def schedule_corpus_graph_refresh(domain: str | None) -> threading.Thread:
                 f" for domain={domain}" if domain else "",
                 time.perf_counter() - started_at,
             )
+            with _GRAPH_REFRESH_LOCK:
+                if _GRAPH_REFRESH_THREADS.get(scope) is threading.current_thread():
+                    _GRAPH_REFRESH_THREADS.pop(scope, None)
 
     thread = threading.Thread(target=_worker, name=thread_name, daemon=True)
+    with _GRAPH_REFRESH_LOCK:
+        _GRAPH_REFRESH_THREADS[scope] = thread
     thread.start()
     logger.info("Started background corpus graph refresh thread %s", thread.name)
     return thread

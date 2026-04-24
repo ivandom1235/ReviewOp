@@ -214,6 +214,8 @@ def evaluate_episodes(
                         "abstain_acceptable": bool(query_row.get("abstain_acceptable", False)) if isinstance(query_row, dict) else False,
                         "ambiguity_type": query_row.get("ambiguity_type") if isinstance(query_row, dict) else None,
                         "novel_acceptable": bool(query_row.get("novel_acceptable", False)) if isinstance(query_row, dict) else False,
+                        "source_type": str(query_row.get("source_type") or "unknown") if isinstance(query_row, dict) else "unknown",
+                        "hardness_tier": str(query_row.get("hardness_tier") or "unknown") if isinstance(query_row, dict) else "unknown",
                         "gold_novel_cluster_id": str(query_row.get("novel_cluster_id") or "").strip() if isinstance(query_row, dict) else "",
                         "pred_novel_cluster_id": predicted_cluster_id,
                         "post_aspect_selected_aspects": list(post_aspect.get("selected_aspects") or []),
@@ -239,6 +241,7 @@ def evaluate_episodes(
     avg_overlap = float(np.mean([float(row.get("multi_label_overlap", 0.0)) for row in predictions])) if predictions else 0.0
     flex_correct_rate = float(np.mean([1.0 if row.get("flex_correct") else 0.0 for row in predictions])) if predictions else 0.0
     has_novel_positives = any(int(value) == 1 for value in novelty_truth)
+    has_novel_negatives = any(int(value) == 0 for value in novelty_truth)
     known_novel_quality = float(np.mean([1.0 if int(pred) == int(truth) else 0.0 for pred, truth in zip(novelty_pred, novelty_truth)])) if novelty_truth else 0.0
     known_vs_novel_auroc = 0.0
     if has_novel_positives and len(set(novelty_truth)) > 1:
@@ -296,6 +299,7 @@ def evaluate_episodes(
     high_ambiguity_values = [1.0 if row.get("correct") else 0.0 for row in predictions if float(row.get("benchmark_ambiguity_score", 0.0)) >= 0.5]
     high_ambiguity_accuracy = float(np.mean(high_ambiguity_values)) if high_ambiguity_values else 0.0
     protocol_groups: Dict[str, List[int]] = {"random": [], "grouped": [], "domain_holdout": []}
+    protocol_seen: Dict[str, bool] = {"random": False, "grouped": False, "domain_holdout": False}
     for idx, row in enumerate(predictions):
         protocol_payload = row.get("split_protocol") or {}
         grouped_value = protocol_payload.get("grouped", protocol_payload.get("source_holdout"))
@@ -305,7 +309,9 @@ def evaluate_episodes(
             "domain_holdout": protocol_payload.get("domain_holdout"),
         }
         for protocol in ("random", "grouped", "domain_holdout"):
-            if str(normalized_protocol_payload.get(protocol) or split_name) == split_name:
+            if normalized_protocol_payload.get(protocol) is not None:
+                protocol_seen[protocol] = True
+            if normalized_protocol_payload.get(protocol) is not None and str(normalized_protocol_payload.get(protocol)) == split_name:
                 protocol_groups[protocol].append(idx)
 
     def _protocol_acc(indices: List[int]) -> float:
@@ -321,6 +327,30 @@ def evaluate_episodes(
         if not true_vals:
             return 0.0
         return float(f1_score(true_vals, pred_vals, average="macro"))
+    def _protocol_payload(protocol: str) -> Dict[str, Any]:
+        if not protocol_seen[protocol]:
+            return {"status": "skipped", "reason": "missing split_protocol"}
+        return {
+            "status": "ok",
+            "accuracy": _protocol_acc(protocol_groups[protocol]),
+            "macro_f1": _protocol_macro_f1(protocol_groups[protocol]),
+        }
+
+    source_type_breakdown: Dict[str, Dict[str, Any]] = {}
+    for source_type in sorted({str(row.get("source_type") or "unknown") for row in predictions}):
+        rows_for_source = [row for row in predictions if str(row.get("source_type") or "unknown") == source_type]
+        source_type_breakdown[source_type] = {
+            "count": len(rows_for_source),
+            "accuracy": float(np.mean([1.0 if row.get("correct") else 0.0 for row in rows_for_source])) if rows_for_source else 0.0,
+        }
+    hardness_breakdown: Dict[str, Dict[str, Any]] = {}
+    for hardness in sorted({str(row.get("hardness_tier") or "unknown") for row in predictions}):
+        rows_for_hardness = [row for row in predictions if str(row.get("hardness_tier") or "unknown") == hardness]
+        hardness_breakdown[hardness] = {
+            "count": len(rows_for_hardness),
+            "accuracy": float(np.mean([1.0 if row.get("correct") else 0.0 for row in rows_for_hardness])) if rows_for_hardness else 0.0,
+        }
+
     metrics = {
         "split": split_name,
         "num_episodes": len(episodes),
@@ -342,15 +372,22 @@ def evaluate_episodes(
         "known_vs_novel_f1": {"known": float(f1_known), "novel": float(f1_novel)},
         "known_vs_novel_confusion": {"tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn)},
         "known_vs_novel_not_applicable": bool(not has_novel_positives),
+        "novelty_evaluation_skipped_reason": (
+            "no_novel_positive_examples"
+            if not has_novel_positives
+            else ("no_known_negative_examples" if not has_novel_negatives else None)
+        ),
         "open_set_risk_coverage_curve": open_set_curve,
         "boundary_abstain_quality": float(boundary_abstain_quality),
         "novel_cluster_consistency": float(cluster_consistency),
         "ambiguity_sliced": {"high_ambiguity_accuracy": float(high_ambiguity_accuracy)},
         "protocol_breakdown": {
-            "random": {"accuracy": _protocol_acc(protocol_groups["random"]), "macro_f1": _protocol_macro_f1(protocol_groups["random"])},
-            "grouped": {"accuracy": _protocol_acc(protocol_groups["grouped"]), "macro_f1": _protocol_macro_f1(protocol_groups["grouped"])},
-            "domain_holdout": {"accuracy": _protocol_acc(protocol_groups["domain_holdout"]), "macro_f1": _protocol_macro_f1(protocol_groups["domain_holdout"])},
+            "random": _protocol_payload("random"),
+            "grouped": _protocol_payload("grouped"),
+            "domain_holdout": _protocol_payload("domain_holdout"),
         },
+        "source_type_breakdown": source_type_breakdown,
+        "hardness_breakdown": hardness_breakdown,
         "per_aspect_accuracy": {aspect: float(sum(values) / max(1, len(values))) for aspect, values in sorted(per_aspect.items())},
         "calibration_ece": _expected_calibration_error(confidences, correctness),
         "low_confidence_rate": low_confidence_count / max(1, len(y_true)),

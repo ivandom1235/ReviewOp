@@ -45,6 +45,8 @@ from services.analytics import (
     export_pdf_bytes,
     user_reviews_list,
     user_reviews_summary,
+    needs_review_queue,
+    novel_candidates_queue,
 )
 from routes.user_portal import require_admin
 
@@ -179,6 +181,16 @@ def analytics_aspect_detail(
 @router.get("/alerts", response_model=list[AlertOut])
 def analytics_alerts(domain: str | None = None, _: None = Depends(require_admin), db: Session = Depends(get_db)):
     return alerts(db, domain=domain)
+
+
+@router.get("/needs_review")
+def analytics_needs_review(limit: int = 100, _: None = Depends(require_admin), db: Session = Depends(get_db)):
+    return needs_review_queue(db, limit=limit)
+
+
+@router.get("/novel_candidates")
+def analytics_novel_candidates(limit: int = 100, _: None = Depends(require_admin), db: Session = Depends(get_db)):
+    return novel_candidates_queue(db, limit=limit)
 
 
 @router.delete("/alerts/{alert_id}")

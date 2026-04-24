@@ -15,6 +15,10 @@ def score_row_hardness(row: BenchmarkRow) -> str:
     has_implicit = any(i.label_type == "implicit" for i in row.gold_interpretations)
     sentiments = {i.sentiment.lower() for i in row.gold_interpretations if i.sentiment}
     has_mixed = len(sentiments) > 1
+    if str(row.novelty_status or "") == "novel" and float(row.ambiguity_score or 0.0) >= 0.5:
+        return "H3"
+    if any(i.aspect_canonical == "unknown" for i in row.gold_interpretations) and float(row.ambiguity_score or 0.0) >= 0.5:
+        return "H3"
     
     # High complexity signal
     if len(row.gold_interpretations) > 4:

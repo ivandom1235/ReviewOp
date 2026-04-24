@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { getMyReviewById, getProductDetail, submitReview, updateMyReview } from "../../api/client";
+import { getMyReviewById, getMyReviewJob, getProductDetail, submitReview, updateMyReview } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
 import UserShell from "../../components/user/UserShell";
 import { getComposerMode, isComposerLocked } from "./reviewComposerState";
+import { pollReviewJobUntilTerminal } from "./reviewJobStatus";
 
 const DRAFT_KEY = "reviewop-review-draft";
 
@@ -44,6 +45,7 @@ export default function SubmitReviewPage() {
   const [recommendation, setRecommendation] = useState(prefill?.recommendation ?? draft?.recommendation ?? false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [analysisStatus, setAnalysisStatus] = useState(null);
 
   const isEditMode = useMemo(() => Boolean(editReviewId), [editReviewId]);
   const composerMode = getComposerMode({ isEditMode, replyToReviewId });
@@ -132,8 +134,20 @@ export default function SubmitReviewPage() {
         await updateMyReview(token, Number(editReviewId), payload);
         nav("/my-reviews");
       } else {
-        await submitReview(token, payload);
+        const result = await submitReview(token, payload);
         localStorage.removeItem(DRAFT_KEY);
+        if (result?.job_id) {
+          setAnalysisStatus({ status: result.analysis_status || "queued", jobId: result.job_id });
+          const finalStatus = await pollReviewJobUntilTerminal({
+            jobId: result.job_id,
+            fetchStatus: (jobId) => getMyReviewJob(token, jobId),
+            onStatus: (status, payload) => setAnalysisStatus({ status, jobId: result.job_id, error: payload?.error }),
+          });
+          if (String(finalStatus?.status || "").toLowerCase() === "failed") {
+            setError(finalStatus?.error || "Review submitted, but analysis failed.");
+            return;
+          }
+        }
         nav(`/products/${encodeURIComponent(cleanProductId)}`);
       }
     } catch (ex) {
@@ -147,6 +161,11 @@ export default function SubmitReviewPage() {
     <UserShell title={isEditMode ? "Edit Review" : "Write Review"}>
       <form onSubmit={onSubmit} className="mx-auto w-full max-w-3xl space-y-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
         {error ? <div className="rounded-lg bg-red-100 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-200">{error}</div> : null}
+        {analysisStatus ? (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100">
+            Analysis {String(analysisStatus.status || "queued").replace("_", " ")}.
+          </div>
+        ) : null}
         {productLocked ? (
           <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm dark:border-slate-700 dark:bg-slate-800">
             <div className="grid gap-1 md:grid-cols-2">
@@ -187,7 +206,7 @@ export default function SubmitReviewPage() {
           I recommend this product
         </label>
         <button disabled={loading} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-60">
-          {loading ? (isEditMode ? "Updating..." : "Submitting...") : isEditMode ? "Update Review" : "Submit Review"}
+          {loading ? (isEditMode ? "Updating..." : analysisStatus ? "Analyzing..." : "Submitting...") : isEditMode ? "Update Review" : "Submit Review"}
         </button>
       </form>
     </UserShell>

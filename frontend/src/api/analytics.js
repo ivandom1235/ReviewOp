@@ -1,4 +1,4 @@
-import { downloadFile, request } from "./request";
+import { downloadFile, request } from "./request.js";
 
 export async function getOverview() { return request("/analytics/overview"); }
 export async function getTopAspects(limit = 12) { return request(`/analytics/top_aspects?limit=${limit}`); }
@@ -11,6 +11,8 @@ export async function getEmergingAspects(interval = "day", lookbackBuckets = 7, 
 export async function getEvidence(aspect = "", sentiment = "", limit = 50, domain = "") { const p = new URLSearchParams(); if (aspect) p.set("aspect", aspect); if (sentiment) p.set("sentiment", sentiment); p.set("limit", String(limit)); if (domain) p.set("domain", domain); return request(`/analytics/evidence?${p.toString()}`); }
 export async function getAspectDetail(aspect, interval = "day", domain = "") { const p = new URLSearchParams(); p.set("interval", interval); if (domain) p.set("domain", domain); return request(`/analytics/aspect_detail/${encodeURIComponent(aspect)}?${p.toString()}`); }
 export async function getAlerts(domain = "") { const q = domain ? `?domain=${encodeURIComponent(domain)}` : ""; return request(`/analytics/alerts${q}`); }
+export async function getNeedsReview(limit = 100) { return request(`/analytics/needs_review?limit=${limit}`); }
+export async function getNovelCandidates(limit = 100) { return request(`/analytics/novel_candidates?limit=${limit}`); }
 export async function clearAlert(alertId) { return request(`/analytics/alerts/${alertId}`, { method: "DELETE" }); }
 export async function getImpactMatrix(limit = 20, domain = "") { const p = new URLSearchParams(); p.set("limit", String(limit)); if (domain) p.set("domain", domain); return request(`/analytics/impact_matrix?${p.toString()}`); }
 export async function getSegments(limit = 20, domain = "") { const p = new URLSearchParams(); p.set("limit", String(limit)); if (domain) p.set("domain", domain); return request(`/analytics/segments?${p.toString()}`); }

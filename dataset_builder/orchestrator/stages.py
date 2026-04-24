@@ -11,6 +11,10 @@ from ..config import BuilderConfig
 from ..explicit.phrase_rules import extract_noun_chunks, extract_dependency_phrases
 from ..explicit.phrase_cleaning import is_noisy_label
 from ..implicit.symptom_store import SymptomPatternStore
+from ..implicit.latent_families import score_family_match
+from ..canonical.domain_registry import DomainRegistry
+from ..canonical.domain_maps import lookup_domain_map
+from ..benchmark.novelty import detect_novelty, aggregate_row_novelty
 
 class PipelineStage(ABC):
     @abstractmethod
@@ -27,7 +31,7 @@ def _extract_for_row(row: BenchmarkRow) -> BenchmarkRow:
     for c in chunks:
         new_interps.append(Interpretation(
             aspect_raw=c["text"],
-            aspect_canonical=c["root"],
+            aspect_canonical=c["aspect_anchor"], # Fallback for legacy
             latent_family="unknown",
             label_type="explicit",
             sentiment="unknown",
@@ -35,7 +39,11 @@ def _extract_for_row(row: BenchmarkRow) -> BenchmarkRow:
             evidence_span=c["span"],
             source="spacy_noun_chunk",
             support_type="exact",
-            source_type="explicit"
+            source_type="explicit",
+            aspect_anchor=c["aspect_anchor"],
+            modifier_terms=c["modifier_terms"],
+            anchor_source=c["anchor_source"],
+            evidence_scope="exact_phrase"
         ))
         
     for p in phrases:
@@ -49,7 +57,11 @@ def _extract_for_row(row: BenchmarkRow) -> BenchmarkRow:
             evidence_span=p["span"],
             source=f"spacy_{p['type']}",
             support_type="exact",
-            source_type="explicit"
+            source_type="explicit",
+            aspect_anchor=p["aspect_anchor"],
+            modifier_terms=p["modifier_terms"],
+            anchor_source=p["anchor_source"],
+            evidence_scope="exact_phrase"
         ))
     
     return replace(
@@ -74,7 +86,7 @@ class InferenceStage(PipelineStage):
     def _get_store(self, path: str | None) -> SymptomPatternStore | None:
         # Default fallback if no path provided
         if not path:
-            default_path = Path("dataset_builder/config/symptoms.json")
+            default_path = Path("dataset_builder/config/symptom_stores/symptoms_v001.json")
             if default_path.exists():
                 path = str(default_path)
             else:
@@ -91,12 +103,6 @@ class InferenceStage(PipelineStage):
             return None
 
     def process(self, rows: list[BenchmarkRow], cfg: BuilderConfig) -> list[BenchmarkRow]:
-        from ..implicit.latent_families import score_family_match
-        from ..schemas.interpretation import Interpretation
-        from ..canonical.domain_registry import DomainRegistry
-        from ..implicit.symptom_store import _phrase_in_text
-        from ..canonical.domain_maps import lookup_domain_map
-        
         store = self._get_store(cfg.symptom_store_path)
         new_rows = []
         
@@ -107,40 +113,37 @@ class InferenceStage(PipelineStage):
             
             # 1. Learned Detection
             if store:
-                for p in store.promoted:
-                    # Domain scope check
-                    if p.domain_scope == "domain_scoped":
-                        if row.domain.lower() not in {v.lower() for v in p.domains}:
-                            continue
+                matches = store.match(row.review_text, domain=row.domain)
+                for match in matches:
+                    matched_any_learned = True
+                    family_score = score_family_match(match.matched_pattern, domain=row.domain)
+                    latent_family = match.latent_family or family_score.latent_family
                     
-                    if _phrase_in_text(p.phrase, row.review_text):
-                        matched_any_learned = True
-                        
-                        # Use existing score_family_match to see if this pattern phrase maps to a family
-                        family_score = score_family_match(p.phrase, domain=row.domain)
-                        latent_family = family_score.latent_family
-                        
-                        # If we have a domain map, use it for the final aspect_canonical
-                        canonical = lookup_domain_map(row.domain, p.phrase) or p.aspect_canonical
-                        
-                        # Only add if this canonical hasn't been added by a learned pattern yet 
-                        # (or we could keep all and let FusionStage dedupe)
-                        # We'll keep all for now to preserve specific pattern metadata
-                        implicits.append(Interpretation(
-                            aspect_raw=p.phrase,
-                            aspect_canonical=canonical,
-                            latent_family=latent_family,
-                            label_type="implicit",
-                            sentiment="unknown",
-                            evidence_text=row.review_text,
-                            evidence_span=[0, len(row.review_text)],
-                            source="symptom_store",
-                            support_type="contextual",
-                            matched_pattern=p.phrase,
-                            pattern_id=f"{row.domain}_{p.aspect_canonical}",
-                            source_type="implicit_learned"
-                        ))
-                        seen_canonicals.add(canonical)
+                    # PRECEDENCE FLIP: Store wins over domain map
+                    res = lookup_domain_map(row.domain, match.matched_pattern)
+                    canonical = match.aspect_canonical or res.aspect_canonical or "unknown"
+                    mapping_source = "symptom_store"
+                    if res.mapping_confidence > 0:
+                        mapping_source = "symptom_store+domain_json"
+
+                    implicits.append(Interpretation(
+                        aspect_raw=match.matched_pattern,
+                        aspect_canonical=canonical,
+                        latent_family=latent_family,
+                        label_type="implicit",
+                        sentiment="unknown",
+                        evidence_text=row.review_text[match.start_char:match.end_char],
+                        evidence_span=[match.start_char, match.end_char],
+                        source="symptom_store",
+                        support_type="contextual",
+                        matched_pattern=match.matched_pattern,
+                        pattern_id=match.pattern_id,
+                        pattern_confidence=match.confidence,
+                        evidence_scope="exact_phrase" if match.match_type == "exact" else "phrase_window",
+                        mapping_source=mapping_source,
+                        source_type="implicit_learned"
+                    ))
+                    seen_canonicals.add(canonical)
             
             # 3. Fallback JSON Inference
             if not matched_any_learned:
@@ -153,10 +156,11 @@ class InferenceStage(PipelineStage):
                         label_type="implicit",
                         sentiment="unknown",
                         evidence_text=row.review_text,
-                        evidence_span=(0, len(row.review_text)),
+                        evidence_span=[0, len(row.review_text)],
                         source="latent_family_matcher",
                         support_type="contextual",
-                        source_type="implicit_json"
+                        source_type="implicit_json",
+                        evidence_scope="full_review"
                     ))
             
             row = replace(row, implicit_interpretations=tuple(implicits))
@@ -176,7 +180,28 @@ class EvidenceStage(PipelineStage):
                 if not i.evidence_text or i.evidence_span == [-1, -1] or i.evidence_span == (0, 0) or i.evidence_span == [0, 0]:
                     sentence = select_best_sentence(row.review_text, i.aspect_raw)
                     span = extract_span_from_sentence(row.review_text, sentence)
-                    i = replace(i, evidence_text=sentence, evidence_span=tuple(span))
+                    i = replace(i, evidence_text=sentence, evidence_span=tuple(span), evidence_scope="sentence")
+                new_gold.append(i)
+            new_rows.append(replace(row, gold_interpretations=tuple(new_gold)))
+        return new_rows
+
+class PostVerificationEvidenceStage(PipelineStage):
+    """Stage D2: Grounding specifically for verifier-added interpretations."""
+    def process(self, rows: list[BenchmarkRow], cfg: BuilderConfig) -> list[BenchmarkRow]:
+        from ..evidence.sentence_selector import select_best_sentence
+        from ..evidence.span_extractor import extract_span_from_sentence
+        new_rows = []
+        for row in rows:
+            new_gold = []
+            for i in row.gold_interpretations:
+                # Only ground if it's from the verifier or has missing span
+                if i.source == "llm_verifier" or i.evidence_span == [0, len(row.review_text)]:
+                    sentence = select_best_sentence(row.review_text, i.evidence_text or i.aspect_raw)
+                    span = extract_span_from_sentence(row.review_text, sentence)
+                    if span == [-1, -1]:
+                        # If we can't ground it, drop it (as per design)
+                        continue
+                    i = replace(i, evidence_text=sentence, evidence_span=tuple(span), evidence_scope="sentence")
                 new_gold.append(i)
             new_rows.append(replace(row, gold_interpretations=tuple(new_gold)))
         return new_rows
@@ -185,7 +210,6 @@ class VerificationStage(PipelineStage):
     """Stage D: LLM-based Verification (Keep/Drop/Merge)."""
     def process(self, rows: list[BenchmarkRow], cfg: BuilderConfig) -> list[BenchmarkRow]:
         from ..verify.openai_verifier import OpenAIVerifier
-        from ..explicit.phrase_cleaning import is_noisy_label
         
         if cfg.llm_provider == "none":
             new_rows = []
@@ -203,10 +227,7 @@ class VerificationStage(PipelineStage):
                 return replace(row, gold_interpretations=tuple())
             
             try:
-                # LLM Verification (this currently uses a slightly different API in openai_verifier.py)
-                # But to follow the prompt we add a post-filter here as well.
                 v_row = verifier.verify_row(replace(row, gold_interpretations=tuple(filtered_gold)))
-                
                 # Second pass: ensure NO noisy labels survive
                 final_gold = [i for i in v_row.gold_interpretations if not is_noisy_label(i.aspect_raw)]
                 return replace(v_row, gold_interpretations=tuple(final_gold))
@@ -236,13 +257,10 @@ class CanonicalizationStage(PipelineStage):
         for row in rows:
             # 1. Canonicalize
             canons = [canonicalize_interpretation(i, row.domain) for i in row.gold_interpretations]
-            
             # 2. Collapse fragments
             collapsed, _ = collapse_same_evidence_fragments(canons)
-            
             # 3. Prune broad labels
             final_gold, _ = prune_broad_labels(collapsed, row.domain)
-            
             new_rows.append(replace(row, gold_interpretations=tuple(final_gold)))
         return new_rows
 
@@ -258,7 +276,6 @@ class SentimentStage(PipelineStage):
             new_gold = classifier.classify_batch(row.review_text, list(row.gold_interpretations))
             return replace(row, gold_interpretations=tuple(new_gold))
 
-        # Increased workers for high-concurrency
         with ThreadPoolExecutor(max_workers=20) as executor:
             return list(executor.map(process_row, rows))
 
@@ -266,60 +283,54 @@ class BenchmarkStage(PipelineStage):
     """Stage H: Hardness Scoring and Finalization."""
     def process(self, rows: list[BenchmarkRow], cfg: BuilderConfig) -> list[BenchmarkRow]:
         from ..benchmark.hardness_scorer import score_row_hardness
+        from ..benchmark.novelty import detect_novelty
         seen_texts = set()
         unique_rows = []
         
-        # Track rejections for accounting
-        rejections = 0
-        duplicates = 0
-        
-        from ..benchmark.novelty import detect_novelty
-        from ..canonical.domain_registry import DomainRegistry
-
         for row in rows:
             # 1. Dedupe by text
             if row.review_text in seen_texts:
-                duplicates += 1
                 continue
             seen_texts.add(row.review_text)
             
             # 2. Filter empty gold
             if not row.gold_interpretations:
-                rejections += 1
                 continue
                 
-            # 3. Cap interpretations to reduce noise (keep top by canonical_confidence if possible)
+            # 3. Cap interpretations
             final_gold = sorted(list(row.gold_interpretations), key=lambda i: i.canonical_confidence, reverse=True)[:8]
             
             # 4. Calculate Ambiguity Score
-            # Simple heuristic: density of interpretations + mixed sentiment
             sentiments = {i.sentiment for i in final_gold if i.sentiment != "unknown"}
             ambiguity = min(1.0, (len(final_gold) / 10.0) + (0.3 if len(sentiments) > 1 else 0.0))
             
             # 5. Determine Novelty Status
-            # Fetch known aspects for domain
             domain_cfg = DomainRegistry.get_config(row.domain)
+            # known_canonicals are the unique values (labels) in the domain maps and latent families
             known_from_map = set(domain_cfg.get("domain_maps", {}).values())
             known_from_families = set(domain_cfg.get("latent_families", {}).keys())
-            known_aspects = known_from_map | known_from_families
+            known_canonicals = known_from_map | known_from_families
             
-            is_novel = False
+            scored_gold = []
             for i in final_gold:
-                if i.aspect_canonical == "unknown":
-                    is_novel = True
-                    break
-                if detect_novelty(i.aspect_canonical, known_aspects) == "novel":
-                    is_novel = True
-                    break
+                novelty_status = detect_novelty(
+                    i.aspect_canonical, 
+                    known_canonicals,
+                    mapping_confidence=i.canonical_confidence or 0.0,
+                    mapping_source=i.mapping_source or "none"
+                )
+                # Store novelty status in interpretation for aggregation
+                i = replace(i, novelty_status=novelty_status)
+                scored_gold.append(i)
+            
+            row_novelty = aggregate_row_novelty(scored_gold)
             
             unique_rows.append(replace(row, 
-                gold_interpretations=tuple(final_gold),
-                hardness_tier=(h := score_row_hardness(replace(row, gold_interpretations=tuple(final_gold)))),
+                gold_interpretations=tuple(scored_gold),
+                hardness_tier=(h := score_row_hardness(replace(row, gold_interpretations=tuple(scored_gold)))),
                 abstain_acceptable=(h in ["H2", "H3"]),
-                novelty_status=("novel" if is_novel else "known"),
+                novelty_status=row_novelty,
                 ambiguity_score=ambiguity
             ))
             
-        # Log accounting info to stderr/rich if possible or just rely on manifest
-        # Actually we should ideally pass this back to quality_report
         return unique_rows

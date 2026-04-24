@@ -57,6 +57,7 @@ def mine_symptom_patterns(rows: list[dict[str, Any]], *, min_support: int = 2) -
         support_count = len(observations)
         candidates.append(
             SymptomPatternCandidate(
+                pattern_id=f"mined_{_canonicalize(phrase)}",
                 phrase=phrase,
                 aspect_canonical=_canonicalize(phrase),
                 support_count=support_count,

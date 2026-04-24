@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import json
 
 from rich.progress import Progress
 
@@ -19,6 +20,7 @@ from .stages import (
     InferenceStage,
     EvidenceStage,
     VerificationStage,
+    PostVerificationEvidenceStage,
     CanonicalizationStage,
     FusionStage,
     SentimentStage,
@@ -48,6 +50,9 @@ def run_builder_pipeline(
             shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
     if raw_reviews is not None:
+        requested_rows = cfg.sample_size
+        loaded_rows = len(raw_reviews)
+        
         # Step 1: Initial Conversion
         rows = [
             BenchmarkRow(
@@ -63,15 +68,16 @@ def run_builder_pipeline(
         
         # Step 2: Run Stages A-F
         with Progress() as progress:
-            t_stages = progress.add_task("[cyan]Building Benchmark...", total=8)
+            t_stages = progress.add_task("[cyan]Building Benchmark...", total=9)
             
             stages = [
                 ExtractionStage(),
                 InferenceStage(),
                 FusionStage(),
                 EvidenceStage(),
-                CanonicalizationStage(),
                 VerificationStage(),
+                PostVerificationEvidenceStage(),
+                CanonicalizationStage(),
                 SentimentStage(),
                 BenchmarkStage(),
             ]
@@ -80,6 +86,10 @@ def run_builder_pipeline(
                 rows = stage.process(rows, cfg)
                 progress.update(t_stages, advance=1)
                 
+        processed_rows = len(rows)
+        rejected_rows = loaded_rows - processed_rows
+        discarded_rows = 0 # Future expansion
+        
         # Step 3: Split
         rows_by_split = grouped_train_val_test_split(
             rows,
@@ -88,16 +98,27 @@ def run_builder_pipeline(
             val_ratio=cfg.val_ratio,
             test_ratio=cfg.test_ratio,
         )
+    else:
+        # If provided directly via rows_by_split
+        requested_rows = sum(len(s) for s in rows_by_split.values())
+        loaded_rows = requested_rows
+        processed_rows = requested_rows
+        rejected_rows = 0
+        discarded_rows = 0
 
     if rows_by_split is None:
         raise ValueError("Either raw_reviews or rows_by_split must be provided")
 
     with Progress() as progress:
         t1 = progress.add_task("[green]Quality & Leakage Checks...", total=3)
-        # Use initial row count for accounting if we ran the full pipeline
-        # otherwise infer from split total
-        initial_count = len(rows) if 'rows' in locals() else sum(len(s) for s in rows_by_split.values())
-        quality = build_quality_report(rows_by_split, original_sample_size=initial_count)
+        quality = build_quality_report(
+            rows_by_split, 
+            requested_rows=requested_rows,
+            loaded_rows=loaded_rows,
+            processed_rows=processed_rows,
+            rejected_rows=rejected_rows,
+            discarded_rows=discarded_rows
+        )
         progress.update(t1, advance=1)
         group_leakage = check_group_leakage(rows_by_split)
         progress.update(t1, advance=1)
@@ -108,7 +129,28 @@ def run_builder_pipeline(
             "grouped_leakage": int(group_leakage["grouped_leakage"]),
             "exact_text_leakage": int(text_leakage["exact_text_leakage"]),
         }
-        assert_release_ready(rows_by_split, reports={"quality": quality}, leakage=leakage)
+        
+        profile = "diagnostic_strict" if getattr(cfg, "strict", False) else "research_default"
+        gate_results = assert_release_ready(rows_by_split, reports={"quality": quality}, leakage=leakage, profile=profile)
+        
+        # Save metrics for mandatory export
+        metrics = {
+            "counts": quality.export_counts,
+            "quality": quality.__dict__ if hasattr(quality, "__dict__") else quality,
+            "leakage": leakage,
+            "gate_results": gate_results,
+            "profile": profile
+        }
+        
+        # Mandatory export of metrics_summary.json
+        if not cfg.dry_run:
+            with open(output_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
+                # Need to handle non-serializable objects in quality report
+                def d_ser(obj):
+                    if hasattr(obj, "to_dict"): return obj.to_dict()
+                    if hasattr(obj, "__dict__"): return {k: v for k, v in obj.__dict__.items() if not k.startswith("_")}
+                    return str(obj)
+                json.dump(metrics, f, indent=2, default=d_ser)
         
         if cfg.dry_run:
             return {"counts": quality.export_counts, "quality": quality, "leakage": leakage, "dry_run": True}

@@ -88,6 +88,37 @@ def _build_config(payload: Dict[str, Any]) -> ProtonetConfig:
     return ProtonetConfig(**data)
 
 
+def load_safe_bundle_payload(bundle_dir: str | Path) -> Dict[str, Any]:
+    path = Path(bundle_dir).expanduser().resolve()
+    if not path.is_dir():
+        raise ValueError(f"safe ProtoNet bundle must be a directory: {path}")
+    required = ["metadata.json", "config.json", "encoder.json", "label_map.json", "projection_state.pt", "prototype_bank.pt"]
+    missing = [name for name in required if not (path / name).exists()]
+    if missing:
+        raise FileNotFoundError(f"safe ProtoNet bundle missing files: {', '.join(missing)}")
+
+    metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
+    label_map = json.loads((path / "label_map.json").read_text(encoding="utf-8"))
+    prototype_bank = torch.load(path / "prototype_bank.pt", map_location="cpu", weights_only=True)
+    prototype_bank["labels"] = list(label_map.get("labels") or prototype_bank.get("labels") or [])
+    payload: Dict[str, Any] = {
+        "bundle_version": str(metadata.get("bundle_version") or "2.0"),
+        "created_at": metadata.get("created_at"),
+        "config": json.loads((path / "config.json").read_text(encoding="utf-8")),
+        "encoder": json.loads((path / "encoder.json").read_text(encoding="utf-8")),
+        "projection_state_dict": torch.load(path / "projection_state.pt", map_location="cpu", weights_only=True),
+        "prototype_bank": prototype_bank,
+        "temperature": float(metadata.get("temperature", 1.0)),
+        "metrics": metadata.get("metrics") or {},
+        "history": metadata.get("history") or [],
+        "novelty_calibration": metadata.get("novelty_calibration") or {},
+    }
+    encoder_state_path = path / "encoder_state.pt"
+    if encoder_state_path.exists():
+        payload["encoder_state"] = torch.load(encoder_state_path, map_location="cpu", weights_only=True)
+    return payload
+
+
 class ProtonetRuntime:
     def __init__(self, *, cfg: ProtonetConfig, encoder: HybridTextEncoder, projection: ProjectionHead, prototype_bank: Dict[str, Any], temperature: float) -> None:
         self.cfg = cfg
@@ -155,7 +186,10 @@ class ProtonetRuntime:
     @classmethod
     def load(cls, bundle_path: str | Path) -> "ProtonetRuntime":
         trusted_path = _assert_trusted_bundle_path(bundle_path)
-        payload = torch.load(trusted_path, map_location="cpu", weights_only=False)  # bundle stores non-tensor config objects
+        if trusted_path.is_dir():
+            payload = load_safe_bundle_payload(trusted_path)
+        else:
+            payload = torch.load(trusted_path, map_location="cpu", weights_only=False)  # legacy bundle stores non-tensor config objects
         cfg = _build_config(payload["config"])
         encoder_info = dict(payload.get("encoder") or {})
         encoder_backend = str(encoder_info.get("backend") or cfg.encoder_backend or "auto").strip().lower()

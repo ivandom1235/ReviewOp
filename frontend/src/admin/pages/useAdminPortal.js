@@ -14,6 +14,8 @@ import {
   getEvidence,
   getAspectDetail,
   getAlerts,
+  getNeedsReview,
+  getNovelCandidates,
   getImpactMatrix,
   getSegments,
   getWeeklySummary,
@@ -56,6 +58,8 @@ export function useAdminPortal() {
   const [evidenceRows, setEvidenceRows] = useState([]);
   const [aspectDetail, setAspectDetail] = useState(null);
   const [alerts, setAlerts] = useState([]);
+  const [needsReviewRows, setNeedsReviewRows] = useState([]);
+  const [novelCandidateRows, setNovelCandidateRows] = useState([]);
   const [impactMatrix, setImpactMatrix] = useState([]);
   const [segmentRows, setSegmentRows] = useState([]);
   const [weeklySummary, setWeeklySummary] = useState(null);
@@ -76,13 +80,15 @@ export function useAdminPortal() {
   }, [theme]);
 
   async function refreshAnalytics() {
-    const [k, l, t, e, ev, a, impact, segments, weekly, urs, url] = await Promise.all([
+    const [k, l, t, e, ev, a, nr, nc, impact, segments, weekly, urs, url] = await Promise.all([
       getDashboardKpis(),
       getAspectLeaderboard(),
       getAspectTrends("day"),
       getEmergingAspects("day", 7),
       getEvidence("", "", 30),
       getAlerts(),
+      getNeedsReview(),
+      getNovelCandidates(),
       getImpactMatrix(),
       getSegments(),
       getWeeklySummary(),
@@ -95,6 +101,8 @@ export function useAdminPortal() {
     setEmergingAspects(e || []);
     setEvidenceRows(ev || []);
     setAlerts(a || []);
+    setNeedsReviewRows(nr || []);
+    setNovelCandidateRows(nc || []);
     setImpactMatrix(impact || []);
     setSegmentRows(segments || []);
     setWeeklySummary(weekly || null);
@@ -204,7 +212,7 @@ export function useAdminPortal() {
   }
 
   const leaderboardRows = useMemo(() => leaderboard.map((row, idx) => ({ id: `${row.aspect}-${idx}`, ...row })), [leaderboard]);
-  const pageNav = ["Dashboard", "AspectAnalytics", "GraphExplorer", "ReviewExplorer", "Alerts", "UserReviews", "Exports"];
+  const pageNav = ["Dashboard", "AspectAnalytics", "GraphExplorer", "ReviewExplorer", "Alerts", "NeedsReview", "NovelCandidates", "UserReviews", "Exports"];
 
   const handleAlertClick = (alert) => {
     setSelectedAlert(alert);
@@ -270,6 +278,8 @@ export function useAdminPortal() {
     evidenceRows,
     aspectDetail,
     alerts,
+    needsReviewRows,
+    novelCandidateRows,
     impactMatrix,
     segmentRows,
     weeklySummary,

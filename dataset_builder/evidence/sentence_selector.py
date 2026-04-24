@@ -1,9 +1,8 @@
-from __future__ import annotations
-import spacy
 from ..explicit.spacy_pipeline import load_spacy
 
 def split_sentences(text: str) -> list[str]:
     """Split text into sentences using spaCy."""
+    import spacy
     nlp = load_spacy()
     doc = nlp(text)
     return [sent.text.strip() for sent in doc.sents]

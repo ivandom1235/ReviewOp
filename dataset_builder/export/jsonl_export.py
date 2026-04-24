@@ -28,4 +28,5 @@ def write_split_jsonl(output_dir: str | Path, splits: dict[str, list[Any]]) -> d
         with (output_dir / f"{split}.jsonl").open("w", encoding="utf-8") as handle:
             for row in rows:
                 handle.write(json.dumps(to_payload(row), ensure_ascii=False, sort_keys=True) + "\n")
+    counts["total"] = sum(counts.values())
     return counts

@@ -3,7 +3,7 @@
     "latent_families": {
         "service_quality": ["support", "staff", "service", "help", "waiter", "rude", "friendly"],
         "food_quality": ["taste", "delicious", "food", "dish", "menu", "fresh"],
-        "ambiance": ["atmosphere", "decor", "vibe", "music", "noise", "clean"]
+        "ambience": ["atmosphere", "decor", "vibe", "music", "noise", "clean", "loud", "quiet", "nice", "beautiful"]
     },
     "domain_maps": {
         "food": "food_quality",
@@ -12,10 +12,26 @@
         "waiter": "service",
         "staff": "service",
         "service": "service",
-        "price": "value",
+        "price": "price",
+        "prices": "price",
+        "cost": "price",
         "cheap": "value",
-        "atmosphere": "ambiance",
-        "decor": "ambiance",
-        "vibe": "ambiance"
+        "atmosphere": "ambience",
+        "ambiance": "ambience",
+        "decor": "ambience",
+        "vibe": "ambience",
+        "nice": "ambience",
+        "loud": "ambience"
+    },
+    "modifier_maps": {
+        "service": {
+            "slow": "service_speed",
+            "fast": "service_speed",
+            "quick": "service_speed"
+        },
+        "restaurant": {
+            "nice": "ambience",
+            "loud": "ambience"
+        }
     }
 }

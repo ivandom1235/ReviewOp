@@ -128,6 +128,7 @@ def _label_from_interpretation(
     abstain_acceptable: bool,
     ambiguity_type: str | None,
     novel_acceptable: bool,
+    novelty_status: str,
     novel_cluster_id: str | None,
     novel_alias: str | None,
     novel_evidence_text: str | None,
@@ -177,6 +178,8 @@ def _label_from_interpretation(
         "abstain_acceptable": bool(abstain_acceptable),
         "ambiguity_type": str(ambiguity_type or "").strip() or None,
         "novel_acceptable": bool(novel_acceptable),
+        "novelty_status": novelty_status,
+        "source_type": str(interp.get("source_type") or "unknown"),
         "novel_cluster_id": str(novel_cluster_id or "").strip() or None,
         "novel_alias": str(novel_alias or "").strip() or None,
         "novel_evidence_text": str(novel_evidence_text or "").strip() or None,
@@ -207,7 +210,8 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> tuple[Lis
             split_protocol["grouped"] = split_protocol.get("source_holdout")
         ambiguity_score = float(row.get("ambiguity_score", 0.0))
         abstain_acceptable = bool(row.get("abstain_acceptable", False))
-        novel_acceptable = bool(row.get("novel_acceptable", False))
+        novelty_status = str(row.get("novelty_status") or "known").strip().lower()
+        novel_acceptable = bool(row.get("novel_acceptable", False)) or novelty_status == "novel"
         novel_cluster_id = str(row.get("novel_cluster_id") or "").strip() or None
         novel_alias = str(row.get("novel_alias") or "").strip() or None
         novel_evidence_text = str(row.get("novel_evidence_text") or "").strip() or None
@@ -256,6 +260,7 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str) -> tuple[Lis
                 abstain_acceptable,
                 str(interp.get("ambiguity_type") or "").strip() or None,
                 novel_acceptable,
+                novelty_status,
                 novel_cluster_id,
                 novel_alias,
                 novel_evidence_text,

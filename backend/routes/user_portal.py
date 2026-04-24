@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import secrets
 from datetime import datetime
+import os
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, BackgroundTasks, Request
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, BackgroundTasks, Request, Response
 from sqlalchemy import and_, case, desc, func, or_, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
@@ -13,6 +14,7 @@ from models.schemas import (
     AuthLoginOut,
     AuthRegisterIn,
     AuthUserOut,
+    JobStatusOut,
     ProductCardOut,
     ProductDetailOut,
     ProductReviewOut,
@@ -26,11 +28,14 @@ from models.tables import (
     Prediction,
     ProductCatalog,
     Review,
+    Job,
+    JobItem,
     User,
     UserProductReview,
 )
 from services.auth import IdentityManager
 from services.hybrid_pipeline import run_single_review_hybrid_pipeline
+from services.review_jobs import create_review_analysis_job, schedule_review_analysis_job
 from services.review_pipeline import _refresh_corpus_graph_task
 
 
@@ -39,7 +44,36 @@ router = APIRouter(prefix="/user", tags=["user_portal"])
 SESSION_HOURS = 24 * 7
 
 
-def seed_default_accounts(db: Session, defaults: list[dict[str, str]] | None = None) -> None:
+def _env_flag(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def assert_no_default_passwords(db: Session, app_env: str | None = None) -> None:
+    env = str(app_env or os.getenv("REVIEWOP_ENV") or os.getenv("APP_ENV") or "dev").lower()
+    if env in {"dev", "demo", "local"}:
+        return
+    manager = IdentityManager()
+    for username in ("admin", "user"):
+        existing = db.query(User).filter(func.lower(User.username) == username).first()
+        if existing and manager.verify_password("12345", existing.password_salt, existing.password_hash):
+            raise RuntimeError(f"default demo password is not allowed in {env}: {username}")
+
+
+def seed_default_accounts(
+    db: Session,
+    defaults: list[dict[str, str]] | None = None,
+    *,
+    app_env: str | None = None,
+    seed_demo_users: bool | None = None,
+) -> None:
+    env = str(app_env or os.getenv("REVIEWOP_ENV") or os.getenv("APP_ENV") or "dev").lower()
+    if seed_demo_users is None:
+        seed_demo_users = _env_flag("SEED_DEMO_USERS") or _env_flag("REVIEWOP_SEED_DEMO_USERS")
+    assert_no_default_passwords(db, env)
+    if not seed_demo_users:
+        return
+    if env not in {"dev", "demo", "local"}:
+        raise RuntimeError("demo users can only be seeded in dev, demo, or local environments")
     defaults = defaults or [
         {"username": "admin", "password": "12345", "role": "admin"},
         {"username": "user", "password": "12345", "role": "user"},
@@ -70,7 +104,12 @@ def _user_out(user: User) -> AuthUserOut:
     return AuthUserOut(id=user.id, username=user.username, role=user.role)  # type: ignore[arg-type]
 
 
-def _get_token(authorization: str | None) -> str:
+SESSION_COOKIE_NAME = "reviewop_session"
+
+
+def _get_token(authorization: str | None, session_cookie: str | None = None) -> str:
+    if session_cookie:
+        return session_cookie.strip()
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing authorization token")
     prefix = "bearer "
@@ -82,8 +121,9 @@ def _get_token(authorization: str | None) -> str:
 def get_current_user(
     db: Session = Depends(get_db),
     authorization: str | None = Header(default=None),
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> User:
-    token = _get_token(authorization)
+    token = _get_token(authorization, session_cookie)
     user = IdentityManager().verify_session(db, token)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -134,16 +174,57 @@ def register(payload: AuthRegisterIn, db: Session = Depends(get_db)):
 
 
 @router.post("/auth/login", response_model=AuthLoginOut)
-def login(payload: AuthLoginIn, db: Session = Depends(get_db)):
+def login(payload: AuthLoginIn, response: Response, db: Session = Depends(get_db)):
     user, token = IdentityManager().authenticate_user(db, payload.username, payload.password)
     if not user:
         raise HTTPException(status_code=401, detail="invalid username or password")
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=IdentityManager.SESSION_HOURS * 3600,
+    )
     return AuthLoginOut(token=token, user=_user_out(user))
 
 
 @router.get("/auth/me", response_model=AuthUserOut)
 def me(current: User = Depends(get_current_user)):
     return _user_out(current)
+
+
+@router.get("/jobs/{job_id}", response_model=JobStatusOut)
+def get_my_review_job(
+    job_id: str,
+    current: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    item = db.query(JobItem).filter(JobItem.job_id == job.id, JobItem.row_index == 0).first()
+    if not item or item.review_id is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    owned = (
+        db.query(UserProductReview.id)
+        .filter(
+            UserProductReview.user_id == current.id,
+            UserProductReview.linked_review_id == item.review_id,
+            _active_review_filter(),
+        )
+        .first()
+    )
+    if not owned:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JobStatusOut(
+        job_id=job.id,
+        status=job.status,
+        total=job.total,
+        processed=job.processed,
+        failed=job.failed,
+        error=job.error,
+    )
 
 
 def _product_query_base(db: Session):
@@ -542,14 +623,10 @@ def submit_review(
         product.name = clean_product_name
         product.updated_at = datetime.utcnow()
 
-    review, _, _, _ = run_single_review_hybrid_pipeline(
-        db,
-        explicit_engine=request.app.state.seq2seq_engine,
-        implicit_client=request.app.state.implicit_client,
-        text=payload.review_text,
-        domain=product.category,
-        product_id=clean_product_id,
-    )
+    review = Review(text=payload.review_text.strip(), domain=product.category, product_id=clean_product_id)
+    db.add(review)
+    db.flush()
+    job = create_review_analysis_job(db, review)
     user_review = UserProductReview(
         user_id=current.id,
         product_id=clean_product_id,
@@ -571,13 +648,20 @@ def submit_review(
     )
 
     db.commit()
-    background_tasks.add_task(_refresh_corpus_graph_task, product.category)
+    background_tasks.add_task(
+        schedule_review_analysis_job,
+        job_id=job.id,
+        explicit_engine=request.app.state.seq2seq_engine,
+        implicit_client=request.app.state.implicit_client,
+    )
     db.refresh(user_review)
     return SubmitReviewOut(
         review_id=user_review.id,
         product_id=clean_product_id,
         linked_review_id=review.id,
         reply_to_review_id=parent_review.id if parent_review else None,
+        job_id=job.id,
+        analysis_status=job.status,
     )
 
 
