@@ -25,9 +25,10 @@ def impact_matrix(db: Session, domain: Optional[str] = None, limit: int = 20) ->
 
 def segment_drilldown(db: Session, domain: Optional[str] = None, limit: int = 20) -> list[dict]:
     out = []
-    domain_q = db.query(Review.domain.label("segment"), func.count(func.distinct(Review.id)).label("reviews"), func.count(Prediction.id).label("mentions"), func.sum(case((Prediction.sentiment == "negative", 1), else_=0)).label("neg")).join(Prediction, Prediction.review_id == Review.id).group_by(Review.domain)
+    domain_q = db.query(Review.domain.label("segment"), func.count(func.distinct(Review.id)).label("reviews"), func.count(Prediction.id).label("mentions"), func.sum(case((Prediction.sentiment == "negative", 1), else_=0)).label("neg")).join(Prediction, Prediction.review_id == Review.id)
     if domain:
         domain_q = domain_q.filter(Review.domain == domain)
+    domain_q = domain_q.group_by(Review.domain)
     domain_rows = domain_q.all()
     domain_top_neg_q = db.query(Review.domain.label("segment"), Prediction.aspect_raw.label("aspect"), func.count(Prediction.id).label("c")).join(Prediction, Prediction.review_id == Review.id).filter(Prediction.sentiment == "negative")
     if domain:
@@ -47,9 +48,10 @@ def segment_drilldown(db: Session, domain: Optional[str] = None, limit: int = 20
         segment_key = row.segment or "unknown"
         top_neg = domain_top_negative.get(segment_key)
         out.append({"segment_type": "domain", "segment_value": segment_key, "review_count": int(row.reviews or 0), "mention_count": mentions, "negative_pct": round((neg / mentions) * 100, 2) if mentions else 0.0, "top_negative_aspect": top_neg[0] if top_neg else None})
-    product_q = db.query(Review.product_id.label("segment"), func.count(func.distinct(Review.id)).label("reviews"), func.count(Prediction.id).label("mentions"), func.sum(case((Prediction.sentiment == "negative", 1), else_=0)).label("neg")).join(Prediction, Prediction.review_id == Review.id).filter(Review.product_id.isnot(None)).group_by(Review.product_id).order_by(text("mentions DESC")).limit(limit)
+    product_q = db.query(Review.product_id.label("segment"), func.count(func.distinct(Review.id)).label("reviews"), func.count(Prediction.id).label("mentions"), func.sum(case((Prediction.sentiment == "negative", 1), else_=0)).label("neg")).join(Prediction, Prediction.review_id == Review.id).filter(Review.product_id.isnot(None))
     if domain:
         product_q = product_q.filter(Review.domain == domain)
+    product_q = product_q.group_by(Review.product_id).order_by(text("mentions DESC")).limit(limit)
     for row in product_q.all():
         mentions = int(row.mentions or 0)
         neg = int(row.neg or 0)
@@ -68,4 +70,3 @@ def weekly_summary(db: Session, domain: Optional[str] = None) -> dict:
     biggest = max(current, key=lambda row: row["change_7d_vs_prev_7d"], default=None)
     recommendations = [f"Prioritize remediation for {row['aspect']} (score {row['priority_score']})" for row in impact]
     return {"period_label": f"{this_week_start.date()} to {now.date()} vs {prev_week_start.date()} to {this_week_start.date()}", "top_drivers": [row["aspect"] for row in impact], "biggest_increase_aspect": biggest["aspect"] if biggest else None, "biggest_increase_pct": float(biggest["change_7d_vs_prev_7d"]) if biggest else 0.0, "emerging_count": len(emerging), "action_recommendations": recommendations}
-

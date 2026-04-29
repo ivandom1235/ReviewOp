@@ -1,4 +1,4 @@
-import DataGridTable from "../components/DataGridTable";
+import { useMemo, useState } from "react";
 
 function StatCard({ label, value, isDark }) {
   return (
@@ -9,11 +9,31 @@ function StatCard({ label, value, isDark }) {
   );
 }
 
-export default function UserReviewsInsights({ summary, list, isDark = false }) {
-  const rows = (list?.rows || []).map((row) => ({
-    id: row.review_id,
-    ...row,
-  }));
+export default function UserReviewsInsights({ summary, list, isDark = false, onAnalyzeReview }) {
+  const [productFilter, setProductFilter] = useState("");
+  const [usernameFilter, setUsernameFilter] = useState("");
+  const [minRating, setMinRating] = useState("");
+  const [maxRating, setMaxRating] = useState("");
+
+  const rows = useMemo(
+    () =>
+      (list?.rows || []).map((row) => ({
+        id: row.review_id,
+        ...row,
+      })),
+    [list]
+  );
+
+  const filteredRows = useMemo(() => {
+    return rows.filter((row) => {
+      const matchesProduct = !productFilter || String(row.product_id || "").toLowerCase().includes(productFilter.toLowerCase()) || String(row.product_name || "").toLowerCase().includes(productFilter.toLowerCase());
+      const matchesUser = !usernameFilter || String(row.username || "").toLowerCase().includes(usernameFilter.toLowerCase());
+      const rating = Number(row.rating ?? 0);
+      const matchesMin = minRating === "" || rating >= Number(minRating);
+      const matchesMax = maxRating === "" || rating <= Number(maxRating);
+      return matchesProduct && matchesUser && matchesMin && matchesMax;
+    });
+  }, [rows, productFilter, usernameFilter, minRating, maxRating]);
 
   return (
     <section className="space-y-4">
@@ -30,42 +50,52 @@ export default function UserReviewsInsights({ summary, list, isDark = false }) {
 
       <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
         <h3 className="mb-3 text-lg font-semibold">Top Products</h3>
-        <DataGridTable
-          isDark={isDark}
-          height={250}
-          rows={(summary?.top_products || []).map((p, idx) => ({ id: `${p.product_id}-${idx}`, ...p }))}
-          columns={[
-            { field: "product_id", headerName: "Product ID", flex: 0.8, minWidth: 120 },
-            { field: "product_name", headerName: "Product Name", flex: 1.2, minWidth: 180 },
-            { field: "review_count", headerName: "Reviews", type: "number", flex: 0.5, minWidth: 90 },
-            { field: "average_rating", headerName: "Avg Rating", type: "number", flex: 0.5, minWidth: 100 },
-          ]}
-        />
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {(summary?.top_products || []).length ? (
+            summary.top_products.map((p, idx) => (
+              <div key={`${p.product_id}-${idx}`} className={`rounded-xl p-3 ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
+                <p className="font-semibold">{p.product_name || p.product_id}</p>
+                <p className="text-sm">Product: {p.product_id || "-"}</p>
+                <p className="text-sm">Reviews: {p.review_count ?? 0}</p>
+                <p className="text-sm">Avg rating: {p.average_rating ?? 0}</p>
+                <p className="text-sm">Negative driver: {p.top_negative_aspect || "Unavailable"}</p>
+              </div>
+            ))
+          ) : (
+            <p className={`text-sm ${isDark ? "text-slate-400" : "text-slate-500"}`}>No top products yet.</p>
+          )}
+        </div>
       </div>
 
       <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
         <h3 className="mb-3 text-lg font-semibold">User Reviews Drilldown</h3>
-        <DataGridTable
-          isDark={isDark}
-          height={520}
-          rows={rows}
-          columns={[
-            { field: "created_at", headerName: "Created At", flex: 0.8, minWidth: 150 },
-            { field: "username", headerName: "User", flex: 0.6, minWidth: 110 },
-            { field: "product_id", headerName: "Product ID", flex: 0.7, minWidth: 120 },
-            { field: "product_name", headerName: "Product Name", flex: 1, minWidth: 140 },
-            { field: "rating", headerName: "Rating", type: "number", flex: 0.4, minWidth: 80 },
-            {
-              field: "recommendation",
-              headerName: "Recommends",
-              flex: 0.5,
-              minWidth: 100,
-              valueFormatter: (v) => (v === true ? "Yes" : v === false ? "No" : "-"),
-            },
-            { field: "review_title", headerName: "Title", flex: 0.8, minWidth: 120 },
-            { field: "review_text", headerName: "Review", flex: 1.8, minWidth: 250 },
-          ]}
-        />
+        <div className="mb-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+          <input value={productFilter} onChange={(e) => setProductFilter(e.target.value)} placeholder="Filter by product" className={`rounded-xl border px-3 py-2 text-sm ${isDark ? "border-slate-700 bg-slate-900 text-slate-100" : "border-slate-200 bg-slate-50 text-slate-800"}`} />
+          <input value={usernameFilter} onChange={(e) => setUsernameFilter(e.target.value)} placeholder="Filter by username" className={`rounded-xl border px-3 py-2 text-sm ${isDark ? "border-slate-700 bg-slate-900 text-slate-100" : "border-slate-200 bg-slate-50 text-slate-800"}`} />
+          <input type="number" min="0" max="5" value={minRating} onChange={(e) => setMinRating(e.target.value)} placeholder="Min rating" className={`rounded-xl border px-3 py-2 text-sm ${isDark ? "border-slate-700 bg-slate-900 text-slate-100" : "border-slate-200 bg-slate-50 text-slate-800"}`} />
+          <input type="number" min="0" max="5" value={maxRating} onChange={(e) => setMaxRating(e.target.value)} placeholder="Max rating" className={`rounded-xl border px-3 py-2 text-sm ${isDark ? "border-slate-700 bg-slate-900 text-slate-100" : "border-slate-200 bg-slate-50 text-slate-800"}`} />
+        </div>
+        <div className="space-y-3">
+          {filteredRows.length ? (
+            filteredRows.map((row) => (
+              <div key={row.id} className={`rounded-xl p-3 ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold">{row.review_title || "Untitled review"}</p>
+                  <span className={`rounded-full px-2 py-0.5 text-xs ${isDark ? "bg-slate-800 text-slate-300" : "bg-slate-200 text-slate-700"}`}>Rating: {row.rating ?? "-"}</span>
+                </div>
+                <p className="mt-1 text-sm">{row.review_text || "-"}</p>
+                <p className={`mt-2 text-xs ${isDark ? "text-slate-400" : "text-slate-500"}`}>
+                  {row.username || "Anonymous"} | {row.product_name || row.product_id || "-"} | {row.recommendation === true ? "Recommends" : row.recommendation === false ? "Does not recommend" : "No recommendation"} | {row.created_at || "-"}
+                </p>
+                <button type="button" onClick={() => onAnalyzeReview?.(row.review_text || "")} className="mt-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white">Analyze this review</button>
+              </div>
+            ))
+          ) : (
+            <div className={`grid h-40 place-items-center rounded-xl border ${isDark ? "border-slate-800 bg-slate-950 text-slate-400" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
+              No reviews match the current filters.
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );

@@ -20,6 +20,8 @@ from models.tables import Prediction, Review, AspectNode, AspectEdge
 
 _WORD_RE = re.compile(r"[a-zA-Z0-9']+")
 logger = logging.getLogger(__name__)
+KG_BLOCKLIST = {"general", "unknown", "thing", "something", "everything", "means", "time", "place", "item"}
+KG_MIN_QUALITY = 0.75
 
 
 # ---------------------------------------------------------
@@ -70,6 +72,21 @@ def _sentiment_to_num(sent: str) -> int:
 def _normalize_aspect(s: str) -> str:
     s = (s or "").strip().lower()
     return " ".join(s.split())
+
+
+def _prediction_allowed_for_kg(pred: Prediction) -> bool:
+    aspect = _normalize_aspect(pred.aspect_cluster or pred.aspect_raw or "")
+    if not aspect or aspect in KG_BLOCKLIST:
+        return False
+    # Reuse existing field as optional quality carrier in this phase.
+    if pred.aspect_weight is not None and float(pred.aspect_weight) < KG_MIN_QUALITY:
+        return False
+    return True
+
+
+def _aspect_allowed_for_kg(aspect: str) -> bool:
+    normalized = _normalize_aspect(aspect)
+    return bool(normalized) and normalized not in KG_BLOCKLIST
 
 
 # ---------------------------------------------------------
@@ -134,6 +151,8 @@ class KGBuilder:
         raw_aspects: List[str] = []
 
         for pred, rev in rows:
+            if not _prediction_allowed_for_kg(pred):
+                continue
             by_review.setdefault(pred.review_id, []).append(pred)
             raw_aspects.append(_normalize_aspect(pred.aspect_raw))
 
@@ -375,7 +394,11 @@ class KGBuilder:
 
         aspect_to_reviews = {}
         for pred, _ in rows:
+            if not _prediction_allowed_for_kg(pred):
+                continue
             a = _normalize_aspect(pred.aspect_cluster)
+            if not _aspect_allowed_for_kg(a):
+                continue
             aspect_to_reviews.setdefault(a, set()).add(pred.review_id)
 
         eq = db.query(AspectEdge)
@@ -442,7 +465,11 @@ class KGBuilder:
             raw_scores = []
 
             for p in preds:
+                if not _prediction_allowed_for_kg(p):
+                    continue
                 a = _normalize_aspect(p.aspect_cluster)
+                if not _aspect_allowed_for_kg(a):
+                    continue
                 n = node_map.get(a)
 
                 idf = n.idf if n else 0.0
@@ -464,7 +491,8 @@ class KGBuilder:
             overall_score = 0.0
             overall_conf = 0.0
 
-            for p, w in zip(preds, weights):
+            filtered_preds = [p for p in preds if _prediction_allowed_for_kg(p) and _aspect_allowed_for_kg(p.aspect_cluster)]
+            for p, w in zip(filtered_preds, weights):
                 score = _sentiment_to_num(p.sentiment) * (p.confidence or 0.0)
                 p.aspect_weight = float(w)
                 p.aspect_score = float(score)

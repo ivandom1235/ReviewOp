@@ -66,10 +66,17 @@ class Prediction(Base):
     sentiment: Mapped[str] = mapped_column(SentimentEnum, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # NEW: per-aspect weight + numeric score
     aspect_weight: Mapped[float | None] = mapped_column(Float, nullable=True)
     aspect_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    aspect_normalized: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    aspect_canonical: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    extraction_rule: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_quality: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mapping_scope: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     review: Mapped["Review"] = relationship(back_populates="predictions")
     evidence_spans: Mapped[list["EvidenceSpan"]] = relationship(
@@ -119,6 +126,20 @@ class NovelCandidate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     review: Mapped["Review"] = relationship(back_populates="novel_candidates")
+
+
+class RejectedAspectCandidate(Base):
+    __tablename__ = "rejected_aspect_candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    review_id: Mapped[int] = mapped_column(ForeignKey("reviews.id"), nullable=False, index=True)
+    raw_text: Mapped[str] = mapped_column(String(255), nullable=False)
+    normalized_text: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[str] = mapped_column(String(128), nullable=False)
+    quality_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_rule: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class Job(Base):

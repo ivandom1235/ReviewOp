@@ -1,4 +1,3 @@
-import DataGridTable from "../components/DataGridTable";
 import AspectGraphView from "../components/graph/AspectGraphView";
 
 export default function ReviewExplorer({
@@ -13,12 +12,6 @@ export default function ReviewExplorer({
   onBatchSubmit,
   jobStatus,
   kpis,
-  leaderboardRows = [],
-  impactRows = [],
-  segmentRows = [],
-  weeklySummary,
-  alerts = [],
-  evidenceRows = [],
   onOpenGraph,
   onOpenAnalytics,
   isDark = false,
@@ -74,98 +67,22 @@ export default function ReviewExplorer({
             <div className={`rounded-xl p-3 ${isDark ? "bg-slate-900" : "bg-slate-50"}`}><p className="text-xs opacity-70">Emerging Issues</p><p className="text-2xl font-bold">{kpis.emerging_issues_count ?? 0}</p></div>
           </div>
 
-          {weeklySummary ? (
-            <div className={`mt-4 rounded-xl p-3 text-sm ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
-              <p className="font-semibold">Weekly Brief: {weeklySummary.period_label}</p>
-              <p className="mt-1">Top drivers: {(weeklySummary.top_drivers || []).join(", ") || "-"}</p>
-              <p>Biggest increase: {weeklySummary.biggest_increase_aspect || "-"} ({Number(weeklySummary.biggest_increase_pct || 0).toFixed(1)}%)</p>
-            </div>
-          ) : null}
         </div>
       ) : null}
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
-          <h3 className="mb-3 text-lg font-semibold">Fix First Queue (Impact Matrix)</h3>
-          <DataGridTable
-            isDark={isDark}
-            height={280}
-            rows={impactRows.map((r, i) => ({ id: `${r.aspect}-${i}`, ...r }))}
-            columns={[
-              { field: "aspect", headerName: "Aspect", flex: 1, minWidth: 130 },
-              { field: "priority_score", headerName: "Priority", type: "number", flex: 0.6, minWidth: 90 },
-              { field: "volume", headerName: "Vol", type: "number", flex: 0.5, minWidth: 70 },
-              { field: "negative_rate", headerName: "Neg Rate", type: "number", flex: 0.6, minWidth: 90 },
-              { field: "growth_pct", headerName: "Growth %", type: "number", flex: 0.6, minWidth: 90 },
-              { field: "action_tier", headerName: "Tier", flex: 0.5, minWidth: 80 },
-            ]}
-          />
-        </div>
-        <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
-          <h3 className="mb-3 text-lg font-semibold">Segment Risk Drilldown</h3>
-          <DataGridTable
-            isDark={isDark}
-            height={280}
-            rows={segmentRows.map((r, i) => ({ id: `${r.segment_type}-${r.segment_value}-${i}`, ...r }))}
-            columns={[
-              { field: "segment_type", headerName: "Type", flex: 0.6, minWidth: 90 },
-              { field: "segment_value", headerName: "Segment", flex: 1, minWidth: 130 },
-              { field: "negative_pct", headerName: "Neg %", type: "number", flex: 0.6, minWidth: 90 },
-              { field: "review_count", headerName: "Reviews", type: "number", flex: 0.5, minWidth: 80 },
-              { field: "top_negative_aspect", headerName: "Top Negative", flex: 0.9, minWidth: 120 },
-            ]}
-          />
-        </div>
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-2">
-        <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
-          <h3 className="mb-3 text-lg font-semibold">Batch QA + Distribution</h3>
-          <DataGridTable
-            isDark={isDark}
-            height={260}
-            rows={leaderboardRows.slice(0, 12)}
-            columns={[
-              { field: "aspect", headerName: "Aspect", flex: 1, minWidth: 130 },
-              { field: "sample_size", headerName: "N", type: "number", flex: 0.4, minWidth: 60 },
-              { field: "mentions_per_100_reviews", headerName: "Mentions/100", type: "number", flex: 0.7, minWidth: 100 },
-              { field: "negative_pct", headerName: "Neg %", type: "number", flex: 0.5, minWidth: 80 },
-              { field: "negative_ci_low", headerName: "CI Low", type: "number", flex: 0.5, minWidth: 80 },
-              { field: "negative_ci_high", headerName: "CI High", type: "number", flex: 0.5, minWidth: 80 },
-            ]}
-          />
-        </div>
-        <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
-          <h3 className="mb-3 text-lg font-semibold">Alert Feed + Evidence Preview</h3>
-          <div className="max-h-[250px] space-y-2 overflow-auto pr-1">
-            {alerts.slice(0, 6).map((a, idx) => (
-              <div key={`${a.aspect}-${idx}`} className={`rounded-lg p-2 text-sm ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
-                [{a.severity}] {a.message}
-              </div>
-            ))}
-            {evidenceRows.slice(0, 4).map((r, idx) => (
-              <div key={`${r.review_id}-${idx}`} className={`rounded-lg p-2 text-xs ${isDark ? "bg-slate-900 text-slate-300" : "bg-slate-50 text-slate-700"}`}>
-                <span className="font-semibold">{r.aspect}</span> ({r.sentiment}): {r.evidence || "-"}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
       <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
-        <h3 className="mb-3 text-lg font-semibold">Extracted Aspects</h3>
-        <DataGridTable
-          isDark={isDark}
-          height={300}
-          rows={rows}
-          columns={[
-            { field: "aspect", headerName: "Aspect", flex: 1.1, minWidth: 150 },
-            { field: "sentiment", headerName: "Sentiment", flex: 0.7, minWidth: 110 },
-            { field: "confidence", headerName: "Confidence", flex: 0.7, minWidth: 110, valueFormatter: (v) => `${(Number(v || 0) * 100).toFixed(1)}%` },
-            { field: "origin", headerName: "Origin", flex: 0.7, minWidth: 110 },
-            { field: "evidence", headerName: "Evidence", flex: 1.5, minWidth: 200 },
-          ]}
-        />
+        <h3 className="mb-3 text-lg font-semibold">Single Review Result</h3>
+        <div className="grid gap-3 md:grid-cols-2">
+          {rows.length ? rows.map((r) => (
+            <div key={r.id} className={`rounded-xl p-3 ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
+              <p className="font-semibold">Aspect: {r.aspect}</p>
+              <p className="text-sm">Sentiment: {r.sentiment}</p>
+              <p className="text-sm">Type: {r.origin}</p>
+              <p className="text-sm">Confidence: {(Number(r.confidence || 0) * 100).toFixed(1)}%</p>
+              <p className="mt-1 text-sm">Evidence: {r.evidence}</p>
+            </div>
+          )) : <p className={`text-sm ${isDark ? "text-slate-400" : "text-slate-500"}`}>Analyze a review to see extracted aspects.</p>}
+        </div>
       </div>
 
       <AspectGraphView graph={reviewGraph} scope="single_review" isDark={isDark} reviewText={reviewText} emptyMessage="Run single review inference to view explanation graph." />

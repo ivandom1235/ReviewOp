@@ -20,6 +20,7 @@ class ContractMapper:
             AbstainedPredictionOut, 
             NovelCandidateOut
         )
+        from services.aspect_quality import apply_domain_gate_to_implicit_predictions
         from services.review_pipeline import split_selective_states
 
         # 1. Map Final Predictions
@@ -53,7 +54,9 @@ class ContractMapper:
             )
 
         # 2. Map Implicit Selective States
-        selective_states = split_selective_states(implicit_predictions)
+        selective_states = split_selective_states(
+            apply_domain_gate_to_implicit_predictions(implicit_predictions, review_obj.domain)
+        )
         
         accepted_out: List[SelectivePredictionOut] = []
         for row in selective_states.get("accepted_predictions", []):

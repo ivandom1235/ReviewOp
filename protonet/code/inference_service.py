@@ -115,6 +115,7 @@ def _predict_with_runtime(
                     "confidence": float(selective.get("confidence", 0.0)),
                     "ambiguity_score": float(selective.get("ambiguity_score", 0.0)),
                     "novelty_score": float(selective.get("novelty_score", 0.0)),
+                    "routing": "boundary",
                     "evidence_spans": [dict(clause)],
                     "source": "implicit",
                 }

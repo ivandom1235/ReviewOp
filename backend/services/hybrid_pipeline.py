@@ -7,6 +7,7 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from models.tables import AbstainedPrediction, EvidenceSpan, NovelCandidate, Prediction
+from services.aspect_quality import apply_domain_gate_to_implicit_predictions
 from services.hybrid_merge import merge_predictions
 from services.review_pipeline import run_single_review_pipeline, run_single_review_pipeline_for_existing_review, split_selective_states
 
@@ -38,7 +39,7 @@ def _prediction_row_to_dict(pred) -> PredictionLike:
         "confidence": float(pred.confidence),
         "evidence_spans": spans,
         "rationale": getattr(pred, "rationale", "") or "",
-        "source": "explicit",
+        "source": getattr(pred, "source", None) or "explicit",
     }
 
 
@@ -53,15 +54,22 @@ def _persist_final_predictions(db: Session, review_obj, final_predictions: List[
         db.flush()
     db.expire(review_obj, ["predictions"])
 
+    from services.analytics_common import normalize_text
+
     for row in final_predictions:
         aspect = str(row.get("aspect_raw") or row.get("aspect") or "").strip()
         cluster = str(row.get("aspect_cluster") or row.get("aspect") or row.get("aspect_raw") or "").strip()
+        norm = normalize_text(cluster)
+        
         prediction = Prediction(
             aspect_raw=aspect,
             aspect_cluster=cluster,
+            aspect_normalized=norm,
+            aspect_canonical=norm,
             sentiment=str(row.get("sentiment") or "neutral").strip().lower(),
             confidence=float(row.get("confidence", 0.0)),
             rationale=str(row.get("rationale") or "").strip() or None,
+            source=str(row.get("source") or "").strip().lower() or None,
         )
         prediction.review = review_obj
 
@@ -159,6 +167,7 @@ def run_single_review_hybrid_pipeline(
         review_text=text,
         domain=domain,
     )
+    implicit_predictions = apply_domain_gate_to_implicit_predictions(implicit_predictions, domain)
 
     # Step C: V6 selective routing filter for implicit outputs
     selective_states = split_selective_states(implicit_predictions)

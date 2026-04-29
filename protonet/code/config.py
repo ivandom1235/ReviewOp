@@ -89,8 +89,8 @@ class ProtonetConfig:
     multi_label_margin: float = 0.10
     sentiment_pipeline: str = "both"
     novelty_threshold: float = 0.70
-    novelty_known_threshold: float = 0.50
-    novelty_novel_threshold: float = 0.80
+    novelty_known_threshold: float = 0.70
+    novelty_novel_threshold: float = 0.85
     novelty_calibration_path: Path = METADATA_ROOT / "novelty_calibration_v2.json"
     runtime_cache_max_items: int = 20000
 

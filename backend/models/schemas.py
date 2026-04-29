@@ -74,6 +74,7 @@ class InferReviewIn(BaseModel):
     text: str
     domain: Optional[str] = None
     product_id: Optional[str] = None
+    persist: bool = True
 
 
 class InferReviewOut(BaseModel):

@@ -44,6 +44,19 @@ def apply_schema_patches(engine) -> None:
         add_column_if_missing("products", "cached_helpful_count", "ALTER TABLE products ADD COLUMN cached_helpful_count INTEGER NOT NULL DEFAULT 0")
         add_column_if_missing("user_product_reviews", "reply_to_review_id", "ALTER TABLE user_product_reviews ADD COLUMN reply_to_review_id INTEGER NULL")
         add_column_if_missing("user_product_reviews", "deleted_at", "ALTER TABLE user_product_reviews ADD COLUMN deleted_at DATETIME NULL")
+        add_column_if_missing("predictions", "source", "ALTER TABLE predictions ADD COLUMN source VARCHAR(16) NULL")
+        add_column_if_missing("predictions", "aspect_weight", "ALTER TABLE predictions ADD COLUMN aspect_weight FLOAT NULL")
+        add_column_if_missing("predictions", "aspect_score", "ALTER TABLE predictions ADD COLUMN aspect_score FLOAT NULL")
+        add_column_if_missing("predictions", "aspect_normalized", "ALTER TABLE predictions ADD COLUMN aspect_normalized VARCHAR(255) NULL")
+        add_column_if_missing("predictions", "aspect_canonical", "ALTER TABLE predictions ADD COLUMN aspect_canonical VARCHAR(255) NULL")
+        add_column_if_missing("predictions", "extraction_rule", "ALTER TABLE predictions ADD COLUMN extraction_rule VARCHAR(64) NULL")
+        add_column_if_missing("predictions", "quality_score", "ALTER TABLE predictions ADD COLUMN quality_score FLOAT NULL")
+        add_column_if_missing("predictions", "evidence_quality", "ALTER TABLE predictions ADD COLUMN evidence_quality FLOAT NULL")
+        add_column_if_missing("predictions", "mapping_scope", "ALTER TABLE predictions ADD COLUMN mapping_scope VARCHAR(32) NULL")
+
+        add_column_if_missing("reviews", "overall_sentiment", "ALTER TABLE reviews ADD COLUMN overall_sentiment VARCHAR(16) NULL")
+        add_column_if_missing("reviews", "overall_score", "ALTER TABLE reviews ADD COLUMN overall_score FLOAT NULL")
+        add_column_if_missing("reviews", "overall_confidence", "ALTER TABLE reviews ADD COLUMN overall_confidence FLOAT NULL")
 
         create_table_if_missing(
             "admin_dismissed_alerts",
@@ -92,6 +105,26 @@ def apply_schema_patches(engine) -> None:
                 INDEX ix_novel_candidates_review_id (review_id),
                 INDEX ix_novel_candidates_aspect (aspect),
                 CONSTRAINT fk_novel_candidates_review_id
+                  FOREIGN KEY (review_id) REFERENCES reviews(id)
+                  ON DELETE CASCADE
+            )
+            """,
+        )
+        create_table_if_missing(
+            "rejected_aspect_candidates",
+            """
+            CREATE TABLE rejected_aspect_candidates (
+                id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                review_id INTEGER NOT NULL,
+                raw_text VARCHAR(255) NOT NULL,
+                normalized_text VARCHAR(255) NOT NULL,
+                reason VARCHAR(128) NOT NULL,
+                quality_score FLOAT NOT NULL DEFAULT 0.0,
+                evidence_text TEXT NULL,
+                source_rule VARCHAR(64) NULL,
+                created_at DATETIME NOT NULL,
+                INDEX ix_rejected_aspect_candidates_review_id (review_id),
+                CONSTRAINT fk_rejected_aspect_candidates_review_id
                   FOREIGN KEY (review_id) REFERENCES reviews(id)
                   ON DELETE CASCADE
             )

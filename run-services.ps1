@@ -10,29 +10,34 @@ function Test-LocalPortInUse {
     return $null -ne $conn
 }
 
+$repoRoot = $PSScriptRoot
+$backendDir = Join-Path $repoRoot "backend"
+$frontendDir = Join-Path $repoRoot "frontend"
+$backendPython = Join-Path $backendDir "venv\Scripts\python.exe"
+
 Write-Host "Starting ReviewOp Services..." -ForegroundColor Cyan
 Write-Host ""
 
 # Check if backend venv exists
-if (-not (Test-Path "backend\venv")) {
+if (-not (Test-Path (Join-Path $backendDir "venv"))) {
     Write-Host "Error: Virtual environment not found. Run run-project.ps1 first." -ForegroundColor Red
     exit 1
 }
 
 # Check if node_modules exists in frontend
-if (-not (Test-Path "frontend\node_modules")) {
+if (-not (Test-Path (Join-Path $frontendDir "node_modules"))) {
     Write-Host "Error: Frontend dependencies not installed. Run run-project.ps1 first." -ForegroundColor Red
     exit 1
 }
 
 # Check backend runtime dependencies inside venv
-if (-not (Test-Path "backend\venv\Scripts\python.exe")) {
+if (-not (Test-Path $backendPython)) {
     Write-Host "Error: backend\\venv\\Scripts\\python.exe not found." -ForegroundColor Red
     exit 1
 }
 
-Push-Location backend
-& .\venv\Scripts\python.exe -c "import uvicorn" 2>$null
+Push-Location $backendDir
+& $backendPython -c "import uvicorn" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Pop-Location
     Write-Host "Error: uvicorn is missing in backend venv. Re-run run-project.ps1." -ForegroundColor Red
@@ -41,7 +46,7 @@ if ($LASTEXITCODE -ne 0) {
 Pop-Location
 
 # Check frontend dev runtime dependency
-if (-not (Test-Path "frontend\node_modules\vite")) {
+if (-not (Test-Path (Join-Path $frontendDir "node_modules\vite"))) {
     Write-Host "Error: vite is missing in frontend/node_modules. Re-run run-project.ps1." -ForegroundColor Red
     exit 1
 }
@@ -60,14 +65,13 @@ if (Test-LocalPortInUse -Port $backendPort) {
 } else {
     # Start backend in new PowerShell window
     $backendScript = @"
-cd backend
-venv\Scripts\Activate.ps1
-Write-Host '[OK] Virtual environment activated' -ForegroundColor Green
+Set-Location '$backendDir'
+Write-Host '[OK] Using venv python: $backendPython' -ForegroundColor Green
 Write-Host 'Starting Uvicorn server...' -ForegroundColor Cyan
-python -m uvicorn app:app --host 127.0.0.1 --port 8000
+& '$backendPython' -m uvicorn app:app --host 127.0.0.1 --port 8000
 "@
 
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendScript
+    Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $backendScript
     $startedBackend = $true
 }
 
@@ -81,11 +85,11 @@ if (Test-LocalPortInUse -Port $frontendPort) {
 } else {
     # Start frontend in new PowerShell window
     $frontendScript = @"
-cd frontend
+Set-Location '$frontendDir'
 npm run dev
 "@
 
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", $frontendScript
+    Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $frontendScript
     $startedFrontend = $true
 }
 

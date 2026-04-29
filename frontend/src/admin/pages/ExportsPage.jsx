@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import DataGridTable from "../components/DataGridTable";
 
 const PRESETS = [
@@ -29,7 +29,6 @@ const PRESETS = [
 ];
 
 export default function ExportsPage({ isDark, onExportJson, onExportPdf, exportPayload, exportFilters, setExportFilters, loading = false, onRefreshExport }) {
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [exporting, setExporting] = useState(null);
   const previewRows = useMemo(() => {
     const rows = exportPayload?.user_reviews?.rows || [];
@@ -51,6 +50,13 @@ export default function ExportsPage({ isDark, onExportJson, onExportPdf, exportP
       setExporting(null);
     }
   }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      onRefreshExport?.();
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [exportFilters.domain, exportFilters.limit, exportFilters.offset]);
 
   return (
     <section className="space-y-4">
@@ -107,21 +113,6 @@ export default function ExportsPage({ isDark, onExportJson, onExportPdf, exportP
               <p className="mt-1 text-xs text-muted-main">{preset.include.join(", ")}</p>
             </div>
           ))}
-        </div>
-
-        <div className="mt-6">
-          <button
-            type="button"
-            onClick={() => setAdvancedOpen((v) => !v)}
-            className="rounded-xl border border-border-subtle px-4 py-2 text-sm font-semibold text-muted-main hover:text-brand-primary"
-          >
-            {advancedOpen ? "Hide advanced options" : "Show advanced options"}
-          </button>
-          {advancedOpen ? (
-            <div className="mt-4 rounded-xl border border-border-subtle bg-app/20 p-4 text-sm text-muted-main">
-              Advanced filters can include severity, product, reviewer, date ranges, rating bands, and topic slices.
-            </div>
-          ) : null}
         </div>
 
         <div className="mt-6 grid gap-4 xl:grid-cols-2">

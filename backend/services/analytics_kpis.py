@@ -21,6 +21,9 @@ def overview(db: Session, dt_from: Optional[str], dt_to: Optional[str], domain: 
 
     if domain:
         q_reviews = q_reviews.filter(Review.domain == domain)
+        q_preds = q_preds.filter(Review.domain == domain)
+        q_unique = q_unique.filter(Review.domain == domain)
+        q_avg_conf = q_avg_conf.filter(Review.domain == domain)
 
     if f:
         q_reviews = q_reviews.filter(Review.created_at >= f)
@@ -88,4 +91,3 @@ def dashboard_kpis(db: Session, dt_from: Optional[str], dt_to: Optional[str], do
         "negative_sentiment_pct": negative_sentiment_pct,
         "emerging_issues_count": len(emerging),
     }
-

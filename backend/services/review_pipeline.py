@@ -10,13 +10,16 @@ from sqlalchemy.orm import Session
 from core.db import SessionLocal
 from core.config import settings
 
-from models.tables import EvidenceSpan, Prediction, Review
-from services.evidence import find_evidence_for_aspect
+from models.tables import EvidenceSpan, Prediction, RejectedAspectCandidate, Review
+from services.aspect_quality import evaluate_explicit_aspect
+from services.evidence import find_evidence_for_explicit_candidate
 from services.kg_build import KGBuilder, KGConfig
 from services.open_aspect import extract_open_aspects
 
 _GRAPH_REFRESH_THREADS: dict[str, threading.Thread] = {}
 _GRAPH_REFRESH_LOCK = threading.Lock()
+_VAGUE = {"something", "anything", "everything", "nothing", "every", "means", "general", "unknown"}
+_ALIASES = {"my cam": "camera", "cam": "camera", "built in mic": "microphone", "built-in mic": "microphone"}
 
 
 def _safe_extract_aspects(text: str, max_aspects: int = 8) -> list[str]:
@@ -24,12 +27,80 @@ def _safe_extract_aspects(text: str, max_aspects: int = 8) -> list[str]:
     try:
         aspects = extract_open_aspects(text, max_aspects=max_aspects)
     except Exception as exc:
-        # Open-aspect extraction is optional; don't hard-fail inference if a local model is missing.
-        logger.warning("Open-aspect extraction failed (%s); falling back to ['general']", type(exc).__name__)
-        return ["general"]
-    if aspects:
-        return aspects
-    return ["general"]
+        logger.warning("Open-aspect extraction failed (%s); continuing with no explicit aspects", type(exc).__name__)
+        return []
+    return aspects or []
+
+
+def _normalize_explicit_aspect(aspect: str) -> str:
+    cleaned = " ".join((aspect or "").strip().lower().replace("-", " ").replace("_", " ").split())
+    if cleaned.startswith("my "):
+        cleaned = cleaned[3:].strip()
+    return _ALIASES.get(cleaned, cleaned)
+
+
+def _aspect_drop_reason(aspect_normalized: str, domain: str | None = None) -> str | None:
+    if not aspect_normalized:
+        return "empty"
+    tokens = aspect_normalized.split()
+    if tokens and tokens[0].isdigit():
+        return "numeric_quantity"
+    if aspect_normalized in _VAGUE:
+        return "vague_head"
+    decision = evaluate_explicit_aspect(aspect_normalized, domain)
+    if not decision.accepted:
+        return decision.reason
+    return None
+
+
+def _persist_explicit_predictions(db: Session, review: Review, clean_text: str, engine) -> None:
+    aspects = _safe_extract_aspects(clean_text, max_aspects=8)
+    accepted = 0
+    dropped = 0
+    reasons: dict[str, int] = {}
+
+    for raw in aspects:
+        aspect = _normalize_explicit_aspect(raw)
+        reason = _aspect_drop_reason(aspect, review.domain)
+        if reason:
+            dropped += 1
+            reasons[reason] = reasons.get(reason, 0) + 1
+            db.add(RejectedAspectCandidate(review_id=review.id, raw_text=str(raw), normalized_text=aspect, reason=reason, quality_score=0.0, evidence_text=None, source_rule="runtime_gate"))
+            continue
+        decision = evaluate_explicit_aspect(aspect, review.domain)
+
+        raw_norm = " ".join(str(raw).strip().lower().replace("-", " ").replace("_", " ").split())
+        start_char, end_char, snippet, evidence_quality, matched = find_evidence_for_explicit_candidate(
+            clean_text,
+            aspect,
+            aliases=(raw_norm,),
+        )
+        if not matched:
+            dropped += 1
+            reasons["unsupported_evidence"] = reasons.get("unsupported_evidence", 0) + 1
+            db.add(RejectedAspectCandidate(review_id=review.id, raw_text=str(raw), normalized_text=aspect, reason="unsupported_evidence", quality_score=0.0, evidence_text=None, source_rule="runtime_gate"))
+            continue
+
+        sent, conf = engine.classify_sentiment_with_confidence(snippet, aspect)
+        pred = Prediction(
+            aspect_raw=aspect,
+            aspect_cluster=aspect,
+            sentiment=sent,
+            confidence=float(conf),
+            rationale=None,
+            aspect_normalized=aspect,
+            aspect_canonical=aspect,
+            extraction_rule="runtime_gate",
+            quality_score=float(decision.quality_score),
+            evidence_quality=float(evidence_quality),
+            mapping_scope="generic" if aspect in set(_ALIASES.values()) else decision.mapping_scope,
+        )
+        pred.review = review
+        pred.evidence_spans.append(EvidenceSpan(start_char=start_char, end_char=end_char, snippet=snippet))
+        db.add(pred)
+        accepted += 1
+
+    logging.getLogger(__name__).info("explicit_pipeline_counts accepted=%s dropped=%s reasons=%s", accepted, dropped, reasons)
 
 
 def run_single_review_pipeline(
@@ -62,29 +133,7 @@ def run_single_review_pipeline(
                 db.flush()
             db.expire(review, ["predictions"])
 
-    aspects = _safe_extract_aspects(clean_text, max_aspects=8)
-
-    for aspect_raw in aspects:
-        start_char, end_char, snippet = find_evidence_for_aspect(clean_text, aspect_raw)
-        sent, conf = engine.classify_sentiment_with_confidence(snippet, aspect_raw)
-
-        pred = Prediction(
-            aspect_raw=aspect_raw,
-            aspect_cluster=aspect_raw,
-            sentiment=sent,
-            confidence=float(conf),
-            rationale=None,
-        )
-        pred.review = review
-        pred.evidence_spans.append(
-            EvidenceSpan(
-                start_char=start_char,
-                end_char=end_char,
-                snippet=snippet,
-            )
-        )
-        db.add(pred)
-
+    _persist_explicit_predictions(db, review, clean_text, engine)
     db.flush()
     return review
 
@@ -113,29 +162,7 @@ def run_single_review_pipeline_for_existing_review(
         db.flush()
     db.expire(review, ["predictions"])
 
-    aspects = _safe_extract_aspects(clean_text, max_aspects=8)
-
-    for aspect_raw in aspects:
-        start_char, end_char, snippet = find_evidence_for_aspect(clean_text, aspect_raw)
-        sent, conf = engine.classify_sentiment_with_confidence(snippet, aspect_raw)
-
-        pred = Prediction(
-            aspect_raw=aspect_raw,
-            aspect_cluster=aspect_raw,
-            sentiment=sent,
-            confidence=float(conf),
-            rationale=None,
-        )
-        pred.review = review
-        pred.evidence_spans.append(
-            EvidenceSpan(
-                start_char=start_char,
-                end_char=end_char,
-                snippet=snippet,
-            )
-        )
-        db.add(pred)
-
+    _persist_explicit_predictions(db, review, clean_text, engine)
     db.flush()
     return review
 
@@ -147,11 +174,7 @@ def refresh_corpus_graph(db: Session, domain: str | None = None) -> dict:
     builder = KGBuilder(model_name=settings.kg_embedding_model_name)
     result = builder.rebuild(db=db, domain=domain, cfg=KGConfig())
     result["elapsed_seconds"] = round(time.perf_counter() - started_at, 3)
-    logger.info(
-        "Corpus graph refresh finished%s in %.3fs",
-        f" for domain={domain}" if domain else "",
-        result["elapsed_seconds"],
-    )
+    logger.info("Corpus graph refresh finished%s in %.3fs", f" for domain={domain}" if domain else "", result["elapsed_seconds"])
     return result
 
 
@@ -195,11 +218,7 @@ def split_selective_states(predictions: list[dict]) -> dict:
                 continue
             seen_novel.add(novel_key)
             novel.append(candidate)
-    return {
-        "accepted_predictions": accepted,
-        "abstained_predictions": abstained,
-        "novel_candidates": novel,
-    }
+    return {"accepted_predictions": accepted, "abstained_predictions": abstained, "novel_candidates": novel}
 
 
 def _refresh_corpus_graph_task(domain: str | None) -> None:
@@ -227,11 +246,7 @@ def schedule_corpus_graph_refresh(domain: str | None) -> threading.Thread:
         finally:
             if db is not None:
                 db.close()
-            logger.info(
-                "Background corpus graph task closed%s after %.3fs",
-                f" for domain={domain}" if domain else "",
-                time.perf_counter() - started_at,
-            )
+            logger.info("Background corpus graph task closed%s after %.3fs", f" for domain={domain}" if domain else "", time.perf_counter() - started_at)
             with _GRAPH_REFRESH_LOCK:
                 if _GRAPH_REFRESH_THREADS.get(scope) is threading.current_thread():
                     _GRAPH_REFRESH_THREADS.pop(scope, None)

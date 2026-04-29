@@ -1,15 +1,122 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from math import sqrt
 from typing import Optional
 
-from sqlalchemy import case, func, text
-from sqlalchemy.orm import Session, aliased, joinedload
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, selectinload
 
-from models.tables import EvidenceSpan, Prediction, Review
-from services.analytics_common import infer_origin, parse_dt
+from models.tables import Prediction, Review
+from services.analytics_common import aspect_key, canonical_aspect, normalize_text, parse_dt, prediction_origin
+
+
+def _pct(numer: float, denom: float) -> float:
+    if denom <= 0:
+        return 0.0
+    return (numer / denom) * 100.0
+
+
+def _wilson_ci_95(p_hat: float, n: int) -> tuple[float, float]:
+    if n <= 0:
+        return (0.0, 0.0)
+    z = 1.96
+    denom = 1.0 + (z * z) / n
+    center = (p_hat + (z * z) / (2.0 * n)) / denom
+    half = (z * sqrt((p_hat * (1.0 - p_hat) / n) + (z * z) / (4.0 * n * n))) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
+
+
+def _first_snippet(prediction: Prediction) -> str | None:
+    span = min(
+        prediction.evidence_spans,
+        key=lambda item: (item.start_char, item.end_char),
+        default=None,
+    )
+    return span.snippet if span else None
+
+
+def _aspect_filter_candidates(aspect: str) -> set[str]:
+    normalized = normalize_text(aspect)
+    if not normalized:
+        return set()
+
+    candidates = {normalized, aspect_key(normalized), normalized.replace(" ", "-"), str(aspect or "").strip()}
+    tokens = normalized.split()
+    if tokens:
+        last = tokens[-1]
+        if last.endswith("y") and len(last) > 1:
+            plural_last = f"{last[:-1]}ies"
+        elif last.endswith("s"):
+            plural_last = last
+        else:
+            plural_last = f"{last}s"
+        plural = " ".join([*tokens[:-1], plural_last])
+        candidates.update({plural, plural.replace(" ", "_"), plural.replace(" ", "-")})
+    return {candidate for candidate in candidates if candidate}
+
+
+def _prediction_rows(
+    db: Session,
+    *,
+    dt_from: str | None = None,
+    dt_to: str | None = None,
+    domain: str | None = None,
+    aspect: str | None = None,
+    sentiment: str | None = None,
+    limit: int | None = None,
+) -> list[tuple[Prediction, Review]]:
+    f = parse_dt(dt_from)
+    t = parse_dt(dt_to)
+    q = (
+        db.query(Prediction, Review)
+        .options(selectinload(Prediction.evidence_spans))
+        .join(Review, Review.id == Prediction.review_id)
+    )
+    if domain:
+        q = q.filter(Review.domain == domain)
+    if f:
+        q = q.filter(Review.created_at >= f)
+    if t:
+        q = q.filter(Review.created_at <= t)
+    if sentiment:
+        q = q.filter(Prediction.sentiment == sentiment)
+    if aspect:
+        candidates = _aspect_filter_candidates(aspect)
+        if candidates:
+            q = q.filter(
+                or_(
+                    Prediction.aspect_canonical.in_(candidates),
+                    Prediction.aspect_normalized.in_(candidates),
+                    Prediction.aspect_cluster.in_(candidates),
+                    Prediction.aspect_raw.in_(candidates),
+                )
+            )
+    q = q.order_by(Review.created_at.desc(), Prediction.id.desc())
+
+    rows = q.all()
+    if aspect:
+        target = aspect_key(aspect)
+        rows = [(pred, review) for pred, review in rows if canonical_aspect(pred) == target]
+    if limit is not None:
+        rows = rows[: max(1, int(limit))]
+    return rows
+
+
+def _bucket_for(created_at: datetime | None, interval: str) -> str:
+    value = created_at or datetime.utcnow()
+    if interval == "week":
+        year, week, _ = value.isocalendar()
+        return f"{year}-W{week:02d}"
+    return value.strftime("%Y-%m-%d")
+
+
+def _distribution(rows: list[tuple[Prediction, Review]]) -> dict[str, Counter]:
+    grouped: dict[str, Counter] = defaultdict(Counter)
+    for pred, _ in rows:
+        grouped[canonical_aspect(pred)][str(pred.sentiment or "neutral")] += 1
+    return grouped
 
 
 def aspect_leaderboard(db: Session, limit: int = 25, domain: Optional[str] = None) -> list[dict]:
@@ -17,114 +124,53 @@ def aspect_leaderboard(db: Session, limit: int = 25, domain: Optional[str] = Non
     current_start = now - timedelta(days=7)
     previous_start = now - timedelta(days=14)
 
-    def _wilson_ci_95(p_hat: float, n: int) -> tuple[float, float]:
-        if n <= 0:
-            return (0.0, 0.0)
-        z = 1.96
-        denom = 1.0 + (z * z) / n
-        center = (p_hat + (z * z) / (2.0 * n)) / denom
-        half = (z * sqrt((p_hat * (1.0 - p_hat) / n) + (z * z) / (4.0 * n * n))) / denom
-        return (max(0.0, center - half), min(1.0, center + half))
+    current_rows = _prediction_rows(db, dt_from=current_start.isoformat(), dt_to=now.isoformat(), domain=domain)
+    previous_rows = _prediction_rows(db, dt_from=previous_start.isoformat(), dt_to=current_start.isoformat(), domain=domain)
 
-    def _pct(numer: float, denom: float) -> float:
-        if denom <= 0:
-            return 0.0
-        return (numer / denom) * 100.0
+    current_dist = _distribution(current_rows)
+    previous_freq = Counter(canonical_aspect(pred) for pred, _ in previous_rows)
 
-    def _base_query(start: datetime, end: datetime):
-        q = (
-            db.query(
-                Prediction.aspect_raw.label("aspect"),
-                func.count(Prediction.id).label("frequency"),
-                func.sum(case((Prediction.sentiment == "positive", 1), else_=0)).label("positive"),
-                func.sum(case((Prediction.sentiment == "neutral", 1), else_=0)).label("neutral"),
-                func.sum(case((Prediction.sentiment == "negative", 1), else_=0)).label("negative"),
-            )
-            .join(Review, Review.id == Prediction.review_id)
-            .filter(Review.created_at >= start, Review.created_at < end)
-        )
-        if domain:
-            q = q.filter(Review.domain == domain)
-        return q.group_by(Prediction.aspect_raw)
-
-    current_rows = {row.aspect: row for row in _base_query(current_start, now).all()}
-    previous_rows = {row.aspect: row for row in _base_query(previous_start, current_start).all()}
-
-    # Global sample size for normalization (total reviews in current window).
     sample_size_q = db.query(func.count(Review.id)).filter(Review.created_at >= current_start, Review.created_at < now)
     if domain:
         sample_size_q = sample_size_q.filter(Review.domain == domain)
     sample_size = int(sample_size_q.scalar() or 0)
 
-    # Keep the leaderboard focused on aspects that appear in the current window.
-    aspects_sorted = sorted(current_rows.keys(), key=lambda a: (-int(current_rows[a].frequency or 0), str(a)))
-    aspects = aspects_sorted[: max(1, int(limit))]
-    if not aspects:
-        return []
-
-    # Compute implicit/explicit ratio for returned aspects only (small, bounded scope).
-    evidence_q = (
-        db.query(Prediction.id, Prediction.aspect_raw, EvidenceSpan.snippet)
-        .join(Review, Review.id == Prediction.review_id)
-        .outerjoin(EvidenceSpan, EvidenceSpan.prediction_id == Prediction.id)
-        .filter(Review.created_at >= current_start, Review.created_at < now)
-        .filter(Prediction.aspect_raw.in_(aspects))
-    )
-    if domain:
-        evidence_q = evidence_q.filter(Review.domain == domain)
-
-    pred_aspect: dict[int, str] = {}
-    pred_is_explicit: dict[int, bool] = {}
-    for pred_id, aspect, snippet in evidence_q.all():
-        pred_id_int = int(pred_id)
-        aspect_str = str(aspect)
-        pred_aspect[pred_id_int] = aspect_str
-        if pred_is_explicit.get(pred_id_int):
-            continue
-        if infer_origin(aspect_str, str(snippet) if snippet is not None else None) == "explicit":
-            pred_is_explicit[pred_id_int] = True
-
-    origin_counts: dict[str, dict[str, int]] = {a: {"implicit": 0, "explicit": 0} for a in aspects}
-    for pred_id_int, aspect_str in pred_aspect.items():
-        if aspect_str not in origin_counts:
-            continue
-        if pred_is_explicit.get(pred_id_int, False):
-            origin_counts[aspect_str]["explicit"] += 1
-        else:
-            origin_counts[aspect_str]["implicit"] += 1
+    origin_counts: dict[str, Counter] = defaultdict(Counter)
+    for pred, _ in current_rows:
+        aspect = canonical_aspect(pred)
+        origin_counts[aspect][prediction_origin(pred, _first_snippet(pred))] += 1
 
     out: list[dict] = []
+    aspects = sorted(
+        current_dist.keys(),
+        key=lambda aspect: (-(sum(current_dist[aspect].values())), aspect),
+    )[: max(1, int(limit))]
     for aspect in aspects:
-        current = current_rows.get(aspect)
-        previous = previous_rows.get(aspect)
-        current_freq = int(current.frequency or 0) if current else 0
-        previous_freq = int(previous.frequency or 0) if previous else 0
-        current_positive = int(current.positive or 0) if current else 0
-        current_neutral = int(current.neutral or 0) if current else 0
-        current_negative = int(current.negative or 0) if current else 0
-
-        total = max(0, current_positive + current_neutral + current_negative)
-        pos_pct = _pct(current_positive, total)
-        neu_pct = _pct(current_neutral, total)
-        neg_pct = _pct(current_negative, total)
+        counts = current_dist[aspect]
+        current_freq = int(sum(counts.values()))
+        previous_count = int(previous_freq.get(aspect, 0))
+        positive = int(counts.get("positive", 0))
+        neutral = int(counts.get("neutral", 0))
+        negative = int(counts.get("negative", 0))
+        total = max(0, positive + neutral + negative)
+        pos_pct = _pct(positive, total)
+        neu_pct = _pct(neutral, total)
+        neg_pct = _pct(negative, total)
         net_sentiment = pos_pct - neg_pct
 
-        if previous_freq <= 0:
+        if previous_count <= 0:
             change_vs_previous_period = 100.0 if current_freq else 0.0
         else:
-            change_vs_previous_period = ((current_freq - previous_freq) / previous_freq) * 100.0
+            change_vs_previous_period = ((current_freq - previous_count) / previous_count) * 100.0
 
-        p_hat = (current_negative / total) if total > 0 else 0.0
+        p_hat = (negative / total) if total > 0 else 0.0
         ci_lo, ci_hi = _wilson_ci_95(p_hat, total)
-
-        oc = origin_counts.get(str(aspect)) or {"implicit": 0, "explicit": 0}
-        implicit = int(oc.get("implicit", 0))
-        explicit = int(oc.get("explicit", 0))
-        implicit_pct = _pct(implicit, implicit + explicit)
+        implicit = int(origin_counts[aspect].get("implicit", 0))
+        explicit = int(origin_counts[aspect].get("explicit", 0))
 
         out.append(
             {
-                "aspect": str(aspect),
+                "aspect": aspect,
                 "frequency": current_freq,
                 "sample_size": sample_size,
                 "mentions_per_100_reviews": round(_pct(current_freq, sample_size), 4),
@@ -136,7 +182,7 @@ def aspect_leaderboard(db: Session, limit: int = 25, domain: Optional[str] = Non
                 "change_7d_vs_prev_7d": round(change_vs_previous_period, 2),
                 "negative_ci_low": round(ci_lo * 100.0, 2),
                 "negative_ci_high": round(ci_hi * 100.0, 2),
-                "implicit_pct": round(implicit_pct, 2),
+                "implicit_pct": round(_pct(implicit, implicit + explicit), 2),
             }
         )
 
@@ -145,101 +191,75 @@ def aspect_leaderboard(db: Session, limit: int = 25, domain: Optional[str] = Non
 
 
 def top_aspects(db: Session, limit: int, dt_from: Optional[str], dt_to: Optional[str], domain: Optional[str]):
-    f = parse_dt(dt_from)
-    t = parse_dt(dt_to)
-    q = db.query(
-        Prediction.aspect_raw.label("aspect"),
-        func.count(Prediction.id).label("count"),
-    ).join(Review, Review.id == Prediction.review_id)
-    if domain:
-        q = q.filter(Review.domain == domain)
-    if f:
-        q = q.filter(Review.created_at >= f)
-    if t:
-        q = q.filter(Review.created_at <= t)
-    q = q.group_by(Prediction.aspect_raw).order_by(text("count DESC")).limit(limit)
-    return [{"aspect": r.aspect, "count": int(r.count)} for r in q.all()]
+    rows = _prediction_rows(db, dt_from=dt_from, dt_to=dt_to, domain=domain)
+    counts = Counter(canonical_aspect(pred) for pred, _ in rows)
+    return [
+        {"aspect": aspect, "count": int(count)}
+        for aspect, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[: max(1, int(limit))]
+    ]
 
 
 def aspect_sentiment_distribution(db: Session, limit: int, dt_from: Optional[str], dt_to: Optional[str], domain: Optional[str]):
-    f = parse_dt(dt_from)
-    t = parse_dt(dt_to)
-    q = db.query(
-        Prediction.aspect_raw.label("aspect"),
-        func.sum(case((Prediction.sentiment == "positive", 1), else_=0)).label("positive"),
-        func.sum(case((Prediction.sentiment == "neutral", 1), else_=0)).label("neutral"),
-        func.sum(case((Prediction.sentiment == "negative", 1), else_=0)).label("negative"),
-        func.count(Prediction.id).label("total"),
-    ).join(Review, Review.id == Prediction.review_id)
-    if domain:
-        q = q.filter(Review.domain == domain)
-    if f:
-        q = q.filter(Review.created_at >= f)
-    if t:
-        q = q.filter(Review.created_at <= t)
-    q = q.group_by(Prediction.aspect_raw).order_by(text("total DESC")).limit(limit)
+    rows = _prediction_rows(db, dt_from=dt_from, dt_to=dt_to, domain=domain)
+    grouped = _distribution(rows)
     out = []
-    for r in q.all():
+    for aspect, counts in sorted(grouped.items(), key=lambda item: (-(sum(item[1].values())), item[0]))[: max(1, int(limit))]:
         out.append(
             {
-                "aspect": r.aspect,
-                "positive": int(r.positive or 0),
-                "neutral": int(r.neutral or 0),
-                "negative": int(r.negative or 0),
+                "aspect": aspect,
+                "positive": int(counts.get("positive", 0)),
+                "neutral": int(counts.get("neutral", 0)),
+                "negative": int(counts.get("negative", 0)),
             }
         )
     return out
 
 
 def trends(db: Session, interval: str, aspect: Optional[str], dt_from: Optional[str], dt_to: Optional[str], domain: Optional[str]):
-    f = parse_dt(dt_from)
-    t = parse_dt(dt_to)
-    if interval == "week":
-        bucket_expr = func.date_format(Review.created_at, "%x-W%v")
-    else:
-        bucket_expr = func.date_format(Review.created_at, "%Y-%m-%d")
-    q = db.query(
-        bucket_expr.label("bucket"),
-        func.count(Prediction.id).label("mentions"),
-        func.sum(case((Prediction.sentiment == "positive", 1), else_=0)).label("pos"),
-        func.sum(case((Prediction.sentiment == "negative", 1), else_=0)).label("neg"),
-    ).join(Review, Review.id == Prediction.review_id)
-    if domain:
-        q = q.filter(Review.domain == domain)
-    if aspect:
-        q = q.filter(Prediction.aspect_raw == aspect)
-    if f:
-        q = q.filter(Review.created_at >= f)
-    if t:
-        q = q.filter(Review.created_at <= t)
-    q = q.group_by(bucket_expr).order_by(bucket_expr.asc())
+    rows = _prediction_rows(db, dt_from=dt_from, dt_to=dt_to, domain=domain, aspect=aspect)
+    buckets: dict[str, Counter] = defaultdict(Counter)
+    for pred, review in rows:
+        buckets[_bucket_for(review.created_at, interval)][str(pred.sentiment or "neutral")] += 1
+
     out = []
-    for r in q.all():
-        mentions = int(r.mentions or 0)
-        pos = int(r.pos or 0)
-        neg = int(r.neg or 0)
+    for bucket in sorted(buckets):
+        counts = buckets[bucket]
+        mentions = int(sum(counts.values()))
+        pos = int(counts.get("positive", 0))
+        neg = int(counts.get("negative", 0))
         neg_pct = (neg / mentions) if mentions > 0 else 0.0
         pos_pct = (pos / mentions) if mentions > 0 else 0.0
-        score = pos_pct - neg_pct
-        out.append({"bucket": str(r.bucket), "mentions": mentions, "negative_pct": round(neg_pct, 4), "sentiment_score": round(score, 4)})
+        out.append(
+            {
+                "bucket": bucket,
+                "mentions": mentions,
+                "negative_pct": round(neg_pct, 4),
+                "sentiment_score": round(pos_pct - neg_pct, 4),
+            }
+        )
     return out
 
 
 def evidence_drilldown(db: Session, aspect: Optional[str] = None, sentiment: Optional[str] = None, limit: int = 50, domain: Optional[str] = None) -> list[dict]:
-    q = db.query(Prediction, Review).options(joinedload(Prediction.evidence_spans)).join(Review, Review.id == Prediction.review_id)
-    if aspect:
-        q = q.filter(Prediction.aspect_raw == aspect)
-    if sentiment:
-        q = q.filter(Prediction.sentiment == sentiment)
-    if domain:
-        q = q.filter(Review.domain == domain)
-    q = q.order_by(Review.created_at.desc()).limit(max(1, min(limit, 200)))
-    rows = []
-    for pred, review in q.all():
-        span = pred.evidence_spans[0] if pred.evidence_spans else None
+    rows = _prediction_rows(db, domain=domain, aspect=aspect, sentiment=sentiment, limit=max(1, min(limit, 200)))
+    out = []
+    for pred, review in rows:
+        span = min(pred.evidence_spans, key=lambda item: (item.start_char, item.end_char), default=None)
         snippet = span.snippet if span else None
-        rows.append({"review_id": review.id, "review_text": review.text, "aspect": pred.aspect_raw, "sentiment": pred.sentiment, "origin": infer_origin(pred.aspect_raw, snippet), "evidence": snippet, "evidence_start": span.start_char if span else None, "evidence_end": span.end_char if span else None, "created_at": review.created_at.isoformat() if review.created_at else None})
-    return rows
+        out.append(
+            {
+                "review_id": review.id,
+                "review_text": review.text,
+                "aspect": canonical_aspect(pred),
+                "sentiment": pred.sentiment,
+                "origin": prediction_origin(pred, snippet),
+                "evidence": snippet,
+                "evidence_start": span.start_char if span else None,
+                "evidence_end": span.end_char if span else None,
+                "created_at": review.created_at.isoformat() if review.created_at else None,
+            }
+        )
+    return out
 
 
 def aspect_trends(db: Session, interval: str = "day", domain: Optional[str] = None, limit: int = 200) -> list[dict]:
@@ -275,30 +295,45 @@ def emerging_aspects(db: Session, interval: str = "day", lookback_buckets: int =
 
 
 def aspect_detail(db: Session, aspect: str, interval: str = "day", domain: Optional[str] = None) -> dict:
-    dist_rows = aspect_sentiment_distribution(db, 500, None, None, domain)
-    dist = next((item for item in dist_rows if item["aspect"] == aspect), None)
-    if dist is None:
-        return {"aspect": aspect, "frequency": 0, "positive": 0, "neutral": 0, "negative": 0, "explicit_count": 0, "implicit_count": 0, "connected_aspects": [], "trend": [], "examples": []}
-    examples = evidence_drilldown(db, aspect=aspect, limit=8, domain=domain)
-    origin_samples = db.query(Prediction.aspect_raw.label("aspect"), func.count(Prediction.id).label("count"), func.max(EvidenceSpan.snippet).label("snippet")).outerjoin(EvidenceSpan, EvidenceSpan.prediction_id == Prediction.id).join(Review, Review.id == Prediction.review_id).filter(Prediction.aspect_raw == aspect)
-    if domain:
-        origin_samples = origin_samples.filter(Review.domain == domain)
-    origin_samples = origin_samples.group_by(Prediction.aspect_raw).all()
-    explicit_count = 0
-    implicit_count = 0
-    for sample in origin_samples:
-        origin = infer_origin(sample.aspect, sample.snippet)
-        count = int(sample.count or 0)
-        if origin == "implicit":
-            implicit_count += count
-        else:
-            explicit_count += count
-    pred_anchor = aliased(Prediction)
-    pred_peer = aliased(Prediction)
-    connected_q = db.query(pred_peer.aspect_raw.label("aspect"), func.count(func.distinct(pred_anchor.review_id)).label("weight")).join(pred_peer, pred_peer.review_id == pred_anchor.review_id).join(Review, Review.id == pred_anchor.review_id).filter(pred_anchor.aspect_raw == aspect, pred_peer.aspect_raw != aspect)
-    if domain:
-        connected_q = connected_q.filter(Review.domain == domain)
-    connected_rows = connected_q.group_by(pred_peer.aspect_raw).order_by(text("weight DESC"), pred_peer.aspect_raw.asc()).limit(12).all()
-    connected = [{"aspect": row.aspect, "weight": int(row.weight or 0)} for row in connected_rows]
-    trend = [t for t in aspect_trends(db, interval=interval, domain=domain, limit=5000) if t["aspect"] == aspect]
-    return {"aspect": aspect, "frequency": int(dist["positive"] + dist["neutral"] + dist["negative"]), "positive": int(dist["positive"]), "neutral": int(dist["neutral"]), "negative": int(dist["negative"]), "explicit_count": explicit_count, "implicit_count": implicit_count, "connected_aspects": connected, "trend": trend, "examples": examples}
+    canonical = aspect_key(aspect)
+    rows = _prediction_rows(db, domain=domain, aspect=canonical)
+    if not rows:
+        return {"aspect": canonical, "frequency": 0, "positive": 0, "neutral": 0, "negative": 0, "explicit_count": 0, "implicit_count": 0, "connected_aspects": [], "trend": [], "examples": []}
+
+    counts = Counter(str(pred.sentiment or "neutral") for pred, _ in rows)
+    origin_counts = Counter(prediction_origin(pred, _first_snippet(pred)) for pred, _ in rows)
+
+    review_ids = {review.id for _, review in rows}
+    peer_counts: Counter = Counter()
+    if review_ids:
+        peer_rows = (
+            db.query(Prediction)
+            .options(selectinload(Prediction.evidence_spans))
+            .filter(Prediction.review_id.in_(review_ids))
+            .all()
+        )
+        for pred in peer_rows:
+            peer = canonical_aspect(pred)
+            if peer != canonical:
+                peer_counts[peer] += 1
+
+    connected = [
+        {"aspect": peer, "weight": int(weight)}
+        for peer, weight in sorted(peer_counts.items(), key=lambda item: (-item[1], item[0]))[:12]
+    ]
+    trend = [
+        {"bucket": point["bucket"], "aspect": canonical, "mentions": point["mentions"], "negative_pct": point["negative_pct"]}
+        for point in trends(db, interval, canonical, None, None, domain)
+    ]
+    return {
+        "aspect": canonical,
+        "frequency": int(sum(counts.values())),
+        "positive": int(counts.get("positive", 0)),
+        "neutral": int(counts.get("neutral", 0)),
+        "negative": int(counts.get("negative", 0)),
+        "explicit_count": int(origin_counts.get("explicit", 0)),
+        "implicit_count": int(origin_counts.get("implicit", 0)),
+        "connected_aspects": connected,
+        "trend": trend,
+        "examples": evidence_drilldown(db, aspect=canonical, limit=8, domain=domain),
+    }

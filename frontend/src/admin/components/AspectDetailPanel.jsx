@@ -11,8 +11,8 @@ export default function AspectDetailPanel({ detail, isDark = false }) {
 
   return (
     <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
-      <h3 className="text-lg font-semibold">Corpus Aspect Graph</h3>
-      <p className="mt-1 text-sm font-medium opacity-90">Aspect: {detail.aspect}</p>
+      <h3 className="text-lg font-semibold">Corpus Aspect Detail</h3>
+      <p className="mt-1 text-sm font-medium opacity-90">Selected aspect: {detail.aspect}</p>
       <p className="mt-2 text-sm">Frequency: {detail.frequency} | Explicit: {detail.explicit_count} | Implicit: {detail.implicit_count}</p>
       <p className="mt-1 text-sm">Sentiment: +{detail.positive} / ={detail.neutral} / -{detail.negative}</p>
       <div className="mt-4 h-48">

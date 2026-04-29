@@ -1,5 +1,3 @@
-import DataGridTable from "../components/DataGridTable";
-
 function Stat({ label, value, isDark }) {
   return (
     <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
@@ -9,16 +7,19 @@ function Stat({ label, value, isDark }) {
   );
 }
 
-export default function Dashboard({ kpis, alerts, leaderboardRows, impactRows = [], segmentRows = [], weeklySummary, isDark, onSeeMoreAlerts }) {
+export default function Dashboard({ kpis, alerts, impactRows = [], weeklySummary, isDark, onSeeMoreAlerts, onOpenGraph, onAlertClick }) {
+  const criticalOpenAlerts = (alerts || []).filter(
+    (a) => (a.severity || "").toLowerCase() === "critical" && (a.status || "open").toLowerCase() !== "cleared"
+  ).length;
+  const fixFirst = (impactRows || []).slice(0, 3);
+
   return (
     <section className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Stat label="Total Reviews" value={kpis?.total_reviews ?? "-"} isDark={isDark} />
-        <Stat label="Total Aspects" value={kpis?.total_aspects ?? "-"} isDark={isDark} />
-        <Stat label="Most Negative" value={kpis?.most_negative_aspect ?? "-"} isDark={isDark} />
-        <Stat label="% Negative" value={kpis ? `${kpis.negative_sentiment_pct}%` : "-"} isDark={isDark} />
+        <Stat label="Open Critical Alerts" value={criticalOpenAlerts} isDark={isDark} />
+        <Stat label="Most Negative Driver" value={kpis?.most_negative_aspect ?? "-"} isDark={isDark} />
         <Stat label="Emerging Issues" value={kpis?.emerging_issues_count ?? 0} isDark={isDark} />
-        <Stat label="Alerts This Week" value={weeklySummary?.emerging_count ?? alerts?.length ?? 0} isDark={isDark} />
       </div>
       <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
         <h3 className="mb-2 text-lg font-semibold">Weekly Summary</h3>
@@ -35,9 +36,27 @@ export default function Dashboard({ kpis, alerts, leaderboardRows, impactRows = 
         )}
       </div>
       <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
+        <h3 className="mb-3 text-lg font-semibold">Fix First Queue</h3>
+        <div className="space-y-2">
+          {fixFirst.length ? (
+            fixFirst.map((r, idx) => (
+              <div key={`${r.aspect}-${idx}`} className={`rounded-lg p-3 text-sm ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
+                <p className="font-semibold">{idx + 1}. {r.aspect}</p>
+                <p className="mt-1">Priority: {Math.round(Number(r.priority_score || 0))}</p>
+                <p>Reason: High volume + high negative rate + recent growth</p>
+                <p>Action: Investigate recent negative reviews</p>
+              </div>
+            ))
+          ) : (
+            <p className={`text-sm ${isDark ? "text-slate-400" : "text-slate-500"}`}>No prioritized issues available.</p>
+          )}
+        </div>
+      </div>
+
+      <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-lg font-semibold">Alerts</h3>
-          {alerts?.length > 10 && (
+          <h3 className="text-lg font-semibold">Active Alerts</h3>
+          {alerts?.length > 5 && (
             <button
               onClick={onSeeMoreAlerts}
               className="text-sm font-semibold text-indigo-500 hover:text-indigo-400"
@@ -48,73 +67,29 @@ export default function Dashboard({ kpis, alerts, leaderboardRows, impactRows = 
         </div>
         <div className="space-y-2">
           {(alerts || []).length ? (
-            alerts.slice(0, 10).map((a, idx) => (
-              <div key={`${a.aspect}-${idx}`} className={`rounded-lg p-3 text-sm ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
+            alerts.slice(0, 5).map((a, idx) => (
+              <button type="button" onClick={() => onAlertClick?.(a)} key={`${a.aspect}-${idx}`} className={`w-full rounded-lg p-3 text-left text-sm ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
                 <div className="flex items-center justify-between gap-3">
                   <span className="font-semibold">[{a.severity}] {a.aspect}</span>
                   <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[11px] text-slate-700 dark:bg-slate-800 dark:text-slate-200">{a.status || "Open"}</span>
                 </div>
                 <p className="mt-1">{a.message}</p>
-              </div>
+              </button>
             ))
           ) : (
             <p className={`text-sm ${isDark ? "text-slate-400" : "text-slate-500"}`}>No active alerts.</p>
           )}
         </div>
       </div>
+
       <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
-        <h3 className="mb-3 text-lg font-semibold">Aspect Leaderboard</h3>
-        <DataGridTable
-          isDark={isDark}
-          height={420}
-          rows={leaderboardRows}
-          columns={[
-            { field: "aspect", headerName: "Aspect", flex: 1.1, minWidth: 160 },
-            { field: "frequency", headerName: "Freq", type: "number", flex: 0.5, minWidth: 80 },
-            { field: "sample_size", headerName: "N", type: "number", flex: 0.4, minWidth: 70 },
-            { field: "mentions_per_100_reviews", headerName: "Mentions/100", type: "number", flex: 0.7, minWidth: 110 },
-            { field: "positive_pct", headerName: "Positive %", type: "number", flex: 0.6, minWidth: 100 },
-            { field: "neutral_pct", headerName: "Neutral %", type: "number", flex: 0.6, minWidth: 100 },
-            { field: "negative_pct", headerName: "Negative %", type: "number", flex: 0.6, minWidth: 100 },
-            { field: "net_sentiment", headerName: "Net Sent", type: "number", flex: 0.6, minWidth: 100 },
-            { field: "change_vs_previous_period", headerName: "Change %", type: "number", flex: 0.6, minWidth: 100 },
-            { field: "implicit_pct", headerName: "Implicit %", type: "number", flex: 0.6, minWidth: 100 },
-          ]}
-        />
-      </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
-          <h3 className="mb-3 text-lg font-semibold">Impact Matrix (Fix First)</h3>
-          <DataGridTable
-            isDark={isDark}
-            height={320}
-            rows={impactRows.map((r, i) => ({ id: `${r.aspect}-${i}`, ...r }))}
-            columns={[
-              { field: "aspect", headerName: "Aspect", flex: 1, minWidth: 140 },
-              { field: "volume", headerName: "Volume", type: "number", flex: 0.5, minWidth: 80 },
-              { field: "negative_rate", headerName: "Neg Rate", type: "number", flex: 0.6, minWidth: 90 },
-              { field: "growth_pct", headerName: "Growth %", type: "number", flex: 0.6, minWidth: 90 },
-              { field: "priority_score", headerName: "Priority", type: "number", flex: 0.6, minWidth: 90 },
-              { field: "action_tier", headerName: "Tier", flex: 0.6, minWidth: 80 },
-            ]}
-          />
-        </div>
-        <div className={`rounded-2xl border p-4 ${isDark ? "border-slate-800 bg-[#0b1220]" : "border-slate-200 bg-white"}`}>
-          <h3 className="mb-3 text-lg font-semibold">Segment Drilldown</h3>
-          <DataGridTable
-            isDark={isDark}
-            height={320}
-            rows={segmentRows.map((r, i) => ({ id: `${r.segment_type}-${r.segment_value}-${i}`, ...r }))}
-            columns={[
-              { field: "segment_type", headerName: "Segment Type", flex: 0.7, minWidth: 100 },
-              { field: "segment_value", headerName: "Segment", flex: 1, minWidth: 120 },
-              { field: "review_count", headerName: "Reviews", type: "number", flex: 0.5, minWidth: 80 },
-              { field: "mention_count", headerName: "Mentions", type: "number", flex: 0.5, minWidth: 80 },
-              { field: "negative_pct", headerName: "Negative %", type: "number", flex: 0.6, minWidth: 90 },
-              { field: "top_negative_aspect", headerName: "Top Negative Aspect", flex: 1, minWidth: 140 },
-            ]}
-          />
-        </div>
+        <h3 className="mb-2 text-lg font-semibold">Mini Graph Preview</h3>
+        <p className={`text-sm ${isDark ? "text-slate-400" : "text-slate-500"}`}>
+          Explore clustered relationships, edge strengths, and sentiment direction in Graph Intelligence.
+        </p>
+        <button type="button" onClick={onOpenGraph} className="mt-3 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950">
+          Open Graph Intelligence
+        </button>
       </div>
     </section>
   );

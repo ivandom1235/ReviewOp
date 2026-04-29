@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy.orm import Session, selectinload
 
 from models.tables import NovelCandidate, Prediction, ProductCatalog, Review, UserProductReview
-from services.analytics_common import aspect_label, canonical_aspect, infer_origin, parse_dt
+from services.analytics_common import aspect_label, canonical_aspect, parse_dt, prediction_origin
 
 
 SENTIMENT_SCORE = {"positive": 1.0, "neutral": 0.0, "negative": -1.0}
@@ -39,6 +39,10 @@ def _polarity_hint(source_sentiment: str | None, target_sentiment: str | None) -
     if "positive" in {src, dst}:
         return "positive"
     return "neutral"
+
+
+def _prediction_origin(prediction: Prediction, snippet: str | None) -> str:
+    return prediction_origin(prediction, snippet)
 
 
 def build_graph_filter_options(db: Session) -> dict:
@@ -107,7 +111,7 @@ def build_single_review_graph(db: Session, review_id: int) -> dict | None:
         start_char = span.start_char if span else len(review.text or "")
         end_char = span.end_char if span else start_char
         snippet = span.snippet if span else None
-        origin = infer_origin(aspect_id, snippet)
+        origin = _prediction_origin(prediction, snippet)
 
         current = aspect_nodes.get(aspect_id)
         if current is None:
@@ -262,7 +266,7 @@ def build_batch_aspect_graph(
                 default=None,
             )
             snippet = span.snippet if span else None
-            origin = infer_origin(aspect_id, snippet)
+            origin = _prediction_origin(prediction, snippet)
 
             stats = node_stats.setdefault(
                 aspect_id,

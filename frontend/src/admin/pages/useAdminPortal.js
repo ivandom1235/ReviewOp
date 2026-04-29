@@ -35,6 +35,7 @@ const initialGraphFilters = {
   from: "",
   to: "",
   min_edge_weight: 1,
+  graph_mode: "accepted",
 };
 
 export function useAdminPortal() {
@@ -45,6 +46,7 @@ export function useAdminPortal() {
   const [activePage, setActivePage] = useState("Dashboard");
   const [selectedAlert, setSelectedAlert] = useState(null);
   const [reviewText, setReviewText] = useState("");
+  const [singleReviewPersist, setSingleReviewPersist] = useState(true);
   const [singleOutput, setSingleOutput] = useState(null);
   const [reviewGraph, setReviewGraph] = useState(null);
   const [batchGraph, setBatchGraph] = useState(null);
@@ -153,13 +155,18 @@ export function useAdminPortal() {
     setError("");
     setLoading(true);
     try {
-      const out = await inferSingleReview(reviewText.trim());
+      const out = await inferSingleReview(reviewText.trim(), null, null, singleReviewPersist);
       setSingleOutput(out);
-      setReviewGraph(await getReviewGraph(out.review_id));
+      if (singleReviewPersist && out.review_id) {
+        setReviewGraph(await getReviewGraph(out.review_id));
+      } else {
+        setReviewGraph(null);
+      }
       setActivePage("ReviewExplorer");
     } catch (ex) {
       setError(ex.message || "Single review inference failed");
     } finally {
+      setSingleReviewPersist(true);
       setLoading(false);
     }
   }
@@ -182,6 +189,8 @@ export function useAdminPortal() {
       }
       if ((latest.status || "").toLowerCase() === "failed") throw new Error(latest.error || "Batch job failed");
       await Promise.all([refreshAnalytics(), refreshBatchGraph(graphFilters)]);
+      const options = await getGraphFilterOptions().catch(() => graphFilterOptions);
+      setGraphFilterOptions(options || { domains: [], product_ids: [] });
       setActivePage("ReviewExplorer");
     } catch (ex) {
       setError(ex.message || "Batch CSV inference failed");
@@ -212,7 +221,7 @@ export function useAdminPortal() {
   }
 
   const leaderboardRows = useMemo(() => leaderboard.map((row, idx) => ({ id: `${row.aspect}-${idx}`, ...row })), [leaderboard]);
-  const pageNav = ["Dashboard", "AspectAnalytics", "GraphExplorer", "ReviewExplorer", "Alerts", "NeedsReview", "NovelCandidates", "UserReviews", "Exports"];
+  const pageNav = ["Dashboard", "AspectAnalytics", "GraphExplorer", "ReviewExplorer", "Alerts", "ReviewQueue", "UserReviews"];
 
   const handleAlertClick = (alert) => {
     setSelectedAlert(alert);
@@ -263,6 +272,8 @@ export function useAdminPortal() {
     selectedAlert,
     reviewText,
     setReviewText,
+    singleReviewPersist,
+    setSingleReviewPersist,
     singleOutput,
     reviewGraph,
     batchGraph,

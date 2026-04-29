@@ -4,13 +4,14 @@ import GraphExplorer from "./GraphExplorer";
 import ReviewExplorer from "./ReviewExplorer";
 import AlertsPage from "./AlertsPage";
 import AlertDetailPage from "./AlertDetailPage";
-import NeedsReviewPage from "./NeedsReviewPage";
-import NovelCandidatesPage from "./NovelCandidatesPage";
+import ReviewQueue from "./ReviewQueue";
 import UserReviewsInsights from "./UserReviewsInsights";
 import ExportsPage from "./ExportsPage";
 import { useAdminPortal } from "./useAdminPortal";
+import { useState } from "react";
 
 export default function AdminPortal() {
+  const [exportOpen, setExportOpen] = useState(false);
   const state = useAdminPortal();
   const {
     isDark,
@@ -21,6 +22,7 @@ export default function AdminPortal() {
     selectedAlert,
     reviewText,
     setReviewText,
+    setSingleReviewPersist,
     singleOutput,
     reviewGraph,
     batchGraph,
@@ -73,7 +75,7 @@ export default function AdminPortal() {
           <div className="flex flex-wrap items-center gap-2">
             {pageNav.map((name) => (
               <button key={name} type="button" onClick={() => setActivePage(name)} className={`rounded-xl px-3 py-2 text-sm font-semibold ${activePage === name ? "bg-emerald-500 text-slate-950" : isDark ? "bg-slate-800 text-slate-200" : "bg-slate-200 text-slate-700"}`}>
-                {name === "AspectAnalytics" ? "Analytics" : name === "NeedsReview" ? "Needs Review" : name === "NovelCandidates" ? "Novel" : name}
+                {name === "AspectAnalytics" ? "Analytics" : name === "ReviewQueue" ? "Review Queue" : name}
               </button>
             ))}
           </div>
@@ -90,6 +92,9 @@ export default function AdminPortal() {
             <button type="button" onClick={handleLogout} className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-slate-800 text-slate-200" : "bg-slate-200 text-slate-700"}`}>
               Logout
             </button>
+            <button type="button" onClick={() => setExportOpen(true)} className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950">
+              Export
+            </button>
           </div>
         </div>
       </header>
@@ -102,18 +107,30 @@ export default function AdminPortal() {
           </div>
         ) : null}
         <div key={activePage} className="page-fade-in">
-          {activePage === "Dashboard" ? <Dashboard kpis={kpis} alerts={alerts} leaderboardRows={leaderboardRows} impactRows={impactMatrix} segmentRows={segmentRows} weeklySummary={weeklySummary} isDark={isDark} onSeeMoreAlerts={() => setActivePage("Alerts")} /> : null}
+          {activePage === "Dashboard" ? <Dashboard kpis={kpis} alerts={alerts} leaderboardRows={leaderboardRows} impactRows={impactMatrix} segmentRows={segmentRows} weeklySummary={weeklySummary} isDark={isDark} onSeeMoreAlerts={() => setActivePage("Alerts")} onOpenGraph={() => setActivePage("GraphExplorer")} onAlertClick={handleAlertClick} /> : null}
           {activePage === "AspectAnalytics" ? <AspectAnalytics trends={aspectTrends} emerging={emergingAspects} evidence={evidenceRows} aspectDetail={aspectDetail} weeklySummary={weeklySummary} isDark={isDark} /> : null}
           {activePage === "GraphExplorer" ? <GraphExplorer graph={batchGraph} graphFilters={graphFilters} setGraphFilters={setGraphFilters} onApplyFilters={applyBatchGraphFilters} onResetFilters={resetBatchGraphFilters} graphLoading={graphLoading} filterOptions={graphFilterOptions} isDark={isDark} /> : null}
           {activePage === "ReviewExplorer" ? <ReviewExplorer reviewText={reviewText} setReviewText={setReviewText} onSubmit={handleSingleSubmit} loading={loading} output={singleOutput} reviewGraph={reviewGraph} batchFile={batchFile} setBatchFile={setBatchFile} onBatchSubmit={handleBatchSubmit} jobStatus={jobStatus} kpis={kpis} leaderboardRows={leaderboardRows} impactRows={impactMatrix} segmentRows={segmentRows} weeklySummary={weeklySummary} alerts={alerts} evidenceRows={evidenceRows} onOpenGraph={() => setActivePage("GraphExplorer")} onOpenAnalytics={() => setActivePage("AspectAnalytics")} isDark={isDark} /> : null}
           {activePage === "Alerts" ? <AlertsPage alerts={alerts} isDark={isDark} onAlertClick={handleAlertClick} onAlertClear={handleAlertClear} /> : null}
-          {activePage === "NeedsReview" ? <NeedsReviewPage rows={needsReviewRows} isDark={isDark} /> : null}
-          {activePage === "NovelCandidates" ? <NovelCandidatesPage rows={novelCandidateRows} isDark={isDark} /> : null}
-          {activePage === "UserReviews" ? <UserReviewsInsights summary={userReviewSummary} list={userReviewList} isDark={isDark} /> : null}
-          {activePage === "Exports" ? <ExportsPage isDark={isDark} onExportJson={handleExportJson} onExportPdf={handleExportPdf} exportPayload={exportPayload} exportFilters={exportFilters} setExportFilters={setExportFilters} loading={exportLoading} onRefreshExport={() => refreshExportPreview(exportFilters)} /> : null}
-          {activePage === "AlertDetail" ? <AlertDetailPage alert={selectedAlert} isDark={isDark} onBack={() => setActivePage("Alerts")} /> : null}
+          {activePage === "ReviewQueue" ? <ReviewQueue needsReviewRows={needsReviewRows} novelCandidateRows={novelCandidateRows} isDark={isDark} /> : null}
+          {activePage === "UserReviews" ? <UserReviewsInsights summary={userReviewSummary} list={userReviewList} isDark={isDark} onAnalyzeReview={(text) => { setReviewText(text); setSingleReviewPersist(false); setActivePage("ReviewExplorer"); }} /> : null}
+          {activePage === "AlertDetail" ? <AlertDetailPage alert={selectedAlert} isDark={isDark} onBack={() => setActivePage("Alerts")} onOpenGraphNode={() => setActivePage("GraphExplorer")} /> : null}
         </div>
       </main>
+
+      {exportOpen ? (
+        <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-black/40">
+          <div className={`h-full w-full max-w-4xl overflow-auto border-l p-4 ${isDark ? "border-slate-800 bg-[#060b18]" : "border-slate-200 bg-white"}`}>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Export</h3>
+              <button type="button" onClick={() => setExportOpen(false)} className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-slate-800 text-slate-200" : "bg-slate-200 text-slate-700"}`}>
+                Close
+              </button>
+            </div>
+            <ExportsPage isDark={isDark} onExportJson={handleExportJson} onExportPdf={handleExportPdf} exportPayload={exportPayload} exportFilters={exportFilters} setExportFilters={setExportFilters} loading={exportLoading} onRefreshExport={() => refreshExportPreview(exportFilters)} />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

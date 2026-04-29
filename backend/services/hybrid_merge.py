@@ -12,7 +12,8 @@ def _norm(s: str) -> str:
 
 
 def _best_key(row: PredictionLike) -> Tuple[str, str]:
-    aspect = _norm(row.get("aspect_cluster") or row.get("aspect_raw") or row.get("aspect") or "")
+    from services.analytics_common import normalize_text
+    aspect = normalize_text(row.get("aspect_cluster") or row.get("aspect_raw") or row.get("aspect") or "")
     sentiment = _norm(row.get("sentiment") or "neutral")
     return aspect, sentiment
 

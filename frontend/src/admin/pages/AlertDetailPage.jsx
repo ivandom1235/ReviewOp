@@ -1,4 +1,4 @@
-export default function AlertDetailPage({ alert, isDark, onBack }) {
+export default function AlertDetailPage({ alert, isDark, onBack, onOpenGraphNode }) {
   if (!alert) return null;
   const severity = String(alert.severity || "").toLowerCase();
 
@@ -34,6 +34,10 @@ export default function AlertDetailPage({ alert, isDark, onBack }) {
               <p className="mb-1 text-xs uppercase tracking-[0.14em] opacity-60">Detected At</p>
               <p className="text-sm">{alert.detected_at ? new Date(alert.detected_at).toLocaleString() : "Unavailable"}</p>
             </div>
+            <div>
+              <p className="mb-1 text-xs uppercase tracking-[0.14em] opacity-60">Related Evidence</p>
+              <p className="text-sm">{alert.evidence || alert.example_review || "No direct evidence snippet available."}</p>
+            </div>
           </div>
 
           <div className="space-y-4">
@@ -43,9 +47,20 @@ export default function AlertDetailPage({ alert, isDark, onBack }) {
                 <li>{"\u2022"} Aspect: <span className="font-semibold">{alert.aspect}</span></li>
                 <li>{"\u2022"} Status: {alert.status || "Open"}</li>
                 <li>{"\u2022"} Impact Score: {alert.priority_score ?? "Pending"}</li>
+                <li>{"\u2022"} Trend Change: {alert.trend_change_pct != null ? `${Number(alert.trend_change_pct).toFixed(1)}%` : "Unavailable"}</li>
+                <li>{"\u2022"} Affected Segment: {alert.segment || alert.segment_value || "Unavailable"}</li>
+                <li>{"\u2022"} Product: {alert.product_id || "Unavailable"}</li>
               </ul>
             </div>
-            <p className="text-xs italic text-slate-500">Historical data and full evidence for this alert can be found in the Aspect Analytics page.</p>
+            <div className={`rounded-xl p-4 ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
+              <p className="mb-2 text-xs uppercase tracking-[0.14em] opacity-60">Suggested Admin Action</p>
+              <p className="text-sm">
+                {alert.suggested_action || `Prioritize ${alert.aspect || "this aspect"} in triage, confirm evidence, then assign owner and ETA.`}
+              </p>
+            </div>
+            <button type="button" onClick={() => onOpenGraphNode?.(alert)} className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950">
+              Open Related Graph Node
+            </button>
           </div>
         </div>
 

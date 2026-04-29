@@ -14,6 +14,7 @@ ALPHA_RE = re.compile(r"[a-zA-Z]")
 
 SPECIAL_SHORT_TOKENS = {"5g", "4g", "gps", "ram", "app"}
 NUMBER_WORDS = {"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
+QUANTITY_PREFIX = NUMBER_WORDS | {"single", "double", "multiple", "few", "many", "several"}
 NOUN_POS = {"NOUN", "PROPN"}
 NOUN_HEAD_DEPS = {"nsubj", "dobj", "pobj", "attr", "obj"}
 LEFT_MODIFIER_DEPS = {"compound", "amod", "poss", "nummod"}
@@ -35,13 +36,16 @@ GENERIC_SINGLE = {
 PRICE_WORDS = {"price", "cost", "value", "pricing", "refund", "charge", "charges", "fee", "fees"}
 
 TIME_UNITS = {"day", "days", "week", "weeks", "month", "months", "year", "years", "hour", "hours", "minute", "minutes"}
+TIME_UNITS = TIME_UNITS | {"fortnight", "fortnights"}
 APPROX = {"about", "around", "almost", "roughly", "nearly", "approximately"}
 
 # Context/conditions that are almost never "aspects".
 CONTEXT_SINGLE = {
     "daylight", "sunlight", "indoors", "outdoors", "outside", "inside", "weather", "room", "area", "place", "location",
-    "morning", "evening", "night", "today", "yesterday", "tomorrow",
+    "morning", "evening", "night", "today", "yesterday", "tomorrow", "fortnight", "fortnights",
 }
+VAGUE_SINGLE = {"something", "anything", "everything", "nothing", "every", "means"}
+HUMAN_SINGLE = {"waiter", "waitress", "waitstaff", "fiance", "fiancee", "husband", "wife", "boyfriend", "girlfriend"}
 
 # Context phrases (multi-word) that usually describe conditions, not aspects.
 CONTEXT_PHRASES = {"low light", "bright light", "direct sunlight", "high humidity", "peak hours"}
@@ -132,14 +136,19 @@ def _valid_phrase(phrase: str) -> bool:
 
     if len(tokens) == 1:
         token = tokens[0]
-        if token in STOP or token in CONTEXT_SINGLE:
+        if token in STOP or token in CONTEXT_SINGLE or token in VAGUE_SINGLE:
             return False
         if token in GENERIC_SINGLE and token not in PRICE_WORDS:
+            return False
+        if token in HUMAN_SINGLE:
             return False
         if len(token) < 4 and token not in SPECIAL_SHORT_TOKENS:
             return False
 
     if len(tokens) == 2 and tokens[-1] in ATTRIBUTE_HEADS:
+        return False
+
+    if len(tokens) == 2 and tokens[0] in QUANTITY_PREFIX and tokens[1] in {"times", "time", "movie", "dvd", "cd", "item", "items"}:
         return False
 
     return True
@@ -191,6 +200,8 @@ def _apply_canonical_preferences(text_lower: str, add: Callable[[str, float], No
     battery_pattern = r"\bbattery\s+(life|lasts|lasting|drains|charging)\b"
     if "battery" in text_lower and ("battery life" in text_lower or re.search(battery_pattern, text_lower)):
         add("battery life", 0.90)
+    if "waiter" in text_lower or "waitstaff" in text_lower or "waitress" in text_lower:
+        add("staff", 0.92)
 
 
 def _collect_candidates(doc: Doc) -> Tuple[List[str], Dict[str, float]]:

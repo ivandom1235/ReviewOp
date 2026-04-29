@@ -183,6 +183,7 @@ def infer_review(
         text=text_in,
         domain=payload.domain,
         product_id=payload.product_id,
+        persist=payload.persist,
         explicit_engine=services.seq2seq_engine,
         implicit_client=services.implicit_client,
         background_tasks=background_tasks,

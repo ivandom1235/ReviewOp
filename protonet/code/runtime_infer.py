@@ -130,6 +130,16 @@ class ProtonetRuntime:
         self.novelty_calibration = self._load_novelty_calibration()
 
     def _load_novelty_calibration(self, bundled: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        path = self.cfg.novelty_calibration_path
+        external_payload = None
+        if isinstance(path, Path) and path.exists():
+            try:
+                external_payload = json.loads(path.read_text(encoding="utf-8"))
+                if not external_payload.get("not_applicable", False):
+                    bundled = external_payload
+            except Exception:
+                pass
+        
         if isinstance(bundled, dict) and bundled:
             result = calibrate_novelty_thresholds(
                 novelty_calibration=bundled,

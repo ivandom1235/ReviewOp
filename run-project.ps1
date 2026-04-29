@@ -75,7 +75,7 @@ try {
     }
 
     Write-Host 'Activating virtual environment...' -ForegroundColor $info
-    . $activatePath
+    . "$activatePath"
     Write-Host '[ok] Virtual environment activated.' -ForegroundColor $success
 
     Write-Host 'Installing Python dependencies...' -ForegroundColor $info
