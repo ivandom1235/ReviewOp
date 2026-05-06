@@ -43,6 +43,7 @@ class DatasetSummary:
     split_sizes: Dict[str, int]
     detected_format: str
     input_type: str
+    extra_artifacts: Dict[str, Any] | None = None
 
 
 def _normalize_sentiment(value: Any, fallback: str = "neutral") -> str:
@@ -125,6 +126,63 @@ def validate_benchmark_artifacts(input_dir: Path) -> None:
     )
 
 
+def _load_optional_split_rows(input_dir: Path, split: str, *, progress_enabled: bool) -> List[Dict[str, Any]]:
+    nested_dir = input_dir / split
+    if not nested_dir.is_dir():
+        return []
+    split_file = nested_dir / f"{split}.jsonl"
+    if split_file.exists():
+        return read_split_rows(split_file, progress_enabled=progress_enabled)
+    fallback = nested_dir / "test.jsonl"
+    if fallback.exists():
+        return read_split_rows(fallback, progress_enabled=progress_enabled)
+    return []
+
+
+def _load_domain_holdout_rows(input_dir: Path, *, progress_enabled: bool) -> tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Any]]:
+    nested_dir = input_dir / "domain_holdout"
+    if not nested_dir.is_dir():
+        return {}, {}
+    split_rows: Dict[str, List[Dict[str, Any]]] = {}
+    split_sizes: Dict[str, int] = {}
+    for split in VALID_SPLITS:
+        split_file_path = nested_dir / f"{split}.jsonl"
+        if split_file_path.exists():
+            rows = read_split_rows(split_file_path, progress_enabled=progress_enabled)
+            split_rows[split] = rows
+            split_sizes[split] = len(rows)
+    if split_rows:
+        merged = [row for split in VALID_SPLITS for row in split_rows.get(split, [])]
+        return {"domain_holdout": merged}, {"split_sizes": split_sizes, "detected_format": "benchmark_examples"}
+    single = nested_dir / "domain_holdout.jsonl"
+    if single.exists():
+        rows = read_split_rows(single, progress_enabled=progress_enabled)
+        return {"domain_holdout": rows}, {"split_sizes": {"domain_holdout": len(rows)}, "detected_format": "benchmark_examples"}
+    return {}, {}
+
+
+def _load_counterfactual_pairs(input_dir: Path) -> tuple[Dict[str, Any], int]:
+    candidates = [
+        input_dir / "counterfactual_pairs.jsonl",
+        input_dir / "counterfactual_pairs.json",
+        input_dir / "counterfactual" / "counterfactual_pairs.jsonl",
+        input_dir / "counterfactual" / "counterfactual_pairs.json",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            if path.suffix == ".jsonl":
+                rows = load_jsonl(path)
+                return {"counterfactual_pairs": {"count": len(rows)}}, len(rows)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, list):
+                return {"counterfactual_pairs": {"count": len(payload)}}, len(payload)
+        except Exception:
+            return {"counterfactual_pairs": {"count": 0, "reason": "invalid_json"}}, 0
+    return {}, 0
+
+
 def _label_from_interpretation(
     instance_id: str,
     review_text: str,
@@ -142,6 +200,7 @@ def _label_from_interpretation(
     novel_cluster_id: str | None,
     novel_alias: str | None,
     novel_evidence_text: str | None,
+    abstain_reason_gold: List[str],
 ) -> Dict[str, Any]:
     sentiment = _normalize_sentiment(interp.get("sentiment"))
     evidence_text = str(interp.get("evidence_text") or "").strip()
@@ -202,6 +261,7 @@ def _label_from_interpretation(
         "novel_cluster_id": str(novel_cluster_id or "").strip() or None,
         "novel_alias": str(novel_alias or "").strip() or None,
         "novel_evidence_text": str(novel_evidence_text or "").strip() or None,
+        "abstain_reason_gold": list(abstain_reason_gold),
         "gold_joint_labels": gold_joint_labels,
         "split_protocol": split_protocol,
         "benchmark_ambiguity_score": float(ambiguity_score),
@@ -234,6 +294,7 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str, mode: str = 
         novel_cluster_id = str(row.get("novel_cluster_id") or "").strip() or None
         novel_alias = str(row.get("novel_alias") or "").strip() or None
         novel_evidence_text = str(row.get("novel_evidence_text") or "").strip() or None
+        abstain_reason_gold = as_list(row.get("abstain_reason_gold"))
         group_id = str(row.get("group_id") or "").strip()
         domain_family = str(row.get("domain_family") or "").strip()
         hardness_tier = str(row.get("hardness_tier") or "H0").strip().upper()
@@ -286,6 +347,7 @@ def validate_benchmark_rows(rows: List[Dict[str, Any]], split: str, mode: str = 
                 novel_cluster_id,
                 novel_alias,
                 novel_evidence_text,
+                abstain_reason_gold,
             )
             if bool(built.get("evidence_fallback_used", False)):
                 evidence_fallback_counter += 1
@@ -310,9 +372,21 @@ def load_input_dataset(cfg: ProtonetConfig) -> tuple[Dict[str, List[Dict[str, An
         raw_rows = read_split_rows(path, progress_enabled=cfg.progress_enabled)
         rows, detected_format = validate_benchmark_rows(raw_rows, split, mode=cfg.training_label_mode)
         rows_by_split[split] = rows
+
+    extra_artifacts: Dict[str, Any] = {}
+    domain_holdout_rows, domain_holdout_artifacts = _load_domain_holdout_rows(cfg.input_dir, progress_enabled=cfg.progress_enabled)
+    if domain_holdout_rows:
+        rows_by_split.update(domain_holdout_rows)
+        extra_artifacts["domain_holdout"] = domain_holdout_artifacts
+
+    counterfactual_artifacts, _ = _load_counterfactual_pairs(cfg.input_dir)
+    if counterfactual_artifacts:
+        extra_artifacts.update(counterfactual_artifacts)
+
     summary = DatasetSummary(
         split_sizes={split: len(rows) for split, rows in rows_by_split.items()},
         detected_format=detected_format,
         input_type=cfg.input_type,
+        extra_artifacts=extra_artifacts or None,
     )
     return rows_by_split, summary

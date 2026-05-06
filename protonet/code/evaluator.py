@@ -17,7 +17,7 @@ try:
     from .novelty_utils import compute_novelty_score
     from .quality_signals import prediction_error_buckets, top_aspect_confusions
     from .progress import task_bar
-    from .selective_decisions import decide_selective_routing
+    from .selective_decisions import decide_prediction_state, decide_selective_routing
     from .evaluation_utils import (
         aspect_from_joint as _aspect_from_joint,
         compact_mode_metrics as _compact_mode_metrics,
@@ -39,7 +39,7 @@ except ImportError:
     from novelty_utils import compute_novelty_score
     from quality_signals import prediction_error_buckets, top_aspect_confusions
     from progress import task_bar
-    from selective_decisions import decide_selective_routing
+    from selective_decisions import decide_prediction_state, decide_selective_routing
     from evaluation_utils import (
         aspect_from_joint as _aspect_from_joint,
         compact_mode_metrics as _compact_mode_metrics,
@@ -154,6 +154,13 @@ def evaluate_episodes(
                     novel_truth_label = 1 if bool(query_row.get("novel_acceptable", False)) else 0
                     novelty_truth.append(novel_truth_label)
                     novelty_scores.append(float(novelty_score))
+                    selective_state = decide_prediction_state(
+                        novelty_score=float(novelty_score),
+                        selective_confidence=float(confidence),
+                        abstain_threshold=float(cfg.abstain_threshold),
+                        known_threshold=float(cfg.novelty_known_threshold),
+                        novel_threshold=float(cfg.novelty_novel_threshold),
+                    )
                     selective_route = decide_selective_routing(
                         novelty_score=float(novelty_score),
                         selective_confidence=float(confidence),
@@ -161,8 +168,8 @@ def evaluate_episodes(
                         known_threshold=float(cfg.novelty_known_threshold),
                         novel_threshold=float(cfg.novelty_novel_threshold),
                     )
-                    decision_band = selective_route.decision_band
-                    routing = "novel" if selective_route.route_novel else "known"
+                    decision_band = str(selective_state["decision_band"])
+                    routing = "novel" if bool(selective_state["route_novel"]) else "known"
                     novelty_pred.append(1 if routing == "novel" else 0)
                     evidence_hint = ""
                     domain_hint = "unknown"
@@ -206,7 +213,8 @@ def evaluate_episodes(
                         },
                         "routing": routing,
                         "decision_band": decision_band,
-                        "abstain_reason": selective_route.abstain_reason,
+                        "abstain_reason": selective_state["abstain_reason"] or selective_route.abstain_reason,
+                        "selective_score": float(selective_state["selective_score"]),
                         "split_protocol": split_protocol if isinstance(split_protocol, dict) else {},
                         "benchmark_ambiguity_score": float(query_row.get("benchmark_ambiguity_score", 0.0)) if isinstance(query_row, dict) else 0.0,
                         "abstain_acceptable": bool(query_row.get("abstain_acceptable", False)) if isinstance(query_row, dict) else False,
@@ -221,6 +229,9 @@ def evaluate_episodes(
                         "hardness_tier": str(query_row.get("hardness_tier") or "unknown") if isinstance(query_row, dict) else "unknown",
                         "gold_novel_cluster_id": str(query_row.get("novel_cluster_id") or "").strip() if isinstance(query_row, dict) else "",
                         "pred_novel_cluster_id": predicted_cluster_id,
+                        "counterfactual_group_id": str(query_row.get("counterfactual_group_id") or "").strip() if isinstance(query_row, dict) else "",
+                        "counterfactual_role": str(query_row.get("counterfactual_role") or "").strip() if isinstance(query_row, dict) else "",
+                        "counterfactual_source_id": str(query_row.get("counterfactual_source_id") or "").strip() if isinstance(query_row, dict) else "",
                         "post_aspect_selected_aspects": list(post_aspect.get("selected_aspects") or []),
                         "post_aspect_sentiment": str(post_aspect.get("sentiment") or "neutral"),
                     }
@@ -301,6 +312,38 @@ def evaluate_episodes(
             open_set_curve.append({"quantile": q, "threshold": threshold, "coverage": float(coverage_q), "risk": float(risk_q)})
     high_ambiguity_values = [1.0 if row.get("correct") else 0.0 for row in predictions if float(row.get("benchmark_ambiguity_score", 0.0)) >= 0.5]
     high_ambiguity_accuracy = float(np.mean(high_ambiguity_values)) if high_ambiguity_values else 0.0
+    risk_coverage_auc = 0.0
+    if open_set_curve:
+        points = sorted(((float(item["coverage"]), float(item["risk"])) for item in open_set_curve), key=lambda x: x[0])
+        if len(points) >= 2:
+            auc = 0.0
+            prev_cov, prev_risk = points[0]
+            for cov, risk in points[1:]:
+                auc += (cov - prev_cov) * (risk + prev_risk) / 2.0
+                prev_cov, prev_risk = cov, risk
+            risk_coverage_auc = float(max(0.0, min(1.0, auc)))
+    counterfactual_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in predictions:
+        group_id = str(row.get("counterfactual_group_id") or "").strip()
+        if group_id:
+            counterfactual_groups[group_id].append(row)
+    counterfactual_eval = [
+        group_rows
+        for group_rows in counterfactual_groups.values()
+        if len(group_rows) >= 2 and any(str(r.get("counterfactual_role") or "") in {"original", "counterfactual"} for r in group_rows)
+    ]
+    counterfactual_consistency = float(
+        np.mean(
+            [
+                1.0
+                if len({str(r.get("pred_label") or "") for r in group_rows if str(r.get("pred_label") or "")})
+                >= 2
+                or any(bool(r.get("post_aspect_abstained")) for r in group_rows)
+                else 0.0
+                for group_rows in counterfactual_eval
+            ]
+        )
+    ) if counterfactual_eval else 0.0
     protocol_groups: Dict[str, List[int]] = {"random": [], "grouped": [], "domain_holdout": []}
     protocol_seen: Dict[str, bool] = {"random": False, "grouped": False, "domain_holdout": False}
     for idx, row in enumerate(predictions):
@@ -371,7 +414,9 @@ def evaluate_episodes(
         "accuracy": float(accuracy_score(y_true, y_pred)) if y_true else 0.0,
         "aspect_only_accuracy": float(accuracy_score(y_true_aspect, y_pred_aspect)) if y_true else 0.0,
         "macro_f1": float(f1_score(y_true, y_pred, average="macro")) if y_true else 0.0,
+        "strict_f1": float(f1_score(y_true, y_pred, average="macro")) if y_true else 0.0,
         "flexible_match_score": flex_correct_rate,
+        "relaxed_multi_gold_f1": flex_correct_rate,
         "multi_label_overlap_score": avg_overlap,
         "abstention_precision": float(abstain_precision),
         "abstention_recall": float(abstain_recall),
@@ -379,8 +424,10 @@ def evaluate_episodes(
         "coverage": float(coverage),
         "risk": float(risk),
         "coverage_risk": {"coverage": float(coverage), "risk": float(risk)},
+        "risk_coverage_auc": float(risk_coverage_auc),
         "known_vs_novel_quality": float(known_novel_quality),
         "known_vs_novel_auroc": float(known_vs_novel_auroc),
+        "novel_detection_auroc": float(known_vs_novel_auroc),
         "known_vs_novel_f1_macro": float(known_novel_f1_macro),
         "known_vs_novel_f1": {"known": float(f1_known), "novel": float(f1_novel)},
         "known_vs_novel_confusion": {"tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn)},
@@ -399,6 +446,7 @@ def evaluate_episodes(
             "grouped": _protocol_payload("grouped"),
             "domain_holdout": _protocol_payload("domain_holdout"),
         },
+        "domain_holdout_f1": _protocol_payload("domain_holdout").get("macro_f1", 0.0),
         "source_type_breakdown": source_type_breakdown,
         "label_type_breakdown": label_type_breakdown,
         "mapping_scope_breakdown": mapping_scope_breakdown,
@@ -412,6 +460,7 @@ def evaluate_episodes(
         "low_confidence_rate": low_confidence_count / max(1, len(y_true)),
         "inference_seconds": elapsed,
         "avg_seconds_per_episode": elapsed / max(1, len(episodes)),
+        "counterfactual_consistency": float(counterfactual_consistency),
         **_diagnostic_summary(predictions, cfg.joint_label_separator),
     }
     joint_mode_metrics = _compact_mode_metrics(predictions, cfg, split_name, mode="joint", elapsed=elapsed, episodes=episodes)

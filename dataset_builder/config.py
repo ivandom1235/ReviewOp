@@ -73,10 +73,11 @@ class BuilderConfig:
     provisional_policy: str = "strict"
     evidence_window_tokens: int = 8
     aspect_memory_auto_promote: bool = False
-    aspect_memory_review_queue_min_support: int = 5
+    aspect_memory_review_queue_min_support: int = 3
     aspect_memory_review_queue_min_reviews: int = 3
     aspect_memory_review_queue_min_surface_forms: int = 2
     aspect_memory_path: Optional[str] = None
+    domain_holdout_domain: Optional[str] = None
     max_workers: int = 20
 
 
@@ -89,6 +90,13 @@ def load_config(path: str | Path | None = None) -> BuilderConfig:
     # Prioritize: 1. JSON config file, 2. Env vars, 3. Defaults
     llm_provider = str(payload.get("llm_provider", get_default_llm_provider())).strip()
     llm_model = str(payload.get("llm_model", get_env_model(llm_provider))).strip()
+
+    # Tune max_workers based on provider to avoid rate limits
+    max_workers = int(payload.get("max_workers", 20))
+    if llm_provider == "groq" and "max_workers" not in payload:
+        max_workers = 4 # Conservative for Groq 6000 TPM limit
+    elif llm_provider == "gemini" and "max_workers" not in payload:
+        max_workers = 10 # Conservative for Gemini free tier
 
     return BuilderConfig(
         input_dir=Path(payload.get("input_dir", DEFAULT_INPUT_DIR)),
@@ -113,11 +121,12 @@ def load_config(path: str | Path | None = None) -> BuilderConfig:
         provisional_policy=str(payload.get("provisional_policy", "strict")),
         evidence_window_tokens=int(payload.get("evidence_window_tokens", 8)),
         aspect_memory_auto_promote=bool(payload.get("aspect_memory_auto_promote", False)),
-        aspect_memory_review_queue_min_support=int(payload.get("aspect_memory_review_queue_min_support", 5)),
+        aspect_memory_review_queue_min_support=int(payload.get("aspect_memory_review_queue_min_support", 3)),
         aspect_memory_review_queue_min_reviews=int(payload.get("aspect_memory_review_queue_min_reviews", 3)),
         aspect_memory_review_queue_min_surface_forms=int(payload.get("aspect_memory_review_queue_min_surface_forms", 2)),
         aspect_memory_path=payload.get("aspect_memory_path"),
-        max_workers=int(payload.get("max_workers", 20)),
+        domain_holdout_domain=payload.get("domain_holdout_domain"),
+        max_workers=max_workers,
     )
 
 
@@ -169,5 +178,6 @@ def to_jsonable(cfg: BuilderConfig) -> dict[str, Any]:
         "aspect_memory_review_queue_min_reviews": cfg.aspect_memory_review_queue_min_reviews,
         "aspect_memory_review_queue_min_surface_forms": cfg.aspect_memory_review_queue_min_surface_forms,
         "aspect_memory_path": cfg.aspect_memory_path,
+        "domain_holdout_domain": cfg.domain_holdout_domain,
         "max_workers": cfg.max_workers,
     }

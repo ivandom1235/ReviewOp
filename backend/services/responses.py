@@ -50,6 +50,13 @@ class ContractMapper:
                     routing=pred.get("routing"),
                     ambiguity_score=pred.get("ambiguity_score"),
                     novelty_score=pred.get("novelty_score"),
+                    decision_band=pred.get("decision_band"),
+                    novel_cluster_id=pred.get("novel_cluster_id"),
+                    novel_alias=pred.get("novel_alias"),
+                    contradiction_score=pred.get("contradiction_score"),
+                    contradiction_types=list(pred.get("contradiction_types") or []),
+                    quarantine_status=pred.get("quarantine_status"),
+                    graph_support_score=pred.get("graph_support_score"),
                 )
             )
 
@@ -82,6 +89,14 @@ class ContractMapper:
                     evidence=evidence,
                     evidence_start=start,
                     evidence_end=end,
+                    contradiction_score=row.get("contradiction_score"),
+                    contradiction_types=list(row.get("contradiction_types") or []),
+                    quarantine_status=row.get("quarantine_status"),
+                    graph_support_score=row.get("graph_support_score"),
+                    decision_band=row.get("decision_band"),
+                    novelty_score=row.get("novelty_score"),
+                    novel_cluster_id=row.get("novel_cluster_id"),
+                    novel_alias=row.get("novel_alias"),
                 )
             )
 
@@ -90,19 +105,38 @@ class ContractMapper:
                 reason=str(row.get("reason") or "low_selective_confidence"),
                 confidence=float(row.get("confidence", 0.0)),
                 ambiguity_score=float(row.get("ambiguity_score", 0.0)),
+                contradiction_score=row.get("contradiction_score"),
+                contradiction_types=list(row.get("contradiction_types") or []),
+                quarantine_status=row.get("quarantine_status"),
+                graph_support_score=row.get("graph_support_score"),
             )
             for row in selective_states.get("abstained_predictions", [])
         ]
 
-        novel_out = [
-            NovelCandidateOut(
-                aspect=str(row.get("aspect") or row.get("aspect_raw") or ""),
-                novelty_score=float(row.get("novelty_score", 0.0)),
-                confidence=float(row.get("confidence", 0.0)) if row.get("confidence") is not None else None,
+        novel_out = []
+        for row in selective_states.get("novel_candidates", []):
+            aspect = str(row.get("aspect") or row.get("aspect_raw") or "").strip()
+            if not aspect:
+                continue
+            evidence_text = row.get("evidence_text")
+            if not evidence_text:
+                spans = row.get("evidence_spans") or []
+                if spans and isinstance(spans[0], dict):
+                    evidence_text = spans[0].get("snippet")
+            novel_out.append(
+                NovelCandidateOut(
+                    aspect=aspect,
+                    novelty_score=float(row.get("novelty_score", 0.0)),
+                    confidence=float(row.get("confidence", 0.0)) if row.get("confidence") is not None else None,
+                    novel_cluster_id=row.get("novel_cluster_id"),
+                    novel_alias=row.get("novel_alias"),
+                    evidence_text=evidence_text,
+                    contradiction_score=row.get("contradiction_score"),
+                    contradiction_types=list(row.get("contradiction_types") or []),
+                    quarantine_status=row.get("quarantine_status"),
+                    graph_support_score=row.get("graph_support_score"),
+                )
             )
-            for row in selective_states.get("novel_candidates", [])
-            if str(row.get("aspect") or row.get("aspect_raw") or "").strip()
-        ]
 
         return InferReviewOut(
             review_id=review_obj.id,

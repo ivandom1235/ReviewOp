@@ -9,6 +9,7 @@ export default function NeedsReviewPage({ rows = [], isDark }) {
               <th className="px-3 py-2">Reason</th>
               <th className="px-3 py-2">Confidence</th>
               <th className="px-3 py-2">Evidence</th>
+              <th className="px-3 py-2">Signals</th>
               <th className="px-3 py-2">Review</th>
             </tr>
           </thead>
@@ -18,12 +19,16 @@ export default function NeedsReviewPage({ rows = [], isDark }) {
                 <td className="px-3 py-2">{row.reason || "review_required"}</td>
                 <td className="px-3 py-2">{Number(row.confidence || 0).toFixed(2)}</td>
                 <td className="px-3 py-2">{Number(row.ambiguity_score || 0).toFixed(2)}</td>
+                <td className="px-3 py-2">
+                  <div>{row.quarantine_status || "none"}</div>
+                  {Number.isFinite(Number(row.contradiction_score)) ? <div>Contradiction: {Number(row.contradiction_score).toFixed(2)}</div> : null}
+                </td>
                 <td className="px-3 py-2">{row.review_text}</td>
               </tr>
             ))}
             {!rows.length ? (
               <tr>
-                <td className="px-3 py-6 text-center text-slate-500" colSpan={4}>No boundary or abstained predictions.</td>
+                <td className="px-3 py-6 text-center text-slate-500" colSpan={5}>No boundary or abstained predictions.</td>
               </tr>
             ) : null}
           </tbody>

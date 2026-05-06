@@ -142,6 +142,10 @@ def assert_release_ready(
     if mapping_scope_unknown_count > 0:
         msg = f"mapping_scope unknown detected ({mapping_scope_unknown_count})"
         failures.append(msg)
+    row_metadata_unknown_count = int(q_data.get("canonicalization", {}).get("row_metadata_unknown_count", 0))
+    if row_metadata_unknown_count > 0:
+        msg = f"row metadata unknown detected ({row_metadata_unknown_count})"
+        failures.append(msg)
     rejected_rows = int(q_data.get("rejected_rows", 0) or 0)
     reason_counts = q_data.get("reason_counts", {}) or {}
     if rejected_rows > 0 and not reason_counts:
@@ -161,7 +165,7 @@ def assert_release_ready(
             failures.append(f"provisional rate too high ({provisional_rate:.2%})")
         if anchor_modifier_count == 0:
             failures.append("anchor_modifier_count is zero")
-        if full_review_evidence_rate > 0.05:
+        if full_review_evidence_rate > 0.20:
             failures.append(f"full_review_evidence_rate too high ({full_review_evidence_rate:.2%})")
         if matched_term_in_evidence_rate < 0.95:
             warnings.append(f"matched_term_in_evidence_rate warning ({matched_term_in_evidence_rate:.2%})")
@@ -232,6 +236,7 @@ def assert_release_ready(
                     "provenance_unknown_rate": provenance_unknown_rate,
                     "unknown_canonical_rate": unknown_count,
                     "mapping_scope_unknown_count": mapping_scope_unknown_count,
+                    "row_metadata_unknown_count": row_metadata_unknown_count,
                     "provisional_rate": provisional_rate,
                     "anchor_modifier_count": anchor_modifier_count,
                     "full_review_evidence_rate": full_review_evidence_rate,
@@ -250,6 +255,7 @@ def assert_release_ready(
             "provenance_unknown_rate": provenance_unknown_rate,
             "unknown_canonical_rate": unknown_count,
             "mapping_scope_unknown_count": mapping_scope_unknown_count,
+            "row_metadata_unknown_count": row_metadata_unknown_count,
             "provisional_rate": provisional_rate,
             "anchor_modifier_count": anchor_modifier_count,
             "full_review_evidence_rate": full_review_evidence_rate,

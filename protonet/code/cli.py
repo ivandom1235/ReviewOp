@@ -11,6 +11,7 @@ try:
     from .episode_builder import build_or_load_episode_sets, compute_label_similarity, _episode_cache_path, _group_examples
     from .evaluator import evaluate_episodes
     from .export_bundle import export_model_bundle, export_report
+    from .research_report import build_research_pack, write_research_pack
     from .model import ProtoNetModel
     from .trainer import load_checkpoint, train_model
     from .calibrate_novelty import calibrate_thresholds
@@ -20,6 +21,7 @@ except ImportError:
     from episode_builder import build_or_load_episode_sets, compute_label_similarity, _episode_cache_path, _group_examples
     from evaluator import evaluate_episodes
     from export_bundle import export_model_bundle, export_report
+    from research_report import build_research_pack, write_research_pack
     from model import ProtoNetModel
     from trainer import load_checkpoint, train_model
     from calibrate_novelty import calibrate_thresholds
@@ -59,6 +61,11 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         selective_delta=args.selective_delta,
         abstain_threshold=args.abstain_threshold,
         multi_label_margin=args.multi_label_margin,
+        use_evidence_support=args.use_evidence_support,
+        use_verifier_support=args.use_verifier_support,
+        use_memory_support=args.use_memory_support,
+        use_ambiguity_penalty=args.use_ambiguity_penalty,
+        use_novelty_risk=args.use_novelty_risk,
         sentiment_pipeline=args.sentiment_pipeline,
         novelty_threshold=args.novelty_threshold,
         novelty_known_threshold=args.novelty_known_threshold,
@@ -77,6 +84,7 @@ def _build_config(args: argparse.Namespace) -> ProtonetConfig:
         hard_negative_ratio=args.hard_negative_ratio,
         hard_negative_top_k=args.hard_negative_top_k,
         min_examples_per_label=args.min_examples_per_label,
+        protocol_eval_enabled=args.protocol_eval_enabled,
     )
 
 
@@ -140,6 +148,7 @@ def run_train_local(args: argparse.Namespace) -> dict[str, object]:
             "detected_format": summary.detected_format,
             "input_type": summary.input_type,
             "episode_counts": {split: len(rows) for split, rows in episodes_by_split.items()},
+            "extra_artifacts": summary.extra_artifacts or {},
         },
         train_metrics=result.history[-1] if result.history else {},
         val_metrics=val_metrics,
@@ -207,6 +216,16 @@ def run_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_report_pack(args: argparse.Namespace) -> int:
+    report_dir = Path(args.report_dir) if args.report_dir else METADATA_ROOT
+    predictions_dir = Path(args.predictions_dir) if args.predictions_dir else None
+    output = Path(args.output) if args.output else (report_dir / "research_pack.json")
+    pack = build_research_pack(report_dir=report_dir, predictions_dir=predictions_dir)
+    write_research_pack(pack, output)
+    print(f"Research pack: {output}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Standalone ProtoNet training pipeline")
     common = argparse.ArgumentParser(add_help=False)
@@ -236,6 +255,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--selective-delta", type=float, default=0.0)
     common.add_argument("--abstain-threshold", type=float, default=0.01)
     common.add_argument("--multi-label-margin", type=float, default=0.10)
+    common.add_argument("--use-evidence-support", action=argparse.BooleanOptionalAction, default=True)
+    common.add_argument("--use-verifier-support", action=argparse.BooleanOptionalAction, default=True)
+    common.add_argument("--use-memory-support", action=argparse.BooleanOptionalAction, default=True)
+    common.add_argument("--use-ambiguity-penalty", action=argparse.BooleanOptionalAction, default=True)
+    common.add_argument("--use-novelty-risk", action=argparse.BooleanOptionalAction, default=True)
     common.add_argument("--sentiment-pipeline", type=str, default="both", choices=["joint", "post_aspect", "both"])
     common.add_argument("--novelty-threshold", type=float, default=0.70)
     common.add_argument("--novelty-known-threshold", type=float, default=0.50)
@@ -253,24 +277,29 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--training-label-mode", choices=["aspect", "joint"], default="joint")
     common.add_argument("--hard-negative-ratio", type=float, default=0.5)
     common.add_argument("--hard-negative-top-k", type=int, default=5)
+    common.add_argument("--protocol-eval-enabled", action=argparse.BooleanOptionalAction, default=True)
     common.add_argument("--min-examples-per-label", type=int, default=4)
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("train", help="Train, validate, test, and export", parents=[common])
 
     eval_parser = subparsers.add_parser("eval", help="Evaluate a trained checkpoint", parents=[common])
-    eval_parser.add_argument("--split", choices=["train", "val", "test"], default="test")
+    eval_parser.add_argument("--split", choices=["train", "val", "test", "domain_holdout"], default="test")
     eval_parser.add_argument("--checkpoint", type=str, default=None)
 
     export_parser = subparsers.add_parser("export", help="Export a portable bundle from a checkpoint", parents=[common])
     export_parser.add_argument("--checkpoint", type=str, default=None)
+    report_parser = subparsers.add_parser("report-pack", help="Generate a paper-facing research pack", parents=[common])
+    report_parser.add_argument("--report-dir", type=str, default=None)
+    report_parser.add_argument("--predictions-dir", type=str, default=None)
+    report_parser.add_argument("--output", type=str, default=None)
     return parser
 
 
 def _normalize_argv(argv: list[str] | None) -> list[str] | None:
     if argv is None:
         return None
-    commands = {"train", "eval", "export"}
+    commands = {"train", "eval", "export", "report-pack"}
     for index, token in enumerate(argv):
         if token in commands:
             if index == 0:
@@ -288,9 +317,11 @@ def main(argv: list[str] | None = None) -> int:
         return run_eval(args)
     if args.command == "export":
         return run_export(args)
+    if args.command == "report-pack":
+        return run_report_pack(args)
     parser.error(f"Unknown command: {args.command}")
     return 2
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    main(sys.argv[1:])

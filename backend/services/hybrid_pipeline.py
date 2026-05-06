@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from models.tables import AbstainedPrediction, EvidenceSpan, NovelCandidate, Prediction
+from models.tables import AbstainedPrediction, EvidenceSpan, GraphContradictionCase, NovelCandidate, Prediction
 from services.aspect_quality import apply_domain_gate_to_implicit_predictions
 from services.hybrid_merge import merge_predictions
 from services.review_pipeline import run_single_review_pipeline, run_single_review_pipeline_for_existing_review, split_selective_states
@@ -40,6 +40,10 @@ def _prediction_row_to_dict(pred) -> PredictionLike:
         "evidence_spans": spans,
         "rationale": getattr(pred, "rationale", "") or "",
         "source": getattr(pred, "source", None) or "explicit",
+        "contradiction_score": getattr(pred, "contradiction_score", None),
+        "contradiction_types": list(getattr(pred, "contradiction_types", []) or []),
+        "quarantine_status": getattr(pred, "quarantine_status", None),
+        "graph_support_score": getattr(pred, "graph_support_score", None),
     }
 
 
@@ -70,6 +74,10 @@ def _persist_final_predictions(db: Session, review_obj, final_predictions: List[
             confidence=float(row.get("confidence", 0.0)),
             rationale=str(row.get("rationale") or "").strip() or None,
             source=str(row.get("source") or "").strip().lower() or None,
+            contradiction_score=row.get("contradiction_score"),
+            contradiction_types=list(row.get("contradiction_types") or []),
+            quarantine_status=row.get("quarantine_status"),
+            graph_support_score=row.get("graph_support_score"),
         )
         prediction.review = review_obj
 
@@ -90,6 +98,7 @@ def _persist_final_predictions(db: Session, review_obj, final_predictions: List[
 def _persist_selective_states(db: Session, review_obj, selective_states: Dict[str, Any]) -> None:
     db.execute(delete(AbstainedPrediction).where(AbstainedPrediction.review_id == review_obj.id))
     db.execute(delete(NovelCandidate).where(NovelCandidate.review_id == review_obj.id))
+    db.execute(delete(GraphContradictionCase).where(GraphContradictionCase.review_id == review_obj.id))
 
     for row in selective_states.get("abstained_predictions", []) or []:
         db.add(
@@ -98,6 +107,10 @@ def _persist_selective_states(db: Session, review_obj, selective_states: Dict[st
                 reason=str(row.get("reason") or "low_selective_confidence"),
                 confidence=float(row.get("confidence", 0.0)),
                 ambiguity_score=float(row.get("ambiguity_score", 0.0)),
+                contradiction_score=row.get("contradiction_score"),
+                contradiction_types=list(row.get("contradiction_types") or []),
+                quarantine_status=row.get("quarantine_status"),
+                graph_support_score=row.get("graph_support_score"),
             )
         )
 
@@ -122,6 +135,38 @@ def _persist_selective_states(db: Session, review_obj, selective_states: Dict[st
                 evidence=str(first_span.get("snippet") or "") or None,
                 evidence_start=int(first_span.get("start_char")) if first_span.get("start_char") is not None else None,
                 evidence_end=int(first_span.get("end_char")) if first_span.get("end_char") is not None else None,
+                contradiction_score=row.get("contradiction_score"),
+                contradiction_types=list(row.get("contradiction_types") or []),
+                quarantine_status=row.get("quarantine_status"),
+            )
+        )
+
+    contradiction_sources = []
+    contradiction_sources.extend(selective_states.get("abstained_predictions", []) or [])
+    contradiction_sources.extend(selective_states.get("novel_candidates", []) or [])
+    for row in selective_states.get("accepted_predictions", []) or []:
+        if float(row.get("contradiction_score", 0.0) or 0.0) >= 0.45 or str(row.get("quarantine_status") or "").strip().lower() in {"watch", "quarantined"}:
+            contradiction_sources.append(row)
+
+    for row in contradiction_sources:
+        aspect = str(row.get("aspect") or row.get("aspect_raw") or row.get("aspect_cluster") or "").strip()
+        if not aspect:
+            continue
+        score = float(row.get("contradiction_score", 0.0) or 0.0)
+        if score <= 0.0 and not row.get("quarantine_status"):
+            continue
+        db.add(
+            GraphContradictionCase(
+                review_id=review_obj.id,
+                prediction_id=None,
+                aspect_canonical=aspect,
+                sentiment=row.get("sentiment"),
+                evidence_text=row.get("evidence_text") or row.get("evidence"),
+                contradiction_score=score,
+                contradiction_types=list(row.get("contradiction_types") or []),
+                graph_neighbor_evidence=[str(x) for x in row.get("evidence_spans", []) or [] if isinstance(x, dict) and x.get("snippet")],
+                action_taken="quarantine" if str(row.get("quarantine_status") or "").strip().lower() == "quarantined" else "review",
+                status=str(row.get("quarantine_status") or "watch"),
             )
         )
 

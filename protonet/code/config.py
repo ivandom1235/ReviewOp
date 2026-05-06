@@ -87,6 +87,11 @@ class ProtonetConfig:
     selective_delta: float = 0.0
     abstain_threshold: float = 0.01
     multi_label_margin: float = 0.10
+    use_evidence_support: bool = True
+    use_verifier_support: bool = True
+    use_memory_support: bool = True
+    use_ambiguity_penalty: bool = True
+    use_novelty_risk: bool = True
     sentiment_pipeline: str = "both"
     novelty_threshold: float = 0.70
     novelty_known_threshold: float = 0.70

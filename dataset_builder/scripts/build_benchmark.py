@@ -52,6 +52,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--symptom-store", type=Path, default=None, help="Path to learned symptom patterns JSON")
     parser.add_argument("--aspect-memory", type=Path, default=None, help="Path to aspect memory JSON")
+    parser.add_argument("--domain-holdout-domain", default=None, help="Optional domain to hold out for the released domain-holdout split")
     parser.add_argument("--provisional-policy", choices=["loose", "strict", "memory_only"], default="strict")
     parser.add_argument("--evidence-window-tokens", type=int, default=8)
     parser.add_argument("--aspect-memory-auto-promote", action="store_true")
@@ -107,6 +108,7 @@ def build_config_from_args(args: argparse.Namespace, resolved_input_paths: list[
         evidence_window_tokens=args.evidence_window_tokens,
         aspect_memory_auto_promote=args.aspect_memory_auto_promote,
         aspect_memory_path=str(args.aspect_memory) if args.aspect_memory else None,
+        domain_holdout_domain=str(args.domain_holdout_domain).strip() if args.domain_holdout_domain else None,
         max_workers=args.max_workers,
     )
     validate_config(cfg)

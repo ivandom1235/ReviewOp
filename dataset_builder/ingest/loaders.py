@@ -41,10 +41,16 @@ def _domain_from_source(source_name: str) -> str:
 def _raw_review_from_mapping(row: dict[str, Any], source_name: str) -> RawReview:
     text_field = infer_text_field(row)
     text = normalize_text(str(row[text_field]))
+    
+    domain = normalize_domain(row.get("domain"))
+    if domain == "unknown" and _is_absa_row(row):
+        domain = _domain_from_source(source_name)
+    
     normalized = {
         **row,
         "text": text,
         "source_name": source_name,
+        "domain": domain,
     }
     if _is_absa_row(row):
         normalized.setdefault("group_id", str(row.get("id") or "").strip())
@@ -55,9 +61,6 @@ def _raw_review_from_mapping(row: dict[str, Any], source_name: str) -> RawReview
                 for part in (source_name, row.get("id"), row.get("aspect"), row.get("from"), row.get("to"))
             ),
         )
-    domain = normalize_domain(row.get("domain"))
-    if domain == "unknown" and _is_absa_row(row):
-        domain = _domain_from_source(source_name)
     return RawReview(
         review_id=stable_review_id(normalized),
         group_id=stable_group_id(normalized),

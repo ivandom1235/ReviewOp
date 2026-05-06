@@ -1,21 +1,24 @@
 from __future__ import annotations
 import abc
 from abc import ABC, abstractmethod
-from typing import Sequence
+from typing import Sequence, Any
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+import re
+import logging
+
 from ..schemas.benchmark_row import BenchmarkRow
 from ..schemas.interpretation import Interpretation
 from ..config import BuilderConfig
 from ..explicit.phrase_rules import extract_noun_chunks, extract_dependency_phrases
 from ..explicit.phrase_cleaning import is_noisy_label
 from ..implicit.symptom_store import SymptomPatternStore
-from ..implicit.latent_families import score_family_match
+from ..implicit.latent_families import score_family_match, score_all_families
 from ..canonical.domain_registry import DomainRegistry
 from ..canonical.domain_maps import lookup_domain_map
 from ..benchmark.novelty import detect_novelty, aggregate_row_novelty
-import logging
+from ..benchmark.ambiguity import compute_ambiguity_score
 
 logger = logging.getLogger(__name__)
 
@@ -89,42 +92,56 @@ def _canonical_cue_aliases(canonical: str) -> list[str]:
     return aliases.get(key, [])
 
 def _narrow_final_interpretation_evidence(row_text: str, row_id: str, interp: Interpretation, window_tokens: int = 8) -> Interpretation:
-    if interp.evidence_scope not in {"sentence", "full_review"} and str(interp.evidence_text or "").strip() != str(row_text or "").strip():
+    # If already narrow, don't touch
+    if interp.evidence_scope not in {"sentence", "full_review", "unknown"}:
+        if str(interp.evidence_text or "").strip() != str(row_text or "").strip():
+            return interp
+
+    row_text = str(row_text or "").strip()
+    if not row_text:
         return interp
+
+    # Step 1: Try exact cues
     cues = []
+    if interp.implicit_trigger:
+        cues.append(interp.implicit_trigger)
     cues.extend(list(interp.matched_terms or ()))
     cues.extend(list(interp.modifier_terms or ()))
     cues.append(str(interp.aspect_raw or "").replace("_", " "))
     cues.extend(_canonical_cue_aliases(interp.aspect_canonical))
-    cues.append(str(interp.latent_family or "").replace("_", " "))
-    cues.extend(str(interp.latent_family or "").replace("_", " ").split())
-    cues.extend(str(interp.aspect_canonical or "").replace("_", " ").split())
+    
     seen = set()
     for cue in [c.strip() for c in cues if str(c).strip()]:
         low = cue.lower()
-        if low in seen:
+        if low in seen or len(low) < 3:
             continue
         seen.add(low)
         if low in row_text.lower():
             txt, span = _extract_phrase_window(row_text, cue, window_tokens)
-            if txt and txt.strip() and txt.strip().lower() != row_text.strip().lower():
+            if txt and txt.strip() and txt.strip().lower() != row_text.lower():
                 return replace(interp, evidence_text=txt, evidence_span=span, evidence_scope="phrase_window")
-    hint = _span_hint_from_review_id(row_id)
-    if hint:
-        hint_term, s, e = hint
-        compat_cues = [str(c).strip().lower() for c in cues if str(c).strip()]
-        compat = any(hint_term == c or hint_term in c or c in hint_term for c in compat_cues)
-        if compat and 0 <= s < e <= len(row_text):
-            txt, span = _extract_phrase_window(row_text, row_text[s:e], window_tokens)
-            if txt and txt.strip() and txt.strip().lower() != row_text.strip().lower():
-                return replace(interp, evidence_text=txt, evidence_span=span, evidence_scope="phrase_window")
-    opinion_cues = ("good", "great", "excellent", "poor", "bad", "slow", "fast", "friendly", "rude")
-    for cue in opinion_cues:
-        if cue in row_text.lower():
-            txt, span = _extract_phrase_window(row_text, cue, window_tokens)
-            if txt and txt.strip() and txt.strip().lower() != row_text.strip().lower():
-                return replace(interp, evidence_text=txt, evidence_span=span, evidence_scope="phrase_window")
-    return interp
+
+    # Step 2: Try clause-level splitting
+    clauses = re.split(r'[,;]|\b(?:but|and|although|because|however|while|whereas)\b', row_text, flags=re.IGNORECASE)
+    for clause in [c.strip() for c in clauses if len(c.strip()) > 10]:
+        for cue in seen:
+            if cue in clause.lower():
+                start = row_text.lower().find(clause.lower())
+                if start >= 0:
+                    return replace(interp, evidence_text=clause, evidence_span=[start, start + len(clause)], evidence_scope="clause")
+
+    # Step 3: Try sentence-level splitting
+    sentences = re.split(r'(?<=[.!?])\s+', row_text)
+    if len(sentences) > 1:
+        for sent in [s.strip() for s in sentences if s.strip()]:
+            for cue in seen:
+                if cue in sent.lower():
+                    start = row_text.lower().find(sent.lower())
+                    if start >= 0:
+                        return replace(interp, evidence_text=sent, evidence_span=[start, start + len(sent)], evidence_scope="sentence")
+
+    # Step 4: Fallback to full review
+    return replace(interp, evidence_text=row_text, evidence_span=[0, len(row_text)], evidence_scope="full_review")
 
 class PipelineStage(ABC):
     @abstractmethod
@@ -137,7 +154,6 @@ def _extract_for_row(row: BenchmarkRow, domain_mode: str = "full", provisional_p
     chunks = extract_noun_chunks(row.review_text)
     phrases = extract_dependency_phrases(row.review_text)
     
-    from ..canonical.canonicalizer import canonicalize_interpretation
     new_interps = []
     for c in chunks:
         temp = Interpretation(
@@ -154,9 +170,11 @@ def _extract_for_row(row: BenchmarkRow, domain_mode: str = "full", provisional_p
             aspect_anchor=c["aspect_anchor"],
             modifier_terms=tuple(c["modifier_terms"]),
             anchor_source=c["anchor_source"],
-            evidence_scope="exact_phrase"
+            evidence_scope="exact_phrase",
+            mapping_source="unmapped",
+            mapping_scope="unmapped_internal"
         )
-        new_interps.append(canonicalize_interpretation(temp, domain=row.domain, domain_mode=domain_mode, provisional_policy=provisional_policy))
+        new_interps.append(temp)
         
     for p in phrases:
         temp = Interpretation(
@@ -173,13 +191,19 @@ def _extract_for_row(row: BenchmarkRow, domain_mode: str = "full", provisional_p
             aspect_anchor=p["aspect_anchor"],
             modifier_terms=tuple(p["modifier_terms"]),
             anchor_source=p["anchor_source"],
-            evidence_scope="exact_phrase"
+            evidence_scope="exact_phrase",
+            mapping_source="unmapped",
+            mapping_scope="unmapped_internal"
         )
-        new_interps.append(canonicalize_interpretation(temp, domain=row.domain, domain_mode=domain_mode, provisional_policy=provisional_policy))
+        new_interps.append(temp)
+    
+    trace = dict(row.candidate_trace)
+    trace["after_extraction"] = [i.aspect_raw for i in new_interps]
     
     return replace(
         row,
-        explicit_interpretations=tuple(new_interps)
+        explicit_interpretations=tuple(new_interps),
+        candidate_trace=trace
     )
 
 class ExtractionStage(PipelineStage):
@@ -191,32 +215,30 @@ class ExtractionStage(PipelineStage):
         GLOBAL_STATS.reset_stage(len(rows))
         
         max_workers = getattr(cfg, "max_workers", 4)
-        processed = []
+        processed = [None] * len(rows)
         cfg.__dict__.setdefault("_anchor_modifier_debug", {})
         cfg.__dict__["_anchor_modifier_debug"]["after_extraction_candidates_with_modifiers"] = 0
         try:
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                from concurrent.futures import as_completed
-                futures = [executor.submit(_extract_for_row, r, cfg.domain_mode, cfg.provisional_policy) for r in rows]
-                for future in as_completed(futures):
+                futures = [(idx, executor.submit(_extract_for_row, r, cfg.domain_mode, cfg.provisional_policy)) for idx, r in enumerate(rows)]
+                for idx, future in futures:
                     row = future.result()
                     cfg.__dict__["_anchor_modifier_debug"]["after_extraction_candidates_with_modifiers"] += sum(1 for i in row.explicit_interpretations if tuple(getattr(i, "modifier_terms", ()) or ()))
-                    processed.append(row)
+                    processed[idx] = row
                     GLOBAL_STATS.record_row_processed()
         except PermissionError:
-            for r in rows:
+            for idx, r in enumerate(rows):
                 row = _extract_for_row(r, cfg.domain_mode, cfg.provisional_policy)
                 cfg.__dict__["_anchor_modifier_debug"]["after_extraction_candidates_with_modifiers"] += sum(1 for i in row.explicit_interpretations if tuple(getattr(i, "modifier_terms", ()) or ()))
-                processed.append(row)
+                processed[idx] = row
                 GLOBAL_STATS.record_row_processed()
-        return processed
+        return [p for p in processed if p is not None]
 
 class InferenceStage(PipelineStage):
     """Stage B: Implicit Inference (Learned Patterns + JSON Fallback)."""
     _store_cache: dict[str, SymptomPatternStore] = {}
 
     def _get_store(self, path: str | None, cfg: Any = None) -> SymptomPatternStore | None:
-        # Default fallback if no path provided
         if not path:
             default_path = Path("dataset_builder/config/symptom_stores/symptoms_v001.json")
             if default_path.exists():
@@ -242,31 +264,22 @@ class InferenceStage(PipelineStage):
         
         store = self._get_store(cfg.symptom_store_path, cfg=cfg)
         new_rows = []
-        from ..implicit.latent_families import score_all_families
         from ..canonical.canonicalizer import canonicalize_interpretation
         from ..canonical.aspect_memory import AspectMemory
         from ..evidence.sentence_selector import select_best_sentence
         memory = AspectMemory(
             cfg.aspect_memory_path,
             auto_promote=cfg.aspect_memory_auto_promote,
-            review_queue_min_support=cfg.aspect_memory_review_queue_min_support,
-            review_queue_min_reviews=cfg.aspect_memory_review_queue_min_reviews,
-            review_queue_min_surface_forms=cfg.aspect_memory_review_queue_min_surface_forms,
         ) if cfg.aspect_memory_path else None
         
         for row in rows:
             try:
-                logger.debug(f"Processing row {row.review_id}, text='{row.review_text[:50]}...', domain='{row.domain}'")
                 implicits = []
-                matched_any_learned = False
                 seen_canonicals = set()
                 
-                # 1. Learned Detection
                 if store and cfg.domain_mode in {"generic_plus_learned", "full"}:
                     matches = store.match(row.review_text, domain=row.domain)
-                    logger.debug(f"Store found {len(matches)} matches for {row.review_id}")
                     for match in matches:
-                        matched_any_learned = True
                         family_score = score_family_match(match.matched_pattern, domain=row.domain)
                         latent_family = match.latent_family or family_score.latent_family
                         
@@ -288,128 +301,94 @@ class InferenceStage(PipelineStage):
                         )
                         
                         canonicalized = canonicalize_interpretation(temp_interp, domain=row.domain, domain_mode=cfg.domain_mode, provisional_policy=cfg.provisional_policy)
-                        if memory:
-                            mem_matches = memory.match_promoted(row.review_text)
-                            for mem in mem_matches:
-                                if mem.aspect_raw.lower() in match.matched_text.lower() or match.matched_text.lower() in mem.aspect_raw.lower():
-                                    canonical = canonicalized.aspect_canonical
-                                    resolution = "symptom_store_preferred"
-                                    mem_conf = float(getattr(mem, "confidence", 0.0) or 0.0)
-                                    if (
-                                        mem.validation_status == "manual_validated"
-                                        and mem.aspect_canonical
-                                        and mem.aspect_canonical != canonicalized.aspect_canonical
-                                        and mem_conf >= float(match.confidence or 0.0)
-                                    ):
-                                        canonical = mem.aspect_canonical
-                                        resolution = "manual_validated_aspect_memory_preferred"
-                                        cfg.__dict__.setdefault("_aspect_memory_metrics", {}).setdefault("promoted_matches_used", 0)
-                                        cfg.__dict__["_aspect_memory_metrics"]["promoted_matches_used"] += 1
-                                    canonicalized = replace(
-                                        canonicalized,
-                                        aspect_canonical=canonical,
-                                        mapping_scope="learned_store",
-                                        mapping_layers=("symptom_store", "aspect_memory"),
-                                        conflict_resolution=resolution,
-                                    )
                         implicits.append(canonicalized)
                         seen_canonicals.add(canonicalized.aspect_canonical)
                 
-                # 2. JSON Fallback Detection (Broad Keyword Matching)
-                # 2.1 AspectMemory promoted matching
                 if memory and cfg.domain_mode in {"generic_plus_learned", "full"}:
                     memory_matches = memory.match_promoted(row.review_text)
                     for mem in memory_matches:
-                        evidence_text = mem.aspect_raw
-                        start = row.review_text.lower().find(mem.aspect_raw.lower())
-                        end = start + len(mem.aspect_raw) if start >= 0 else -1
+                        matched_pattern = mem.trigger_patterns[0] if mem.trigger_patterns else mem.aspect_raw
+                        aspect_canonical = mem.suggested_aspect or mem.aspect_raw.lower().replace(" ", "_")
+                        
+                        # Locate the matched pattern in the text for evidence span
+                        start = row.review_text.lower().find(matched_pattern.lower())
+                        end = start + len(matched_pattern) if start >= 0 else -1
+                        
                         temp_interp = Interpretation(
                             aspect_raw=mem.aspect_raw,
                             latent_family="unknown",
-                            aspect_canonical=mem.aspect_canonical or "unknown",
+                            aspect_canonical=aspect_canonical,
                             label_type="implicit",
                             sentiment="unknown",
-                            evidence_text=evidence_text if start >= 0 else row.review_text,
+                            evidence_text=matched_pattern if start >= 0 else row.review_text,
                             evidence_span=[start, end] if start >= 0 else [0, len(row.review_text)],
                             source="aspect_memory",
                             support_type="contextual",
                             source_type="implicit_learned",
-                            matched_pattern=mem.aspect_raw,
-                            pattern_id=f"aspect_memory:{mem.aspect_raw.lower().replace(' ', '_')}",
+                            matched_pattern=matched_pattern,
+                            pattern_id=f"aspect_memory:{mem.cluster_id}",
                             evidence_scope="exact_phrase" if start >= 0 else "full_review",
-                            mapping_scope="learned_store",
-                            mapping_layers=("aspect_memory",),
                         )
                         canonicalized = canonicalize_interpretation(temp_interp, domain=row.domain, domain_mode=cfg.domain_mode, provisional_policy=cfg.provisional_policy)
-                        if canonicalized.aspect_canonical not in seen_canonicals:
+                        
+                        # Conflict Resolution (Phase 2): Check for span overlap or same canonical
+                        conflict_idx = -1
+                        for i, existing in enumerate(implicits):
+                            # Same canonical OR overlapping span for same source type
+                            if existing.aspect_canonical == canonicalized.aspect_canonical:
+                                conflict_idx = i
+                                break
+                            
+                            e_start, e_end = existing.evidence_span
+                            c_start, c_end = canonicalized.evidence_span
+                            if not (c_end <= e_start or c_start >= e_end):
+                                # Overlap!
+                                conflict_idx = i
+                                break
+
+                        if conflict_idx == -1:
                             implicits.append(canonicalized)
                             seen_canonicals.add(canonicalized.aspect_canonical)
+                        else:
+                            existing = implicits[conflict_idx]
+                            updated_layers = tuple(sorted(set(existing.mapping_layers) | {"aspect_memory"}))
+                            
+                            # manual_validated memory ALWAYS wins
+                            if mem.validation_status == "manual_validated":
+                                implicits[conflict_idx] = replace(canonicalized,
+                                    mapping_layers=updated_layers,
+                                    conflict_resolution="manual_validated_aspect_memory_preferred"
+                                )
+                            else:
+                                # Symptom store usually wins unless memory is manual
+                                implicits[conflict_idx] = replace(existing, 
+                                    mapping_layers=updated_layers,
+                                    conflict_resolution="symptom_store_preferred" if existing.source == "symptom_store" else "memory_preferred"
+                                )
 
-                # 2.2 JSON Fallback Detection (Broad Keyword Matching)
                 json_scores = score_all_families(row.review_text, domain=row.domain)
                 for score in json_scores:
-                    cue_candidates = []
-                    if score.matched_terms:
-                        cue_candidates.extend(list(score.matched_terms))
-                    cue_candidates.append(score.latent_family.replace("_", " "))
+                    cue_candidates = [*(list(score.matched_terms or [])), score.latent_family.replace("_", " ")]
                     cue = next((c for c in cue_candidates if c and c.lower() in row.review_text.lower()), score.latent_family)
                     sentence = select_best_sentence(row.review_text, cue)
                     sent_span = _find_sentence_span(row.review_text, sentence)
-                    evidence_scope = "sentence"
-                    evidence_text = sentence
-                    evidence_span = [sent_span[0], sent_span[1]]
-                    if sent_span == (-1, -1) and score.matched_terms:
-                        token = score.matched_terms[0].lower()
-                        start = row.review_text.lower().find(token)
-                        if start >= 0:
-                            end = min(len(row.review_text), start + max(len(token), 32))
-                            evidence_text = row.review_text[start:end]
-                            evidence_span = [start, end]
-                            evidence_scope = "phrase_window"
-                        else:
-                            evidence_text = row.review_text
-                            evidence_span = [0, len(row.review_text)]
-                            evidence_scope = "full_review"
-                    elif sent_span == (-1, -1):
-                        evidence_text = row.review_text
-                        evidence_span = [0, len(row.review_text)]
-                        evidence_scope = "full_review"
-
+                    
                     temp_interp = Interpretation(
                         aspect_raw=score.latent_family,
                         latent_family=score.latent_family,
                         aspect_canonical="unknown",
                         label_type="implicit",
                         sentiment="unknown",
-                        evidence_text=evidence_text,
-                        evidence_span=evidence_span,
+                        evidence_text=sentence if sent_span != (-1, -1) else row.review_text,
+                        evidence_span=[sent_span[0], sent_span[1]] if sent_span != (-1, -1) else [0, len(row.review_text)],
                         source="latent_family_matcher",
                         support_type="contextual",
                         source_type="implicit_json",
-                        evidence_scope=evidence_scope,
+                        evidence_scope="sentence" if sent_span != (-1, -1) else "full_review",
                         matched_terms=tuple(score.matched_terms),
                         implicit_trigger="latent_family_match",
                     )
                     canonicalized = canonicalize_interpretation(temp_interp, domain=row.domain, domain_mode=cfg.domain_mode, provisional_policy=cfg.provisional_policy)
-                    if canonicalized.evidence_scope in {"sentence", "full_review"}:
-                        post_cues = [
-                            *(list(getattr(canonicalized, "matched_terms", ()) or [])),
-                            str(canonicalized.aspect_raw or "").replace("_", " "),
-                            str(canonicalized.aspect_canonical or "").replace("_", " "),
-                            str(canonicalized.latent_family or "").replace("_", " "),
-                        ]
-                        for pcue in post_cues:
-                            if pcue and pcue.lower() in row.review_text.lower():
-                                win_text, win_span = _extract_phrase_window(row.review_text, pcue, cfg.evidence_window_tokens)
-                                if win_text and win_span != [0, len(row.review_text)]:
-                                    canonicalized = replace(
-                                        canonicalized,
-                                        evidence_text=win_text,
-                                        evidence_span=win_span,
-                                        evidence_scope="phrase_window",
-                                    )
-                                    break
-                    
                     if canonicalized.aspect_canonical not in seen_canonicals:
                         implicits.append(canonicalized)
                         seen_canonicals.add(canonicalized.aspect_canonical)
@@ -418,7 +397,6 @@ class InferenceStage(PipelineStage):
                 new_rows.append(row)
             finally:
                 GLOBAL_STATS.record_row_processed()
-            
         return new_rows
 
 class EvidenceStage(PipelineStage):
@@ -430,7 +408,7 @@ class EvidenceStage(PipelineStage):
         for row in rows:
             new_gold = []
             for i in row.gold_interpretations:
-                if not i.evidence_text or i.evidence_span == [-1, -1] or i.evidence_span == (0, 0) or i.evidence_span == [0, 0]:
+                if not i.evidence_text or i.evidence_span == [0, len(row.review_text)]:
                     sentence = select_best_sentence(row.review_text, i.aspect_raw)
                     span = extract_span_from_sentence(row.review_text, sentence)
                     i = replace(i, evidence_text=sentence, evidence_span=tuple(span), evidence_scope="sentence")
@@ -447,54 +425,32 @@ class PostVerificationEvidenceStage(PipelineStage):
         for row in rows:
             new_gold = []
             for i in row.gold_interpretations:
-                # Only ground if it's from the verifier or has missing span
                 if i.source == "llm_verifier" or i.evidence_span == [0, len(row.review_text)]:
                     sentence = select_best_sentence(row.review_text, i.evidence_text or i.aspect_raw)
                     span = extract_span_from_sentence(row.review_text, sentence)
-                    if span == [-1, -1]:
-                        # If we can't ground it, drop it (as per design)
-                        continue
-                    i = replace(i, evidence_text=sentence, evidence_span=tuple(span), evidence_scope="sentence")
+                    if span != [-1, -1]:
+                        i = replace(i, evidence_text=sentence, evidence_span=tuple(span), evidence_scope="sentence")
                 new_gold.append(i)
             new_rows.append(replace(row, gold_interpretations=tuple(new_gold)))
         return new_rows
 
 class VerificationStage(PipelineStage):
-    """Stage D: LLM-based Verification (Keep/Drop/Merge)."""
+    """Stage D: LLM-based Verification."""
     def process(self, rows: list[BenchmarkRow], cfg: BuilderConfig) -> list[BenchmarkRow]:
         from ..verify.llm_verifier import LLMVerifier
-        
-        if cfg.llm_provider == "none":
-            new_rows = []
-            for row in rows:
-                filtered_gold = []
-                for i in row.gold_interpretations:
-                    if is_noisy_label(i.aspect_raw):
-                        logger.info(f"Verification {row.review_id} DROPPING noisy label: {i.aspect_raw}")
-                        continue
-                    filtered_gold.append(i)
-                new_rows.append(replace(row, gold_interpretations=tuple(filtered_gold)))
-            return new_rows
-
         from .telemetry import GLOBAL_STATS
         GLOBAL_STATS.reset_stage(len(rows))
         
+        if cfg.llm_provider == "none":
+            return rows
+            
         verifier = LLMVerifier(cfg)
-
         def process_row(row: BenchmarkRow) -> BenchmarkRow:
             try:
-                # First pass: deterministic noisy filter
-                filtered_gold = [i for i in row.gold_interpretations if not is_noisy_label(i.aspect_raw)]
-                if not filtered_gold:
-                    return replace(row, gold_interpretations=tuple())
-                
-                try:
-                    v_row = verifier.verify_row(replace(row, gold_interpretations=tuple(filtered_gold)))
-                    # Second pass: ensure NO noisy labels survive
-                    final_gold = [i for i in v_row.gold_interpretations if not is_noisy_label(i.aspect_raw)]
-                    return replace(v_row, gold_interpretations=tuple(final_gold))
-                except Exception:
-                    return replace(row, gold_interpretations=tuple(filtered_gold))
+                v_row = verifier.verify_row(row)
+                return v_row
+            except Exception:
+                return row
             finally:
                 GLOBAL_STATS.record_row_processed()
 
@@ -511,11 +467,11 @@ class FusionStage(PipelineStage):
         for row in rows:
             merged = merge_explicit_implicit(list(row.explicit_interpretations), list(row.implicit_interpretations))
             cfg.__dict__["_anchor_modifier_debug"]["after_fusion_candidates_with_modifiers"] += sum(1 for i in merged if tuple(getattr(i, "modifier_terms", ()) or ()))
-            logger.debug(f"Fusion {row.review_id}: explicit={len(row.explicit_interpretations)}, implicit={len(row.implicit_interpretations)} -> merged={len(merged)}")
-            for i in merged:
-                if i.label_type == "implicit":
-                    logger.debug(f"  - Merged implicit: {i.aspect_canonical} ({i.aspect_raw})")
-            new_rows.append(replace(row, gold_interpretations=tuple(merged)))
+            
+            trace = dict(row.candidate_trace)
+            trace["after_fusion"] = [i.aspect_raw for i in merged]
+            
+            new_rows.append(replace(row, gold_interpretations=tuple(merged), candidate_trace=trace))
         return new_rows
 
 class CanonicalizationStage(PipelineStage):
@@ -528,47 +484,48 @@ class CanonicalizationStage(PipelineStage):
         memory = AspectMemory(
             cfg.aspect_memory_path,
             auto_promote=cfg.aspect_memory_auto_promote,
-            review_queue_min_support=cfg.aspect_memory_review_queue_min_support,
-            review_queue_min_reviews=cfg.aspect_memory_review_queue_min_reviews,
-            review_queue_min_surface_forms=cfg.aspect_memory_review_queue_min_surface_forms,
         ) if cfg.aspect_memory_path else None
         
         new_rows = []
         cfg.__dict__.setdefault("_anchor_modifier_debug", {})
         cfg.__dict__["_anchor_modifier_debug"]["after_canonicalization"] = 0
-        cfg.__dict__["_anchor_modifier_debug"]["after_pruning"] = 0
         for row in rows:
-            # 1. Canonicalize
             canons = [canonicalize_interpretation(i, row.domain, domain_mode=cfg.domain_mode, provisional_policy=cfg.provisional_policy) for i in row.gold_interpretations]
             cfg.__dict__["_anchor_modifier_debug"]["after_canonicalization"] += sum(1 for i in canons if i.mapping_source == "anchor_modifier")
-            for i in canons:
-                if i.mapping_source == "memory_candidate":
-                    if memory:
-                        before = memory.get_entry(i.aspect_raw)
-                        memory.add_evidence(i.aspect_raw, row.review_id, i.evidence_text or row.review_text, row.domain)
-                        cfg.__dict__.setdefault("_aspect_memory_metrics", {})
-                        if before is None:
-                            cfg.__dict__["_aspect_memory_metrics"]["candidates_added"] = cfg.__dict__["_aspect_memory_metrics"].get("candidates_added", 0) + 1
-                        else:
-                            cfg.__dict__["_aspect_memory_metrics"]["candidates_updated"] = cfg.__dict__["_aspect_memory_metrics"].get("candidates_updated", 0) + 1
-                        cfg.__dict__["_aspect_memory_metrics"]["memory_candidate_count"] = cfg.__dict__["_aspect_memory_metrics"].get("memory_candidate_count", 0) + 1
-                    else:
-                        cfg.__dict__.setdefault("_rejection_reason_counts", {})
-                        cfg.__dict__["_rejection_reason_counts"]["memory_candidate_no_store"] = cfg.__dict__["_rejection_reason_counts"].get("memory_candidate_no_store", 0) + 1
-            dropped_noise = sum(1 for i in canons if i.mapping_source == "dropped_noise")
-            if dropped_noise:
-                cfg.__dict__.setdefault("_rejection_reason_counts", {})
-                cfg.__dict__["_rejection_reason_counts"]["all_candidates_noisy"] = (
-                    cfg.__dict__["_rejection_reason_counts"].get("all_candidates_noisy", 0) + dropped_noise
-                )
-            canons = [i for i in canons if i.mapping_source not in {"dropped_noise", "memory_candidate"}]
-            # 2. Collapse fragments
+            
+            open_world_candidates = [i for i in canons if i.mapping_source in {"open_world", "open_world_candidate", "provisional"}]
+            for i in open_world_candidates:
+                if memory:
+                    memory.add_evidence(
+                        aspect_raw=i.aspect_raw, 
+                        review_id=row.review_id, 
+                        evidence_text=i.evidence_text or row.review_text, 
+                        domain=row.domain,
+                        sentiment=i.sentiment,
+                        run_id=getattr(cfg, "run_id", None)
+                    )
+            
+            canons = [i for i in canons if i.mapping_source not in {"dropped_noise", "open_world_candidate"}]
             collapsed, _ = collapse_same_evidence_fragments(canons)
-            # 3. Prune broad labels
             final_gold, _ = prune_broad_labels(collapsed, row.domain)
+            
+            # Open-world rescue
+            if not final_gold and open_world_candidates:
+                from ..canonical.open_world_fallback import mark_provisional_canonical
+                for candidate in open_world_candidates:
+                    provisional = mark_provisional_canonical(candidate.aspect_raw)
+                    if provisional:
+                        final_gold = [replace(candidate, aspect_canonical=provisional, mapping_source="open_world_candidate")]
+                        break
+            
+            final_gold = [i for i in final_gold if str(getattr(i, "aspect_canonical", "") or "") != "unknown"]
             final_gold = [_narrow_final_interpretation_evidence(row.review_text, row.review_id, i, cfg.evidence_window_tokens) for i in final_gold]
-            cfg.__dict__["_anchor_modifier_debug"]["after_pruning"] += sum(1 for i in final_gold if i.mapping_source == "anchor_modifier")
-            new_rows.append(replace(row, gold_interpretations=tuple(final_gold)))
+            
+            trace = dict(row.candidate_trace)
+            trace["after_canonicalization"] = [i.aspect_raw for i in canons]
+            trace["after_pruning"] = [i.aspect_canonical for i in final_gold]
+            
+            new_rows.append(replace(row, gold_interpretations=tuple(final_gold), candidate_trace=trace))
         if memory:
             memory.save()
             memory.write_review_queue(Path(cfg.output_dir) / "aspect_memory_review_queue.json")
@@ -581,9 +538,7 @@ class SentimentStage(PipelineStage):
         from ..sentiment.classifier import SentimentClassifier
         from .telemetry import GLOBAL_STATS
         GLOBAL_STATS.reset_stage(len(rows))
-        
         classifier = SentimentClassifier(cfg)
-        
         def process_row(row: BenchmarkRow) -> BenchmarkRow:
             try:
                 if not row.gold_interpretations:
@@ -592,7 +547,6 @@ class SentimentStage(PipelineStage):
                 return replace(row, gold_interpretations=tuple(new_gold))
             finally:
                 GLOBAL_STATS.record_row_processed()
-
         with ThreadPoolExecutor(max_workers=cfg.max_workers) as executor:
             return list(executor.map(process_row, rows))
 
@@ -600,88 +554,58 @@ class BenchmarkStage(PipelineStage):
     """Stage H: Hardness Scoring and Finalization."""
     def process(self, rows: list[BenchmarkRow], cfg: BuilderConfig) -> list[BenchmarkRow]:
         from ..benchmark.hardness_scorer import score_row_hardness
-        from ..benchmark.novelty import detect_novelty
+        from ..benchmark.novelty import detect_novelty, aggregate_row_novelty
         from .telemetry import GLOBAL_STATS
         GLOBAL_STATS.reset_stage(len(rows))
         
         seen_texts = set()
         unique_rows = []
-        
-        from ..canonical.aspect_memory import AspectMemory
-        memory = AspectMemory(
-            cfg.aspect_memory_path,
-            auto_promote=cfg.aspect_memory_auto_promote,
-            review_queue_min_support=cfg.aspect_memory_review_queue_min_support,
-            review_queue_min_reviews=cfg.aspect_memory_review_queue_min_reviews,
-            review_queue_min_surface_forms=cfg.aspect_memory_review_queue_min_surface_forms,
-        ) if cfg.aspect_memory_path else None
-        cfg.__dict__.setdefault("_aspect_memory_metrics", {})
         cfg.__dict__.setdefault("_anchor_modifier_debug", {})
         cfg.__dict__["_anchor_modifier_debug"]["after_final"] = 0
+        
         for row in rows:
             try:
-                # 1. Dedupe by text
                 if row.review_text in seen_texts:
+                    GLOBAL_STATS.record_row_rejection("duplicate_text_dropped")
                     continue
                 seen_texts.add(row.review_text)
                 
-                # 2. Filter empty gold
                 if not row.gold_interpretations:
+                    GLOBAL_STATS.record_row_rejection("empty_gold_after_benchmark_filter")
+                    cfg.__dict__.setdefault("_rejected_rows_audit", []).append({
+                        "review_id": row.review_id,
+                        "domain": row.domain,
+                        "review_text": row.review_text,
+                        "stage": "canonicalization",
+                        "reason": "empty_gold_after_canonicalization",
+                        "candidate_trace": row.candidate_trace,
+                    })
                     continue
                     
-                # 3. Cap interpretations
                 final_gold = sorted(list(row.gold_interpretations), key=lambda i: i.canonical_confidence, reverse=True)[:8]
                 final_gold = [_narrow_final_interpretation_evidence(row.review_text, row.review_id, i, cfg.evidence_window_tokens) for i in final_gold]
                 cfg.__dict__["_anchor_modifier_debug"]["after_final"] += sum(1 for i in final_gold if i.mapping_source == "anchor_modifier")
                 
-                # 4. Calculate Ambiguity Score
-                sentiments = {i.sentiment for i in final_gold if i.sentiment != "unknown"}
-                ambiguity = min(1.0, (len(final_gold) / 10.0) + (0.3 if len(sentiments) > 1 else 0.0))
-                
-                # 5. Determine Novelty Status
                 domain_cfg = DomainRegistry.get_config(row.domain)
-                known_from_map = set(domain_cfg.get("domain_maps", {}).values())
-                known_from_families = set(domain_cfg.get("latent_families", {}).keys())
-                known_canonicals = known_from_map | known_from_families
+                known_canonicals = set(domain_cfg.get("domain_maps", {}).values()) | set(domain_cfg.get("latent_families", {}).keys())
 
                 scored_gold = []
                 for i in final_gold:
-                    # Open-World Learning: capture unmapped/provisional explicit aspects
-                    if i.mapping_source in ["unmapped", "provisional"] and i.label_type == "explicit" and memory:
-                        before_status = memory.get_entry(i.aspect_raw).status if memory.get_entry(i.aspect_raw) else None
-                        memory.add_evidence(i.aspect_raw, row.review_id, row.review_text, row.domain)
-                        cfg.__dict__["_aspect_memory_metrics"]["candidates_added"] = cfg.__dict__["_aspect_memory_metrics"].get("candidates_added", 0) + 1
-                        after = memory.get_entry(i.aspect_raw)
-                        if before_status != "promoted" and after and after.status == "promoted":
-                            cfg.__dict__["_aspect_memory_metrics"]["candidates_promoted_this_run"] = cfg.__dict__["_aspect_memory_metrics"].get("candidates_promoted_this_run", 0) + 1
-                        if after and after.status == "rejected":
-                            cfg.__dict__["_aspect_memory_metrics"]["rejected_candidates_this_run"] = cfg.__dict__["_aspect_memory_metrics"].get("rejected_candidates_this_run", 0) + 1
-
-                    novelty_status = detect_novelty(
-                        i.aspect_canonical, 
-                        known_canonicals,
-                        mapping_confidence=i.canonical_confidence or 0.0,
-                        mapping_source=i.mapping_source or "none"
-                    )
-                    i = replace(i, novelty_status=novelty_status)
-                    scored_gold.append(i)
+                    novelty_status = detect_novelty(i.aspect_canonical, known_canonicals, mapping_confidence=i.canonical_confidence or 0.0, mapping_source=i.mapping_source or "none")
+                    scored_gold.append(replace(i, novelty_status=novelty_status))
                 
                 row_novelty = aggregate_row_novelty(scored_gold)
+                ambiguity = compute_ambiguity_score(scored_gold)
+                h = score_row_hardness(replace(row, gold_interpretations=tuple(scored_gold), ambiguity_score=ambiguity, novelty_status=row_novelty))
                 
                 unique_rows.append(replace(row, 
                     gold_interpretations=tuple(scored_gold),
-                    hardness_tier=(h := score_row_hardness(replace(row, gold_interpretations=tuple(scored_gold)))),
+                    hardness_tier=h,
                     abstain_acceptable=(h in ["H2", "H3"]),
+                    abstain_reason_gold=("insufficient_aspect_evidence",) if h == "H3" else (("multi_possible_aspects",) if h == "H2" else tuple()),
                     novelty_status=row_novelty,
-                    ambiguity_score=ambiguity
+                    ambiguity_score=ambiguity,
                 ))
             finally:
                 GLOBAL_STATS.record_row_processed()
-            
-        if memory:
-            memory.save()
-            memory.write_review_queue(Path(cfg.output_dir) / "aspect_memory_review_queue.json")
-            memory.write_summary(Path(cfg.output_dir) / "aspect_memory_summary.json")
-            cfg.__dict__["_aspect_memory_metrics"]["promoted_entries_total"] = sum(1 for e in memory.entries.values() if e.status == "promoted")
-            cfg.__dict__["_aspect_memory_metrics"]["review_queue_count"] = sum(1 for e in memory.entries.values() if e.status == "review_queue")
         return unique_rows

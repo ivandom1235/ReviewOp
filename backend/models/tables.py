@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    JSON,
     Integer,
     String,
     Text,
@@ -52,6 +53,10 @@ class Review(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    graph_contradiction_cases: Mapped[list["GraphContradictionCase"]] = relationship(
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
 
 class Prediction(Base):
@@ -77,6 +82,10 @@ class Prediction(Base):
     quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     evidence_quality: Mapped[float | None] = mapped_column(Float, nullable=True)
     mapping_scope: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    contradiction_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    contradiction_types: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    quarantine_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    graph_support_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     review: Mapped["Review"] = relationship(back_populates="predictions")
     evidence_spans: Mapped[list["EvidenceSpan"]] = relationship(
@@ -107,6 +116,10 @@ class AbstainedPrediction(Base):
     reason: Mapped[str] = mapped_column(String(128), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     ambiguity_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    contradiction_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    contradiction_types: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    quarantine_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    graph_support_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     review: Mapped["Review"] = relationship(back_populates="abstained_predictions")
@@ -123,9 +136,31 @@ class NovelCandidate(Base):
     evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     evidence_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    contradiction_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    contradiction_types: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    quarantine_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     review: Mapped["Review"] = relationship(back_populates="novel_candidates")
+
+
+class GraphContradictionCase(Base):
+    __tablename__ = "graph_contradiction_cases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    review_id: Mapped[int] = mapped_column(ForeignKey("reviews.id"), nullable=False, index=True)
+    prediction_id: Mapped[int | None] = mapped_column(ForeignKey("predictions.id"), nullable=True, index=True)
+    aspect_canonical: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    sentiment: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contradiction_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    contradiction_types: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    graph_neighbor_evidence: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    action_taken: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    review: Mapped["Review"] = relationship(back_populates="graph_contradiction_cases")
 
 
 class RejectedAspectCandidate(Base):

@@ -62,3 +62,5 @@ tests/
 *.zip
 *.json
 *.db
+obsidian/*.md
+docs/

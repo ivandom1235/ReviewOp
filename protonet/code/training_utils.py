@@ -51,8 +51,8 @@ def build_offline_embedding_cache(model: ProtoNetModel, episodes_by_split: Dict[
     if model.encoder.trainable:
         return {"enabled": False, "reason": "encoder_trainable"}
     all_items: List[Dict[str, Any]] = []
-    for split in ("train", "val", "test"):
-        all_items.extend(collect_unique_items(episodes_by_split.get(split, [])))
+    for split, episodes in episodes_by_split.items():
+        all_items.extend(collect_unique_items(episodes))
     if not all_items:
         return {"enabled": False, "reason": "no_items"}
     model.eval()
@@ -62,7 +62,7 @@ def build_offline_embedding_cache(model: ProtoNetModel, episodes_by_split: Dict[
             _ = model.encode_items(all_items[idx : idx + batch_size])
     cache_dir = cfg.output_dir / "embedding_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    snapshot = {"enabled": True, "items": len(model.precomputed_embeddings), "splits": {split: len(episodes_by_split.get(split, [])) for split in ("train", "val", "test")}}
+    snapshot = {"enabled": True, "items": len(model.precomputed_embeddings), "splits": {split: len(episodes) for split, episodes in episodes_by_split.items()}}
     (cache_dir / "summary.json").write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
     return snapshot
 

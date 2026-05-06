@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Any
 from .spacy_pipeline import parse_review, load_spacy
+from .phrase_cleaning import is_noisy_label
 
 def extract_noun_chunks(text: str) -> list[dict[str, Any]]:
     """Extract noun chunks from text using spaCy."""
@@ -20,6 +21,8 @@ def extract_noun_chunks(text: str) -> list[dict[str, Any]]:
             if len(chunk) > 1:
                 start_char = chunk[1].idx
                 text_val = chunk[1:].text
+        if is_noisy_label(text_val):
+            continue
             
         chunks.append({
             "text": text_val.strip(),
@@ -45,6 +48,8 @@ def extract_dependency_phrases(text: str) -> list[dict[str, Any]]:
                     start = min(child.idx, token.idx)
                     end = max(child.idx + len(child.text), token.idx + len(token.text))
                     phrase_text = doc.text[start:end]
+                    if is_noisy_label(phrase_text):
+                        continue
                     phrases.append({
                         "text": phrase_text,
                         "span": (start, end),
@@ -89,6 +94,8 @@ def extract_dependency_phrases(text: str) -> list[dict[str, Any]]:
                         if head.pos_ == "VERB" and head.lemma_.lower() not in {"be"}:
                             extra_mods.append(head.lemma_.lower())
                         if extra_mods:
+                            if is_noisy_label(phrase_text):
+                                continue
                             phrases.append({
                                 "text": phrase_text,
                                 "span": (start, end),
@@ -105,6 +112,8 @@ def extract_dependency_phrases(text: str) -> list[dict[str, Any]]:
                     start = min(token.idx, child.idx)
                     end = max(token.idx + len(token.text), child.idx + len(child.text))
                     phrase_text = doc.text[start:end]
+                    if is_noisy_label(phrase_text):
+                        continue
                     phrases.append({
                         "text": phrase_text,
                         "span": (start, end),

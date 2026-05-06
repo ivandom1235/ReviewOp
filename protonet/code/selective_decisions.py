@@ -13,6 +13,78 @@ class SelectiveDecision:
     route_boundary: bool
 
 
+def decide_prediction_state(
+    *,
+    novelty_score: float,
+    selective_confidence: float,
+    evidence_support: float = 0.0,
+    verifier_support: float = 0.0,
+    memory_support: float = 0.0,
+    ambiguity_penalty: float = 0.0,
+    novelty_risk: float = 0.0,
+    abstain_threshold: float,
+    known_threshold: float,
+    novel_threshold: float,
+) -> dict[str, Any]:
+    combined_score = combine_routing_score(
+        prototype_similarity=float(selective_confidence),
+        evidence_support=float(evidence_support),
+        verifier_support=float(verifier_support),
+        memory_support=float(memory_support),
+        ambiguity_penalty=float(ambiguity_penalty),
+        novelty_risk=float(novelty_risk),
+    )
+    if novelty_score >= novel_threshold:
+        decision = "novel"
+        band = "novel"
+        reason = None
+    elif novelty_score > known_threshold:
+        decision = "abstain"
+        band = "boundary"
+        reason = "boundary_uncertain_novelty"
+    elif combined_score < abstain_threshold:
+        decision = "abstain"
+        band = "known"
+        reason = "low_selective_confidence"
+    else:
+        decision = "single_label"
+        band = "known"
+        reason = None
+    return {
+        "decision": decision,
+        "decision_band": band,
+        "abstain_reason": reason,
+        "route_novel": decision == "novel",
+        "route_boundary": decision == "abstain" and band == "boundary",
+        "selective_score": float(combined_score),
+        "novelty_score": float(novelty_score),
+        "evidence_support": float(evidence_support),
+        "ambiguity_penalty": float(ambiguity_penalty),
+        "verifier_support": float(verifier_support),
+        "memory_support": float(memory_support),
+    }
+
+
+def combine_routing_score(
+    *,
+    prototype_similarity: float,
+    evidence_support: float = 0.0,
+    verifier_support: float = 0.0,
+    ambiguity_penalty: float = 0.0,
+    memory_support: float = 0.0,
+    novelty_risk: float = 0.0,
+) -> float:
+    score = (
+        0.35 * float(prototype_similarity)
+        + 0.20 * float(evidence_support)
+        + 0.15 * float(verifier_support)
+        + 0.10 * float(memory_support)
+        - 0.10 * float(ambiguity_penalty)
+        - 0.10 * float(novelty_risk)
+    )
+    return max(0.0, min(1.0, score))
+
+
 def calibrate_novelty_thresholds(
     *,
     novelty_calibration: dict[str, Any] | None,
@@ -58,11 +130,18 @@ def decide_selective_routing(
     known_threshold: float,
     novel_threshold: float,
 ) -> SelectiveDecision:
-    if novelty_score >= novel_threshold:
-        return SelectiveDecision("novel", "novel", None, True, False)
-    if novelty_score > known_threshold:
-        return SelectiveDecision("abstain", "boundary", "boundary_uncertain_novelty", False, True)
-    if selective_confidence < abstain_threshold:
-        return SelectiveDecision("abstain", "known", "low_selective_confidence", False, False)
-    return SelectiveDecision("single_label", "known", None, False, False)
+    state = decide_prediction_state(
+        novelty_score=novelty_score,
+        selective_confidence=selective_confidence,
+        abstain_threshold=abstain_threshold,
+        known_threshold=known_threshold,
+        novel_threshold=novel_threshold,
+    )
+    return SelectiveDecision(
+        state["decision"],
+        state["decision_band"],
+        state["abstain_reason"],
+        bool(state["route_novel"]),
+        bool(state["route_boundary"]),
+    )
 

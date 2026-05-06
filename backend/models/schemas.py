@@ -31,6 +31,10 @@ class PredictionOut(BaseModel):
     decision_band: Optional[Literal["known", "boundary", "novel"]] = None
     novel_cluster_id: Optional[str] = None
     novel_alias: Optional[str] = None
+    contradiction_score: Optional[float] = None
+    contradiction_types: List[str] = Field(default_factory=list)
+    quarantine_status: Optional[str] = None
+    graph_support_score: Optional[float] = None
 
 
 class SelectivePredictionOut(BaseModel):
@@ -45,12 +49,20 @@ class SelectivePredictionOut(BaseModel):
     novelty_score: Optional[float] = None
     novel_cluster_id: Optional[str] = None
     novel_alias: Optional[str] = None
+    contradiction_score: Optional[float] = None
+    contradiction_types: List[str] = Field(default_factory=list)
+    quarantine_status: Optional[str] = None
+    graph_support_score: Optional[float] = None
 
 
 class AbstainedPredictionOut(BaseModel):
     reason: str
     confidence: float
     ambiguity_score: float
+    contradiction_score: Optional[float] = None
+    contradiction_types: List[str] = Field(default_factory=list)
+    quarantine_status: Optional[str] = None
+    graph_support_score: Optional[float] = None
 
 
 class NovelCandidateOut(BaseModel):
@@ -60,6 +72,24 @@ class NovelCandidateOut(BaseModel):
     novel_cluster_id: Optional[str] = None
     novel_alias: Optional[str] = None
     evidence_text: Optional[str] = None
+    contradiction_score: Optional[float] = None
+    contradiction_types: List[str] = Field(default_factory=list)
+    quarantine_status: Optional[str] = None
+    graph_support_score: Optional[float] = None
+
+
+class GraphContradictionCaseOut(BaseModel):
+    id: int
+    review_id: int
+    prediction_id: Optional[int] = None
+    aspect_canonical: str
+    sentiment: Optional[str] = None
+    evidence_text: Optional[str] = None
+    contradiction_score: float
+    contradiction_types: List[str] = Field(default_factory=list)
+    graph_neighbor_evidence: List[str] = Field(default_factory=list)
+    action_taken: Optional[str] = None
+    status: Optional[str] = None
 
 
 class OverviewOut(BaseModel):
@@ -315,6 +345,10 @@ class GraphNodeOut(BaseModel):
     evidence_start: Optional[int] = None
     evidence_end: Optional[int] = None
     origin: Optional[str] = None
+    contradiction_score: Optional[float] = None
+    contradiction_types: List[str] = Field(default_factory=list)
+    quarantine_status: Optional[str] = None
+    graph_support_score: Optional[float] = None
 
 
 class GraphEdgeOut(BaseModel):

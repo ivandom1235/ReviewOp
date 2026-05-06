@@ -10,20 +10,9 @@ DEFAULT_ARCHIVE_NAME = "artifact.zip"
 def write_artifact_zip(output_dir: str | Path, archive_name: str = DEFAULT_ARCHIVE_NAME) -> Path:
     output_dir = Path(output_dir)
     archive_path = output_dir / archive_name
-    artifact_names = (
-        "train.jsonl",
-        "val.jsonl",
-        "test.jsonl",
-        "manifest.json",
-        "quality_report.json",
-        "metrics_summary.json",
-        "aspect_memory_candidates.json",
-        "aspect_memory_review_queue.json",
-        "aspect_memory_summary.json",
-    )
     with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as archive:
-        for name in artifact_names:
-            path = output_dir / name
-            if path.exists():
-                archive.write(path, arcname=name)
+        for path in sorted(output_dir.rglob("*")):
+            if not path.is_file() or path == archive_path:
+                continue
+            archive.write(path, arcname=path.relative_to(output_dir).as_posix())
     return archive_path

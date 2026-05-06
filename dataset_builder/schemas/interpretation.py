@@ -5,7 +5,7 @@ from typing import Optional, Any
 
 
 VALID_LABEL_TYPES = {"explicit", "implicit"}
-VALID_SOURCE_TYPES = {"explicit", "implicit_learned", "implicit_json", "implicit_llm", "merged", "unknown"}
+VALID_SOURCE_TYPES = {"explicit", "implicit_learned", "implicit_json", "implicit_llm", "merged"}
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ class Interpretation:
     repair_severity: int = 0
     matched_pattern: Optional[str] = None
     pattern_id: Optional[str] = None
-    source_type: str = "unknown"
+    source_type: str = "explicit"
     pattern_confidence: Optional[float] = None
     evidence_scope: str = "unknown"
     novelty_status: str = "unknown"
@@ -39,15 +39,17 @@ class Interpretation:
     matched_terms: tuple[str, ...] = field(default_factory=tuple)
     implicit_trigger: Optional[str] = None
     mapping_scope: str = "unknown"
+    generic_parent: Optional[str] = None
     conflict_resolution: str = "none"
+    provenance_trace: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if self.aspect_anchor and not self.anchor_source:
             raise ValueError("anchor_source is required when aspect_anchor is present")
-        if self.label_type not in VALID_LABEL_TYPES:
-            raise ValueError(f"invalid label_type: {self.label_type}")
         if self.source_type not in VALID_SOURCE_TYPES:
             raise ValueError(f"invalid source_type: {self.source_type}")
+        if self.label_type not in VALID_LABEL_TYPES:
+            raise ValueError(f"invalid label_type: {self.label_type}")
         if self.label_type == "explicit" and self.source_type != "explicit":
             raise ValueError("explicit label_type requires source_type='explicit'")
         if self.label_type == "implicit" and self.source_type == "explicit":

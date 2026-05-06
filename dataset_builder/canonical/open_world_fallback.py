@@ -88,11 +88,11 @@ def classify_unmapped_candidate(
         return CandidateDecision("dropped_noise", 0.0, ("noise",))
     score, reasons = _score_unmapped_candidate(candidate, evidence_text, support_count=support_count)
     if provisional_policy == "memory_only":
-        return CandidateDecision("memory_candidate", score, reasons)
+        return CandidateDecision("open_world_candidate", score, reasons)
     if score >= 0.75:
         return CandidateDecision("open_world", score, reasons)
     if score >= 0.50:
         return CandidateDecision("provisional", score, reasons)
     if score >= 0.35:
-        return CandidateDecision("memory_candidate", score, reasons)
+        return CandidateDecision("open_world_candidate", score, reasons)
     return CandidateDecision("dropped_noise", score, reasons)

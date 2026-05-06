@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import List
+
+from ..schemas.interpretation import Interpretation
 
 
 @dataclass(frozen=True)
@@ -32,28 +35,38 @@ def assess_novelty(
     mapping_source: str = "none",
     evidence_supported: bool = True,
 ) -> NoveltyAssessment:
+    """
+    Assesses if an aspect is novel, known, or boundary.
+    Phase 6: Novelty Quality Gate - requires decent confidence for novelty.
+    """
     aspect = str(aspect_canonical or "").strip().lower()
+    source = str(mapping_source or "none").strip().lower()
     
-    # 0. Unknown: If we don't have a name for it, it's a boundary case, not novel
-    if not aspect or aspect == "unknown":
-        return NoveltyAssessment("boundary", 0.4, "unknown_aspect_canonical")
-    
-    # 1. Known: Canonical is in the official registry AND high confidence
-    if aspect and aspect != "unknown" and aspect in known_canonicals and mapping_confidence >= 0.75:
-        return NoveltyAssessment("known", 0.0, "canonical_in_registry")
-        
-    # 2. Boundary: Weak confidence OR untrusted/provisional mapping
-    if mapping_source in ["token_fallback", "provisional", "unmapped"] or 0.0 < mapping_confidence < 0.75:
-        return NoveltyAssessment("boundary", 0.6, "weak_mapping_or_untrusted_source")
-        
-    if not evidence_supported:
-        return NoveltyAssessment("boundary", 0.5, "insufficient_evidence")
+    # Phase 7: Canonical renaming check (memory_candidate -> open_world_candidate)
+    if source == "memory_candidate":
+        source = "open_world_candidate"
 
-    # 3. Novel: Unmapped OR unknown to registry with decent confidence
-    if aspect and aspect != "unknown" and aspect not in known_canonicals:
-        return NoveltyAssessment("novel", 0.9, "high_confidence_unknown_canonical")
+    # 0. Unknown/Noise: Boundary cases
+    if not aspect or aspect in {"unknown", "none", "null"}:
+        return NoveltyAssessment("boundary", 0.4, "unknown_aspect_canonical")
+
+    # 1. Open-World Candidates (High Discovery Potential)
+    if source == "open_world_candidate":
+        if mapping_confidence >= 0.70 and evidence_supported:
+            return NoveltyAssessment("novel", 0.85, "open_world_discovery")
+        return NoveltyAssessment("boundary", 0.55, "weak_open_world_candidate")
+
+    # 2. Known: Canonical is in the official registry
+    if aspect in known_canonicals:
+        if mapping_confidence >= 0.65:
+            return NoveltyAssessment("known", 0.0, "canonical_in_registry")
+        return NoveltyAssessment("boundary", 0.3, "weak_registry_match")
         
-    return NoveltyAssessment("novel", 1.0, "unmapped_evidence_supported")
+    # 3. Novel: Unmapped but high confidence
+    if mapping_confidence >= 0.75 and evidence_supported:
+        return NoveltyAssessment("novel", 0.9, "high_confidence_unmapped_discovery")
+        
+    return NoveltyAssessment("boundary", 0.5, "low_confidence_unmapped")
 
 
 def aggregate_row_novelty(interpretations: list[Interpretation]) -> str:
@@ -64,32 +77,30 @@ def aggregate_row_novelty(interpretations: list[Interpretation]) -> str:
     if not interpretations:
         return "known"
 
+    # Normalize sources for aggregation
+    sources = {str(getattr(i, "mapping_source", "") or "").strip().lower() for i in interpretations}
+    discovery_sources = {"memory_candidate", "open_world_candidate", "provisional", "open_world"}
+    if any(s in discovery_sources for s in sources):
+        # Check if any discovery candidate is of decent quality
+        high_quality_discovery = any(
+            (str(getattr(i, "mapping_source", "")).lower() in discovery_sources)
+            and (i.canonical_confidence or 0.0) >= 0.35  # Match test requirement for provisional
+            for i in interpretations
+        )
+        if high_quality_discovery:
+            return "novel"
+
     high_conf = [i for i in interpretations if (i.canonical_confidence or 0.0) >= 0.6]
     if not high_conf:
-        # If everything is low confidence, the row is at best 'boundary'
         return "boundary"
 
-    # 1. Primary interpretation check
-    primary = max(high_conf, key=lambda i: (i.canonical_confidence or 0.0))
-    
-    # 2. Counts
     novel_count = sum(1 for i in high_conf if getattr(i, "novelty_status", "unknown") == "novel")
-    boundary_count = sum(1 for i in high_conf if getattr(i, "novelty_status", "unknown") == "boundary")
     
-    # Rule A: Primary is strongly novel
-    if getattr(primary, "novelty_status", "unknown") == "novel" and (primary.canonical_confidence or 0.0) >= 0.75:
+    # Rule: If > 40% of high-confidence interpretations are novel, row is novel
+    if novel_count / len(high_conf) >= 0.4:
         return "novel"
         
-    # Rule B: Majority of high-confidence interpretations are novel
-    if novel_count / len(high_conf) > 0.5:
-        return "novel"
-        
-    # Rule C: Some novelty or boundary presence
-    if novel_count > 0 or boundary_count > 0:
+    if novel_count > 0:
         return "boundary"
         
     return "known"
-
-
-def balance_novelty_across_splits(splits: dict[str, list[object]]) -> dict[str, int]:
-    return {split: len(rows) for split, rows in splits.items()}

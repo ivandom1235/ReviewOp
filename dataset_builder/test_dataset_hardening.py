@@ -1,24 +1,33 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from dataset_builder.benchmark.ambiguity import compute_ambiguity_score
+from dataset_builder.benchmark.counterfactual import generate_counterfactual_pairs
 from dataset_builder.benchmark.hardness_scorer import score_row_hardness
-from dataset_builder.benchmark.novelty import assess_novelty
+from dataset_builder.benchmark.novelty import assess_novelty, aggregate_row_novelty
 from dataset_builder.canonical.canonicalizer import canonicalize_interpretation
+from dataset_builder.canonical.aspect_memory import AspectMemory
 from dataset_builder.canonical.domain_maps import CanonicalMappingResult
 from dataset_builder.config import BuilderConfig
+from dataset_builder.explicit.phrase_cleaning import is_noisy_label
+from dataset_builder.evidence.sentence_selector import select_best_sentence
+from dataset_builder.fusion.merge_candidates import merge_explicit_implicit
 from dataset_builder.implicit.symptom_store import SymptomPatternStore
 from dataset_builder.orchestrator.stages import InferenceStage
 from dataset_builder.orchestrator.release_gate import assert_release_ready
 from dataset_builder.reports.quality_report import build_quality_report
+from dataset_builder.utils.row_metadata import derive_row_metadata
 from dataset_builder.scripts.run_diagnostics import DiagnosticConfig, DiagnosticRunner
 from dataset_builder.scripts.build_benchmark import build_arg_parser, build_config_from_args
 from dataset_builder.schemas.benchmark_row import BenchmarkRow
 from dataset_builder.schemas.interpretation import Interpretation
+from dataset_builder.split.domain_split import choose_domain_holdout_domain, domain_holdout_split
 from unittest.mock import patch
 
 
@@ -117,6 +126,12 @@ class InferenceAndCanonicalizationTests(unittest.TestCase):
         self.assertTrue(any(i.evidence_scope in {"sentence", "phrase_window"} for i in implicit_json))
         self.assertTrue(any(i.implicit_trigger == "latent_family_match" for i in implicit_json))
 
+    def test_sentence_selector_narrows_single_sentence_review_when_cue_exists(self) -> None:
+        text = "Plain and simple, it runs great and loads fast."
+        selected = select_best_sentence(text, "fast")
+        self.assertNotEqual(selected, text)
+        self.assertIn("fast", selected.lower())
+
     def test_inference_uses_learned_pattern_id_and_span_evidence(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
             json.dump([
@@ -180,7 +195,28 @@ class BenchmarkQualityTests(unittest.TestCase):
     def test_novelty_has_known_boundary_and_novel_states(self) -> None:
         self.assertEqual(assess_novelty("battery_life", {"battery_life"}).status, "known")
         self.assertEqual(assess_novelty("screen_eye_strain", {"display"}, mapping_confidence=0.35, evidence_supported=True).status, "boundary")
-        self.assertEqual(assess_novelty("hinge_sparks", {"display"}, mapping_confidence=0.0, evidence_supported=True).status, "novel")
+        self.assertEqual(assess_novelty("hinge_sparks", {"display"}, mapping_confidence=0.8, evidence_supported=True).status, "novel")
+
+    def test_row_novelty_promotes_provisional_open_world_candidates(self) -> None:
+        row = [
+            interp(
+                aspect_raw="portable stand",
+                aspect_canonical="portable_stand",
+                mapping_source="provisional",
+                mapping_scope="provisional",
+                canonical_confidence=0.35,
+            ),
+            interp(
+                aspect_raw="battery",
+                aspect_canonical="battery_life",
+                mapping_source="exact_phrase",
+                mapping_scope="generic",
+                canonical_confidence=1.0,
+                novelty_status="known",
+            ),
+        ]
+
+        self.assertEqual(aggregate_row_novelty(row), "novel")
 
     def test_h3_can_be_emitted_for_novel_ambiguous_rows(self) -> None:
         row = BenchmarkRow(
@@ -221,6 +257,56 @@ class BenchmarkQualityTests(unittest.TestCase):
         self.assertEqual(report.hardness_distribution["H1"], 1)
         self.assertIn("mapping_scope_distribution", report.__dict__)
         self.assertTrue(report.accounting_valid)
+
+    def test_row_metadata_is_derived_from_gold_interpretations(self) -> None:
+        row = BenchmarkRow(
+            review_id="r-meta-1",
+            group_id="g1",
+            domain="electronics",
+            domain_family="electronics",
+            review_text="Battery is weak.",
+            gold_interpretations=[
+                interp(
+                    label_type="explicit",
+                    source_type="explicit",
+                    source="explicit",
+                    mapping_source="exact_phrase",
+                    mapping_scope="generic",
+                ),
+                interp(
+                    label_type="implicit",
+                    source_type="implicit_learned",
+                    source="learned",
+                    matched_pattern="battery weak",
+                    pattern_id="p1",
+                    mapping_source="trusted_learned",
+                    mapping_scope="learned_store",
+                ),
+            ],
+        )
+
+        derived = derive_row_metadata(row)
+
+        self.assertEqual(derived.row_source_type, "hybrid")
+        self.assertEqual(derived.row_mapping_scope, "mixed")
+        self.assertEqual(derived.row_mapping_sources, ("exact_phrase", "trusted_learned"))
+        self.assertEqual(derived.source_type, "hybrid")
+        self.assertEqual(derived.mapping_scope, "mixed")
+        self.assertEqual(derived.mapping_source, "exact_phrase|trusted_learned")
+
+    def test_quality_report_counts_top_level_row_metadata_unknown_fields(self) -> None:
+        row = BenchmarkRow(
+            review_id="r-meta-2",
+            group_id="g1",
+            domain="electronics",
+            domain_family="electronics",
+            review_text="Battery is weak.",
+            gold_interpretations=[interp()],
+        )
+
+        report = build_quality_report({"train": [row], "val": [], "test": []}, loaded_rows=1, processed_rows=1)
+
+        self.assertEqual(report.canonicalization["row_metadata_unknown_count"], 1)
 
 
 class ReleaseGateTests(unittest.TestCase):
@@ -332,13 +418,99 @@ class BuildBenchmarkCliTests(unittest.TestCase):
             "--strict",
             "--domain-mode",
             "generic_only",
+            "--domain-holdout-domain",
+            "electronics",
             "--aspect-memory",
             "dataset_builder/config/aspect_memory/memory_v001.json",
         ])
         cfg = build_config_from_args(args, [Path("dataset_builder/input/reviews.jsonl")])
         self.assertTrue(cfg.strict)
         self.assertEqual(cfg.domain_mode, "generic_only")
+        self.assertEqual(cfg.domain_holdout_domain, "electronics")
         self.assertEqual(Path(cfg.aspect_memory_path), Path("dataset_builder/config/aspect_memory/memory_v001.json"))
+
+
+class DomainHoldoutAndCounterfactualTests(unittest.TestCase):
+    def test_domain_holdout_split_marks_holdout_domain(self) -> None:
+        rows = [
+            BenchmarkRow(review_id="r1", group_id="g1", domain="electronics", domain_family="electronics", review_text="Battery is weak."),
+            BenchmarkRow(review_id="r2", group_id="g2", domain="electronics", domain_family="electronics", review_text="Screen is bright."),
+            BenchmarkRow(review_id="r3", group_id="g3", domain="restaurant", domain_family="dining", review_text="Service was slow."),
+            BenchmarkRow(review_id="r4", group_id="g4", domain="hotel", domain_family="hospitality", review_text="The room was clean."),
+        ]
+
+        holdout = choose_domain_holdout_domain(rows)
+        self.assertEqual(holdout, "electronics")
+
+        split = domain_holdout_split(rows, holdout)
+        self.assertEqual(len(split["test"]), 2)
+        self.assertEqual(len(split["train"]), 1)
+        self.assertGreaterEqual(len(split["val"]), 1)
+        self.assertTrue(all(getattr(row, "split_protocol", {}).get("domain_holdout") == "test" for row in split["test"]))
+        self.assertTrue(all(getattr(row, "split_protocol", {}).get("domain_holdout") == "train" for row in split["train"]))
+
+    def test_counterfactual_generator_emits_paired_rows(self) -> None:
+        rows = [
+            BenchmarkRow(review_id="r1", group_id="g1", domain="restaurant", domain_family="dining", review_text="Food was cold."),
+            BenchmarkRow(review_id="r2", group_id="g2", domain="restaurant", domain_family="dining", review_text="The food was good."),
+        ]
+        cf_res = generate_counterfactual_pairs(rows, max_pairs=10)
+        pairs = cf_res["pairs"]
+
+        self.assertGreaterEqual(len(pairs), 1)
+        self.assertTrue(all(pair["counterfactual_group_id"].startswith("cf_") for pair in pairs))
+        self.assertTrue(any(pair["rewrite_type"] == "aspect_swap" for pair in pairs))
+        self.assertTrue(any(pair["counterfactual_text"] != pair["original_text"] for pair in pairs))
+
+    def test_anchor_modifier_survives_merge_against_exact_phrase_peer(self) -> None:
+        exact = interp(
+            aspect_raw="The food was delicious",
+            aspect_canonical="food_quality",
+            mapping_source="exact_phrase",
+            evidence_text="The food was delicious",
+            evidence_span=[0, 22],
+        )
+        anchor = interp(
+            aspect_raw="The food was delicious",
+            aspect_canonical="food_quality",
+            mapping_source="anchor_modifier",
+            aspect_anchor="food",
+            modifier_terms=("delicious",),
+            anchor_source="noun_chunk_root",
+            evidence_text="The food was delicious",
+            evidence_span=[0, 22],
+        )
+
+        merged = merge_explicit_implicit([exact], [anchor])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].mapping_source, "anchor_modifier")
+
+    def test_anchor_modifier_survives_merge_against_higher_confidence_exact_phrase_peer(self) -> None:
+        exact = interp(
+            aspect_raw="The food was delicious",
+            aspect_canonical="food_quality",
+            canonical_confidence=1.0,
+            mapping_source="exact_phrase",
+            evidence_text="The food was delicious",
+            evidence_span=[0, 22],
+        )
+        anchor = interp(
+            aspect_raw="The food was delicious",
+            aspect_canonical="food_quality",
+            canonical_confidence=0.85,
+            mapping_source="anchor_modifier",
+            aspect_anchor="food",
+            modifier_terms=("delicious",),
+            anchor_source="noun_chunk_root",
+            evidence_text="The food was delicious",
+            evidence_span=[0, 22],
+        )
+
+        merged = merge_explicit_implicit([exact], [anchor])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].mapping_source, "anchor_modifier")
 
 
 class MappingAndUnseenDomainTests(unittest.TestCase):
@@ -373,6 +545,92 @@ class MappingAndUnseenDomainTests(unittest.TestCase):
         )
         [processed] = InferenceStage().process([row], BuilderConfig())
         self.assertIsNotNone(processed)
+
+    def test_canonicalization_attaches_generic_parent_for_food_aspects(self) -> None:
+        out = canonicalize_interpretation(
+            interp(
+                aspect_raw="pizza",
+                aspect_canonical="unknown",
+                evidence_text="pizza",
+                evidence_span=[0, 5],
+                mapping_source="provisional",
+            ),
+            "restaurant",
+        )
+        self.assertNotEqual(out.aspect_canonical, "unknown")
+
+    def test_canonicalization_preserves_anchor_modifier_for_modifier_phrase(self) -> None:
+        out = canonicalize_interpretation(
+            interp(
+                aspect_raw="The food was delicious",
+                aspect_canonical="unknown",
+                aspect_anchor="food",
+                modifier_terms=("delicious",),
+                anchor_source="noun_chunk_root",
+                evidence_text="The food was delicious",
+                evidence_span=[0, 22],
+                mapping_source="unmapped",
+            ),
+            "restaurant",
+        )
+        self.assertEqual(out.mapping_source, "anchor_modifier")
+
+    def test_canonicalization_promotes_modifier_tokens_over_token_fallback(self) -> None:
+        out = canonicalize_interpretation(
+            interp(
+                aspect_raw="cheap lunch",
+                aspect_canonical="unknown",
+                aspect_anchor="lunch",
+                modifier_terms=("cheap",),
+                anchor_source="noun_chunk_root",
+                evidence_text="cheap lunch",
+                evidence_span=[0, 11],
+                mapping_source="unmapped",
+            ),
+            "restaurant",
+        )
+        self.assertEqual(out.mapping_source, "anchor_modifier")
+
+    def test_memory_candidate_is_rescued_when_row_would_otherwise_be_empty(self) -> None:
+        from dataset_builder.orchestrator.stages import CanonicalizationStage
+
+        root = Path("dataset_builder/output/_tmp_memory_rescue_test")
+        if root.exists():
+            shutil.rmtree(root, ignore_errors=True)
+        out = root / "out"
+        cfg = BuilderConfig(
+            input_paths=(),
+            output_dir=out,
+            llm_provider="none",
+            overwrite=True,
+            aspect_memory_path=str(root / "memory.json"),
+        )
+        row = BenchmarkRow(
+            review_id="r1",
+            group_id="g1",
+            domain="restaurant",
+            domain_family="dining",
+            review_text="The personal sizes were surprisingly generous.",
+            gold_interpretations=(
+                interp(
+                    aspect_raw="personal sizes",
+                    aspect_canonical="unknown",
+                    aspect_anchor="sizes",
+                    modifier_terms=("personal",),
+                    anchor_source="noun_chunk_root",
+                    evidence_text="personal sizes",
+                    evidence_span=[0, 14],
+                    mapping_source="unmapped",
+                ),
+            ),
+        )
+        try:
+            [processed] = CanonicalizationStage().process([row], cfg)
+            self.assertTrue(processed.gold_interpretations)
+            self.assertNotEqual(processed.gold_interpretations[0].aspect_canonical, "unknown")
+            self.assertEqual(processed.gold_interpretations[0].mapping_source, "open_world_candidate")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 class DiagnosticsAndMemoryTddTests(unittest.TestCase):
@@ -457,18 +715,17 @@ class DiagnosticsAndMemoryTddTests(unittest.TestCase):
         memory_payload = {
             "entries": {
                 "battery weak": {
+                    "cluster_id": "mem_battery_weak",
                     "aspect_raw": "battery weak",
                     "status": "promoted",
                     "validation_status": "auto_validated",
                     "support_count": 5,
                     "unique_reviews": ["r1"],
                     "domains": ["electronics"],
-                    "evidence_samples": ["battery weak"],
-                    "evidence_examples": ["battery weak"],
-                    "aspect_canonical": "battery_health",
-                    "unique_review_count": 1,
+                    "trigger_patterns": ["battery weak"],
+                    "evidence_examples": [{"evidence_text": "battery weak", "review_id": "r1", "domain": "electronics"}],
+                    "suggested_aspect": "battery_health",
                     "generic_parent": "quality",
-                    "domain_specific_aspect": "battery_health",
                 }
             }
         }
@@ -490,19 +747,18 @@ class DiagnosticsAndMemoryTddTests(unittest.TestCase):
         memory_payload = {
             "entries": {
                 "battery weak": {
+                    "cluster_id": "mem_battery_weak",
                     "aspect_raw": "battery weak",
                     "status": "promoted",
                     "validation_status": "manual_validated",
                     "support_count": 5,
                     "unique_reviews": ["r1"],
                     "domains": ["electronics"],
-                    "evidence_samples": ["battery weak"],
-                    "evidence_examples": ["battery weak"],
-                    "aspect_canonical": "battery_health",
-                    "unique_review_count": 1,
+                    "trigger_patterns": ["battery weak"],
+                    "evidence_examples": [{"evidence_text": "battery weak", "review_id": "r1", "domain": "electronics"}],
+                    "suggested_aspect": "battery_health",
                     "generic_parent": "quality",
-                    "domain_specific_aspect": "battery_health",
-                    "confidence": 0.95
+                    "contradiction_score": 0.0
                 }
             }
         }
@@ -517,7 +773,6 @@ class DiagnosticsAndMemoryTddTests(unittest.TestCase):
         self.assertEqual(getattr(learned, "conflict_resolution", "none"), "manual_validated_aspect_memory_preferred")
 
     def test_review_queue_file_contains_required_keys(self) -> None:
-        from dataset_builder.canonical.aspect_memory import AspectMemory
         root = Path("dataset_builder/output/_tmp_review_queue")
         root.mkdir(parents=True, exist_ok=True)
         memory = AspectMemory(root / "memory.json")
@@ -528,8 +783,314 @@ class DiagnosticsAndMemoryTddTests(unittest.TestCase):
         self.assertIn("items", payload)
         if payload["items"]:
             item = payload["items"][0]
-            for k in ("aspect_id", "domain", "surface_forms", "suggested_canonical", "support_count", "unique_review_count", "evidence_examples", "reason"):
+            for k in ("cluster_id", "aspect_raw", "suggested_aspect", "support_count", "unique_review_count", "evidence_examples", "consistency", "quality"):
                 self.assertIn(k, item)
+
+    def test_aspect_memory_promotes_review_queue_for_supported_aspect(self) -> None:
+        tmp = Path("dataset_builder/output/_tmp_aspect_memory_test")
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True, exist_ok=True)
+        try:
+            memory = AspectMemory(tmp / "memory.json")
+            memory.add_evidence("pizza", "r1", "the crust was soggy and undercooked", "restaurant")
+            memory.add_evidence("pizza", "r2", "pizza crust stayed soggy", "restaurant")
+            memory.add_evidence("pizza", "r3", "the crust came out undercooked again", "restaurant")
+
+            entry = memory.get_entry("pizza")
+            self.assertIsNotNone(entry)
+            self.assertIsNone(entry.generic_parent)
+            self.assertEqual(entry.generic_parent_status, "not_assigned")
+            self.assertEqual(entry.status, "review_queue")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_aspect_memory_rejects_single_surface_form_clusters(self) -> None:
+        tmp = Path("dataset_builder/output/_tmp_aspect_memory_single_surface")
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True, exist_ok=True)
+        try:
+            memory = AspectMemory(tmp / "memory.json")
+            for idx in range(3):
+                memory.add_evidence("pizza", f"r{idx + 1}", "the pizza was delicious", "restaurant")
+
+            entry = memory.get_entry("pizza")
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry.status, "detected")
+            self.assertEqual(len(set(entry.trigger_patterns)), 1)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_aspect_memory_uses_evidence_phrase_instead_of_raw_aspect_fallback(self) -> None:
+        tmp = Path("dataset_builder/output/_tmp_aspect_memory_trigger")
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True, exist_ok=True)
+        try:
+            memory = AspectMemory(tmp / "memory.json")
+            cluster_id = memory.add_evidence("pizza", "r1", "The crust was soggy and undercooked.", "restaurant")
+            entry = memory.entries.get(cluster_id)
+            self.assertIsNotNone(entry)
+            self.assertTrue(entry.trigger_patterns)
+            self.assertNotIn("pizza", entry.trigger_patterns[0])
+            self.assertTrue(any("soggy" in pattern or "undercooked" in pattern for pattern in entry.trigger_patterns))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_aspect_memory_rejects_pure_sentiment_phrases(self) -> None:
+        tmp = Path("dataset_builder/output/_tmp_aspect_memory_sentiment")
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True, exist_ok=True)
+        try:
+            memory = AspectMemory(tmp / "memory.json")
+            cluster_id = memory.add_evidence("evening", "r1", "great evening", "restaurant")
+            self.assertEqual(cluster_id, "rejected_noise")
+            self.assertFalse(memory.entries)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_evidence_quality_scores_behavioral_text_higher_than_generic_or_sentiment_text(self) -> None:
+        memory = AspectMemory(Path("dataset_builder/output/_tmp_quality_test.json"))
+        self.assertGreater(memory._basic_evidence_quality("calls kept dropping"), 0.7)
+        self.assertGreater(memory._basic_evidence_quality("threads came loose"), 0.7)
+        self.assertLess(memory._basic_evidence_quality("great evening"), 0.5)
+        self.assertLess(memory._basic_evidence_quality("pizza"), 0.3)
+
+    def test_pipeline_populates_aspect_memory_review_queue_from_contextual_evidence(self) -> None:
+        from dataset_builder.orchestrator.stages import CanonicalizationStage
+        from dataset_builder.schemas.interpretation import Interpretation
+
+        root = Path("dataset_builder/output/_tmp_aspect_memory_pipeline")
+        if root.exists():
+            shutil.rmtree(root, ignore_errors=True)
+        out = root / "out"
+        cfg = BuilderConfig(
+            input_paths=(),
+            output_dir=out,
+            llm_provider="none",
+            overwrite=True,
+            aspect_memory_path=str(root / "memory.json"),
+        )
+        rows = [
+            BenchmarkRow(
+                review_id=f"r{i}",
+                group_id=f"g{i}",
+                domain="restaurant",
+                domain_family="dining",
+                review_text="The pizza was great",
+                gold_interpretations=(
+                    interp(
+                        aspect_raw="pizza",
+                        aspect_canonical="unknown",
+                        mapping_source="unmapped",
+                        sentiment="positive",
+                    ),
+                ),
+            )
+            for i in range(1, 6)
+        ]
+        try:
+            CanonicalizationStage().process(rows, cfg)
+            summary_path = out / "aspect_memory_summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertIn("total_entries", summary)
+            self.assertIn("top_clusters", summary)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_pipeline_exports_domain_holdout_counterfactual_and_rejected_audit(self) -> None:
+        from dataset_builder.orchestrator.pipeline import run_builder_pipeline
+
+        root = Path("dataset_builder/output/_tmp_export_layout")
+        if root.exists():
+            import shutil
+            shutil.rmtree(root)
+        out = root / "out"
+        cfg = BuilderConfig(
+            input_paths=(),
+            output_dir=out,
+            llm_provider="none",
+            overwrite=True,
+            aspect_memory_path=str(root / "memory.json"),
+        )
+        cfg.__dict__["_rejected_rows_audit"] = [
+            {
+                "review_id": "rejected-1",
+                "domain": "electronics",
+                "review_text": "Unknown thing.",
+                "stage": "canonicalization",
+                "reason": "empty_gold_after_canonicalization",
+                "raw_candidates": [],
+                "dropped_candidates": [],
+                "recommended_recovery": "open_world_candidate",
+            }
+        ]
+        rows_by_split = {
+            "train": [
+                BenchmarkRow(
+                    review_id="r1",
+                    group_id="g1",
+                    domain="electronics",
+                    domain_family="electronics",
+                    review_text="Battery works great.",
+                    gold_interpretations=[interp(aspect_raw="battery", aspect_canonical="battery_life", evidence_text="Battery", evidence_span=[0, 7])],
+                )
+            ],
+            "val": [
+                BenchmarkRow(
+                    review_id="r2",
+                    group_id="g2",
+                    domain="restaurant",
+                    domain_family="dining",
+                    review_text="The food was good.",
+                    gold_interpretations=[interp(aspect_raw="food", aspect_canonical="food_quality", evidence_text="food", evidence_span=[4, 8])],
+                )
+            ],
+            "test": [
+                BenchmarkRow(
+                    review_id="r3",
+                    group_id="g3",
+                    domain="electronics",
+                    domain_family="electronics",
+                    review_text="Screen is bright.",
+                    gold_interpretations=[interp(aspect_raw="screen", aspect_canonical="display", evidence_text="Screen", evidence_span=[0, 6])],
+                )
+            ],
+        }
+
+        with patch("dataset_builder.orchestrator.pipeline.assert_release_ready") as gate:
+            gate.return_value = {"status": "PASS", "failures": [], "warnings": [], "metrics": {}}
+            result = run_builder_pipeline(cfg, rows_by_split=rows_by_split)
+
+        self.assertIn("counts", result)
+        self.assertTrue((out / "train.jsonl").exists())
+        self.assertTrue((out / "val.jsonl").exists())
+        self.assertTrue((out / "test.jsonl").exists())
+        self.assertTrue((out / "domain_holdout" / "train.jsonl").exists())
+        self.assertTrue((out / "domain_holdout" / "val.jsonl").exists())
+        self.assertTrue((out / "domain_holdout" / "test.jsonl").exists())
+        self.assertTrue((out / "counterfactual" / "counterfactual_pairs.jsonl").exists())
+        self.assertTrue((out / "counterfactual" / "originals.jsonl").exists())
+        self.assertTrue((out / "counterfactual" / "counterfactuals.jsonl").exists())
+        self.assertTrue((out / "rejected_rows.jsonl").exists())
+        self.assertTrue((out / "grouped" / "train.jsonl").exists())
+        self.assertTrue((out / "grouped" / "val.jsonl").exists())
+        self.assertTrue((out / "grouped" / "test.jsonl").exists())
+        self.assertGreater((out / "counterfactual" / "counterfactual_pairs.jsonl").stat().st_size, 0)
+        with zipfile.ZipFile(out / "artifact.zip") as archive:
+            names = set(archive.namelist())
+        self.assertIn("grouped/train.jsonl", names)
+        self.assertIn("domain_holdout/train.jsonl", names)
+        self.assertIn("counterfactual/counterfactual_pairs.jsonl", names)
+        self.assertIn("rejected_rows.jsonl", names)
+
+    def test_noisy_explicit_fragments_are_rejected(self) -> None:
+        cases = [
+            '"service',
+            "M",
+            "thing",
+            "what am I supposed to do",
+            "provide me the service",
+        ]
+        for label in cases:
+            self.assertTrue(is_noisy_label(label), msg=label)
+
+
+class VerifyArtifactTests(unittest.TestCase):
+    def test_profile_thresholds_scale_for_stability_and_development(self) -> None:
+        from dataset_builder.scripts.verify_artifact import _profile_thresholds
+
+        dev = _profile_thresholds("development", 200)
+        stable = _profile_thresholds("stability", 400)
+
+        self.assertEqual(dev["min_counterfactual_validated"], 30)
+        self.assertEqual(dev["min_anchor_modifier_count"], 20)
+        self.assertEqual(dev["review_queue_min"], 1)
+        self.assertEqual(stable["min_counterfactual_validated"], 50)
+        self.assertEqual(stable["min_anchor_modifier_count"], 40)
+        self.assertEqual(stable["review_queue_min"], 3)
+
+    def test_counterfactual_quality_report_is_required_and_must_include_type_counts(self) -> None:
+        from dataset_builder.scripts.verify_artifact import verify
+
+        root = Path("dataset_builder/output/_tmp_verify_artifact")
+        if root.exists():
+            shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            manifest = {
+                "run_id": "r1",
+                "run_command": "python",
+                "config_hash": "c1",
+                "code_hash": "h1",
+                "artifact_created_at": "2026-05-06T00:00:00Z",
+                "artifact_version": "v1",
+                "sample_size_requested": 400,
+                "sample_size_loaded": 400,
+                "release_status": "passed",
+                "gate_status": "PASS",
+            }
+            metrics = {
+                "quality": {
+                    "total_exported": 360,
+                    "evidence": {"full_review_evidence_rate": 0.05, "matched_term_in_evidence_rate": 0.98},
+                    "canonicalization": {"anchor_modifier_count": 40, "row_metadata_unknown_count": 0, "mapping_scope_unknown_count": 0},
+                    "novelty_distribution": {"known": 310, "boundary": 20, "novel": 30},
+                    "hardness_distribution": {"H1": 270, "H2": 70, "H3": 20},
+                },
+                "aspect_memory": {"review_queue_count": 3, "unknown_candidate_count": 0, "broad_noun_candidate_rate": 0.1},
+                "domain_holdout": {"counts": {"val": 20}},
+                "counterfactual_pairs": {
+                    "total": 50,
+                    "stats": {
+                        "attempted": 80,
+                        "generated": 50,
+                        "exported": 50,
+                        "validated": 50,
+                        "rejected_unnatural": 10,
+                        "rejected_no_expected_change": 20,
+                        "type_counts": {"aspect_swap": 40, "sentiment_flip": 10},
+                    },
+                },
+            }
+            (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "metrics_summary.json").write_text(json.dumps(metrics), encoding="utf-8")
+            for rel in (
+                "train.jsonl",
+                "val.jsonl",
+                "test.jsonl",
+                "quality_report.json",
+                "rejected_rows.jsonl",
+                "aspect_memory_summary.json",
+                "domain_holdout/manifest.json",
+                "domain_holdout/train.jsonl",
+                "domain_holdout/val.jsonl",
+                "domain_holdout/test.jsonl",
+                "counterfactual/counterfactual_pairs.jsonl",
+                "counterfactual/originals.jsonl",
+                "counterfactual/counterfactuals.jsonl",
+            ):
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}", encoding="utf-8")
+            (root / "counterfactual" / "counterfactual_quality_report.json").write_text(
+                json.dumps({
+                    "attempted": 80,
+                    "generated": 50,
+                    "exported": 50,
+                    "validated": 50,
+                    "rejected_unnatural": 10,
+                    "rejected_no_expected_change": 20,
+                    "type_counts": {"aspect_swap": 40, "sentiment_flip": 10},
+                }),
+                encoding="utf-8",
+            )
+            result = verify(str(root), profile="stability", expected_rows=400)
+            self.assertEqual(result, 0)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":

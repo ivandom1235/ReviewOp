@@ -410,13 +410,16 @@ def train_model(cfg: ProtonetConfig, episodes_by_split: Dict[str, List[Dict[str,
     
     protocol_metrics: Dict[str, Any] = {}
     for key, episodes in episodes_by_split.items():
-        if "__" in key and (key.startswith("val") or key.startswith("test")):
-            m, _ = evaluate_episodes(model, episodes, cfg, key, include_predictions=False)
-            protocol_metrics[key] = m
-    
+        if key in {"train", "val", "test"}:
+            continue
+        m, _ = evaluate_episodes(model, episodes, cfg, key, include_predictions=False)
+        protocol_metrics[key] = m
+
     if protocol_metrics:
         val_metrics["protocol_full_eval"] = {k: v for k, v in protocol_metrics.items() if k.startswith("val")}
         test_metrics["protocol_full_eval"] = {k: v for k, v in protocol_metrics.items() if k.startswith("test")}
+        if "domain_holdout" in protocol_metrics:
+            test_metrics["domain_holdout_eval"] = protocol_metrics["domain_holdout"]
 
     prototype_bank = build_global_prototype_bank(model, episodes_by_split["train"], cfg)
 

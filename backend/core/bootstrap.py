@@ -53,10 +53,19 @@ def apply_schema_patches(engine) -> None:
         add_column_if_missing("predictions", "quality_score", "ALTER TABLE predictions ADD COLUMN quality_score FLOAT NULL")
         add_column_if_missing("predictions", "evidence_quality", "ALTER TABLE predictions ADD COLUMN evidence_quality FLOAT NULL")
         add_column_if_missing("predictions", "mapping_scope", "ALTER TABLE predictions ADD COLUMN mapping_scope VARCHAR(32) NULL")
+        add_column_if_missing("predictions", "contradiction_score", "ALTER TABLE predictions ADD COLUMN contradiction_score FLOAT NULL")
+        add_column_if_missing("predictions", "contradiction_types", "ALTER TABLE predictions ADD COLUMN contradiction_types JSON NULL")
+        add_column_if_missing("predictions", "quarantine_status", "ALTER TABLE predictions ADD COLUMN quarantine_status VARCHAR(32) NULL")
 
         add_column_if_missing("reviews", "overall_sentiment", "ALTER TABLE reviews ADD COLUMN overall_sentiment VARCHAR(16) NULL")
         add_column_if_missing("reviews", "overall_score", "ALTER TABLE reviews ADD COLUMN overall_score FLOAT NULL")
         add_column_if_missing("reviews", "overall_confidence", "ALTER TABLE reviews ADD COLUMN overall_confidence FLOAT NULL")
+        add_column_if_missing("abstained_predictions", "contradiction_score", "ALTER TABLE abstained_predictions ADD COLUMN contradiction_score FLOAT NULL")
+        add_column_if_missing("abstained_predictions", "contradiction_types", "ALTER TABLE abstained_predictions ADD COLUMN contradiction_types JSON NULL")
+        add_column_if_missing("abstained_predictions", "quarantine_status", "ALTER TABLE abstained_predictions ADD COLUMN quarantine_status VARCHAR(32) NULL")
+        add_column_if_missing("novel_candidates", "contradiction_score", "ALTER TABLE novel_candidates ADD COLUMN contradiction_score FLOAT NULL")
+        add_column_if_missing("novel_candidates", "contradiction_types", "ALTER TABLE novel_candidates ADD COLUMN contradiction_types JSON NULL")
+        add_column_if_missing("novel_candidates", "quarantine_status", "ALTER TABLE novel_candidates ADD COLUMN quarantine_status VARCHAR(32) NULL")
 
         create_table_if_missing(
             "admin_dismissed_alerts",

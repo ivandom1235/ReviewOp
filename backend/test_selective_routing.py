@@ -46,6 +46,23 @@ class SelectiveRoutingTests(unittest.TestCase):
         self.assertEqual(len(states["abstained_predictions"]), 1)
         self.assertEqual(states["abstained_predictions"][0]["aspect"], "screen_comfort")
 
+    def test_contradiction_risk_predictions_are_rerouted_to_review(self) -> None:
+        states = split_selective_states([
+            {
+                "aspect": "battery_life",
+                "routing": "known",
+                "confidence": 0.84,
+                "contradiction_score": 0.61,
+                "contradiction_types": ["sentiment_conflict"],
+                "quarantine_status": "watch",
+            }
+        ])
+
+        self.assertEqual(states["accepted_predictions"], [])
+        self.assertEqual(len(states["abstained_predictions"]), 1)
+        self.assertEqual(states["abstained_predictions"][0]["abstain_reason"], "contradiction_risk")
+        self.assertEqual(states["abstained_predictions"][0]["quarantine_status"], "watch")
+
     def test_nested_novel_candidates_are_deduped(self) -> None:
         candidate = {"aspect": "hinge_sparks", "novelty_score": 0.91}
         states = split_selective_states([

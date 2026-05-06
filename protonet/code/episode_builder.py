@@ -498,9 +498,14 @@ def build_or_load_episode_sets(
                 validate_episode_row(episode, cfg)
             episodes = rows
         else:
-            episodes = _build_episodes_for_split(split, rows, cfg, similarity_matrix=similarity_matrix)
-        episodes_by_split[split] = episodes
-        write_jsonl(_episode_cache_path(cfg, split), track(episodes, total=len(episodes), desc=f"save:{split}", enabled=cfg.progress_enabled))
+            try:
+                episodes = _build_episodes_for_split(split, rows, cfg, similarity_matrix=similarity_matrix)
+                episodes_by_split[split] = episodes
+                write_jsonl(_episode_cache_path(cfg, split), track(episodes, total=len(episodes), desc=f"save:{split}", enabled=cfg.progress_enabled))
+            except ValueError as exc:
+                if split in ("train", "val", "test"):
+                    raise
+                announce(f"Skipping episode build for split {split}: {exc}")
 
     if cfg.protocol_eval_enabled:
         for protocol in cfg.protocol_eval_splits:

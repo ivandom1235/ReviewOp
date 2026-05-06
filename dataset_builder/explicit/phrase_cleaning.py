@@ -9,7 +9,14 @@ GENERIC = {
 }
 
 ACTION_VERBS = {"provide", "get", "give", "take", "make", "use", "want", "need", "visit", "go", "come"}
-WEAK_NOUNS = {"visit", "road", "center", "place", "area", "thing", "something", "anything", "nothing", "everything", "way", "lot", "bit"}
+WEAK_NOUNS = {"visit", "road", "center", "place", "area", "thing", "something", "anything", "nothing", "everything", "way", "lot", "bit", "product", "service", "experience", "stuff", "m"}
+QUESTION_PREFIXES = ("what ", "why ", "how ", "who ", "where ", "when ", "which ", "what am ", "what is ", "what are ", "how do ", "how can ", "how could ")
+NOISY_PHRASES = (
+    "what am i supposed to do",
+    "what am i meant to do",
+    "provide me the",
+    "provide me with the",
+)
 
 
 def clean_phrase(phrase: str) -> str:
@@ -20,27 +27,42 @@ def is_noisy_label(label: str) -> bool:
     label = str(label or "").lower().strip()
     if not label:
         return True
+
+    # 1. Single character spans or empty after quote removal
+    clean_label = label.replace('"', "").replace("'", "").replace("`", "").strip()
+    if len(clean_label) <= 1:
+        return True
+
+    # 2. Quoted fragments or fragment-like punctuation
+    if label.startswith(("'", '"', "`")) or label.endswith(("'", '"', "`")):
+        return True
     
+    # 3. Too many parts (likely a clause, not an aspect)
     parts = label.split()
-    # Too long
     if len(parts) > 5:
         return True
     
-    # Contains too many verbs/actions
+    # 4. Action verbs (likely an instruction or action, not an aspect)
     if any(p in ACTION_VERBS for p in parts):
         return True
         
-    # Contains weak nouns
-    if any(p in WEAK_NOUNS for p in parts):
+    # 5. Weak/Generic nouns that lack descriptive power on their own
+    if len(parts) == 1 and parts[0] in WEAK_NOUNS:
         return True
         
-    # Too generic / Clause-like
-    if label in {"it is", "there is", "this is", "i have", "they have", "we have"}:
+    # 6. Clause-like starters
+    if label in {"it is", "there is", "this is", "i have", "they have", "we have", "i was", "it was"}:
+        return True
+
+    # 7. Question fragments
+    if label.startswith(QUESTION_PREFIXES) or label.endswith("?"):
+        return True
+
+    # 8. Known noisy phrases
+    if any(phrase in label for phrase in NOISY_PHRASES):
         return True
         
     return False
-
-
 def drop_generic_terms(phrases: list[str]) -> list[str]:
     return [cleaned for phrase in phrases if (cleaned := clean_phrase(phrase))]
 

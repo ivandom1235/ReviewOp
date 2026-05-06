@@ -17,7 +17,7 @@ try:
     from .encoder import HybridTextEncoder, format_input_text
     from .novelty_utils import compute_novelty_score
     from .projection_head import ProjectionHead
-    from .selective_decisions import calibrate_novelty_thresholds, decide_selective_routing
+    from .selective_decisions import calibrate_novelty_thresholds, decide_prediction_state, decide_selective_routing
 except ImportError:
     import importlib.util
     import sys
@@ -33,7 +33,7 @@ except ImportError:
     from encoder import HybridTextEncoder, format_input_text
     from novelty_utils import compute_novelty_score
     from projection_head import ProjectionHead
-    from selective_decisions import calibrate_novelty_thresholds, decide_selective_routing
+    from selective_decisions import calibrate_novelty_thresholds, decide_prediction_state, decide_selective_routing
 
 
 CLAUSE_SPLIT_RE = re.compile(r"(?<=[\.\!\?])\s+|[;,]\s+")
@@ -297,12 +297,20 @@ class ProtonetRuntime:
         energy_score = max(0.0, min(1.0, (energy_raw + 5.0) / 10.0))
         novelty = compute_novelty_score(distance_novelty, ambiguity, energy_score)
         evidence_quality = 1.0 if evidence_text.strip() else 0.0
+        if not self.cfg.use_evidence_support:
+            evidence_quality = 0.0
+        ambiguity_term = ambiguity if self.cfg.use_ambiguity_penalty else 0.0
+        novelty_term = novelty if self.cfg.use_novelty_risk else 0.0
         selective_conf = (
             self.cfg.selective_alpha * p1
             + self.cfg.selective_beta * evidence_quality
-            - self.cfg.selective_gamma * ambiguity
-            - self.cfg.selective_delta * novelty
+            - self.cfg.selective_gamma * ambiguity_term
+            - self.cfg.selective_delta * novelty_term
         )
+        if not self.cfg.use_verifier_support:
+            selective_conf -= 0.0
+        if not self.cfg.use_memory_support:
+            selective_conf -= 0.0
         accepted: List[Dict[str, Any]] = []
         abstained_predictions: List[Dict[str, Any]] = []
         novel_candidates: List[Dict[str, Any]] = []
@@ -310,6 +318,13 @@ class ProtonetRuntime:
         t_known = float(self.novelty_calibration.get("T_known", self.cfg.novelty_known_threshold))
         t_novel = float(self.novelty_calibration.get("T_novel", self.cfg.novelty_novel_threshold))
         decision_band = "known"
+        selective_state = decide_prediction_state(
+            novelty_score=novelty,
+            selective_confidence=selective_conf,
+            abstain_threshold=float(self.cfg.abstain_threshold),
+            known_threshold=t_known,
+            novel_threshold=t_novel,
+        )
         selective_route = decide_selective_routing(
             novelty_score=novelty,
             selective_confidence=selective_conf,
@@ -317,11 +332,11 @@ class ProtonetRuntime:
             known_threshold=t_known,
             novel_threshold=t_novel,
         )
-        decision_band = selective_route.decision_band
-        if selective_route.route_novel:
+        decision_band = str(selective_state["decision_band"])
+        if bool(selective_state["route_novel"]):
             decision = "novel"
             accepted.append(dict(rows[0]))
-        elif selective_route.route_boundary:
+        elif bool(selective_state["route_boundary"]):
             decision = "abstain"
         else:
             margin = float(self.cfg.multi_label_margin)
@@ -338,9 +353,10 @@ class ProtonetRuntime:
         if decision == "abstain":
             abstained_predictions.append(
                 {
-                    "reason": selective_route.abstain_reason or "low_selective_confidence",
+                    "reason": selective_state["abstain_reason"] or selective_route.abstain_reason or "low_selective_confidence",
                     "confidence": float(max(0.0, min(1.0, selective_conf))),
                     "ambiguity_score": float(ambiguity),
+                    "selective_score": float(selective_state["selective_score"]),
                 }
             )
 

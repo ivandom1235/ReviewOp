@@ -6,12 +6,22 @@ import AlertsPage from "./AlertsPage";
 import AlertDetailPage from "./AlertDetailPage";
 import ReviewQueue from "./ReviewQueue";
 import UserReviewsInsights from "./UserReviewsInsights";
-import ExportsPage from "./ExportsPage";
 import { useAdminPortal } from "./useAdminPortal";
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 
 export default function AdminPortal() {
   const [exportOpen, setExportOpen] = useState(false);
+  const dropdownRef = useRef(null);
+  
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setExportOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
   const state = useAdminPortal();
   const {
     isDark,
@@ -92,9 +102,45 @@ export default function AdminPortal() {
             <button type="button" onClick={handleLogout} className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-slate-800 text-slate-200" : "bg-slate-200 text-slate-700"}`}>
               Logout
             </button>
-            <button type="button" onClick={() => setExportOpen(true)} className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950">
-              Export
-            </button>
+            <div className="relative" ref={dropdownRef}>
+              <button 
+                type="button" 
+                onClick={() => setExportOpen(!exportOpen)} 
+                className="flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 shadow-md transition-all hover:bg-emerald-400 active:scale-95"
+              >
+                <span>Export</span>
+                <svg className={`h-4 w-4 transition-transform duration-200 ${exportOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              
+              {exportOpen && (
+                <div className={`absolute right-0 mt-3 w-48 origin-top-right overflow-hidden rounded-xl shadow-xl ring-1 ring-black ring-opacity-5 focus:outline-none backdrop-blur-xl transition-all ${isDark ? "bg-slate-800/90 text-slate-200" : "bg-white/90 text-slate-700"}`}>
+                  <div className="py-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleExportJson(exportFilters);
+                        setExportOpen(false);
+                      }}
+                      className="block w-full px-4 py-3 text-left text-sm font-medium transition-colors hover:bg-emerald-500/20"
+                    >
+                      Export JSON
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleExportPdf(exportFilters);
+                        setExportOpen(false);
+                      }}
+                      className="block w-full px-4 py-3 text-left text-sm font-medium transition-colors hover:bg-emerald-500/20"
+                    >
+                      Export PDF
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
@@ -117,20 +163,6 @@ export default function AdminPortal() {
           {activePage === "AlertDetail" ? <AlertDetailPage alert={selectedAlert} isDark={isDark} onBack={() => setActivePage("Alerts")} onOpenGraphNode={() => setActivePage("GraphExplorer")} /> : null}
         </div>
       </main>
-
-      {exportOpen ? (
-        <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-black/40">
-          <div className={`h-full w-full max-w-4xl overflow-auto border-l p-4 ${isDark ? "border-slate-800 bg-[#060b18]" : "border-slate-200 bg-white"}`}>
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold">Export</h3>
-              <button type="button" onClick={() => setExportOpen(false)} className={`rounded-xl px-3 py-2 text-sm font-semibold ${isDark ? "bg-slate-800 text-slate-200" : "bg-slate-200 text-slate-700"}`}>
-                Close
-              </button>
-            </div>
-            <ExportsPage isDark={isDark} onExportJson={handleExportJson} onExportPdf={handleExportPdf} exportPayload={exportPayload} exportFilters={exportFilters} setExportFilters={setExportFilters} loading={exportLoading} onRefreshExport={() => refreshExportPreview(exportFilters)} />
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

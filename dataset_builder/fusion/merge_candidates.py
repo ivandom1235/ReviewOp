@@ -15,7 +15,21 @@ def dedupe_merged_candidates(items: list[Interpretation]) -> list[Interpretation
         if i.source_type == "implicit_json": return 1
         return 0
 
-    sorted_items = sorted(items, key=lambda i: (i.canonical_confidence, source_rank(i)), reverse=True)
+    def mapping_source_rank(i: Interpretation) -> int:
+        ranks = {
+            "anchor_modifier": 4,
+            "trusted_learned": 3,
+            "exact_phrase": 2,
+            "anchor_only": 1,
+            "token_fallback": 1,
+            "fuzzy_alias": 1,
+            "fuzzy_canonical": 1,
+            "provisional": 1,
+            "open_world": 1,
+        }
+        return ranks.get(i.mapping_source, 0)
+
+    sorted_items = sorted(items, key=lambda i: (mapping_source_rank(i), i.canonical_confidence, source_rank(i)), reverse=True)
     out: list[Interpretation] = []
     
     for item in sorted_items:

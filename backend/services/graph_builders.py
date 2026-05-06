@@ -41,6 +41,20 @@ def _polarity_hint(source_sentiment: str | None, target_sentiment: str | None) -
     return "neutral"
 
 
+def _contradiction_from_sentiments(counter: Counter) -> tuple[float, list[str]]:
+    total = sum(counter.values())
+    if total <= 0:
+        return 0.0, []
+    dominant = counter.most_common(1)[0][1] if counter else 0
+    score = max(0.0, min(1.0, 1.0 - (dominant / total)))
+    contradiction_types: list[str] = []
+    if counter.get("positive", 0) and counter.get("negative", 0):
+        contradiction_types.append("sentiment_conflict")
+    if score >= 0.5 and "sentiment_conflict" not in contradiction_types:
+        contradiction_types.append("low_consensus")
+    return score, contradiction_types
+
+
 def _prediction_origin(prediction: Prediction, snippet: str | None) -> str:
     return prediction_origin(prediction, snippet)
 
@@ -126,6 +140,9 @@ def build_single_review_graph(db: Session, review_id: int) -> dict | None:
                 "evidence_start": start_char if span else None,
                 "evidence_end": end_char if span else None,
                 "origin": origin,
+                "contradiction_score": getattr(prediction, "contradiction_score", None),
+                "contradiction_types": list(getattr(prediction, "contradiction_types", []) or []),
+                "quarantine_status": getattr(prediction, "quarantine_status", None),
                 "_confidence_total": float(prediction.confidence or 0.0),
                 "_mentions": 1,
                 "_sentiments": Counter([prediction.sentiment]),
@@ -140,6 +157,12 @@ def build_single_review_graph(db: Session, review_id: int) -> dict | None:
                 current["evidence"] = snippet
                 current["evidence_start"] = start_char
                 current["evidence_end"] = end_char
+            if current.get("contradiction_score") is None:
+                current["contradiction_score"] = getattr(prediction, "contradiction_score", None)
+            if not current.get("contradiction_types"):
+                current["contradiction_types"] = list(getattr(prediction, "contradiction_types", []) or [])
+            if current.get("quarantine_status") is None:
+                current["quarantine_status"] = getattr(prediction, "quarantine_status", None)
 
         ordering.append((start_char, aspect_id))
 
@@ -149,6 +172,10 @@ def build_single_review_graph(db: Session, review_id: int) -> dict | None:
         explicit_count = int(node["explicit_count"])
         implicit_count = int(node["implicit_count"])
         origin = "explicit" if explicit_count and not implicit_count else "implicit" if implicit_count and not explicit_count else "mixed"
+        derived_score, derived_types = _contradiction_from_sentiments(node["_sentiments"])
+        explicit_score = node.get("contradiction_score")
+        reliability_score = max(float(explicit_score or 0.0), float(derived_score or 0.0))
+        reliability_types = list(node["contradiction_types"] or derived_types)
         nodes.append(
             {
                 "id": aspect_id,
@@ -161,6 +188,10 @@ def build_single_review_graph(db: Session, review_id: int) -> dict | None:
                 "evidence_start": node.get("evidence_start"),
                 "evidence_end": node.get("evidence_end"),
                 "origin": origin,
+                "contradiction_score": float(reliability_score),
+                "contradiction_types": reliability_types,
+                "quarantine_status": node.get("quarantine_status"),
+                "graph_support_score": float(max(0.0, 1.0 - float(reliability_score or 0.0))),
             }
         )
 
@@ -216,6 +247,9 @@ def build_batch_aspect_graph(
     dt_to: str | None = None,
     min_edge_weight: int = 1,
     graph_mode: str = "accepted",
+    contradiction_type: str | None = None,
+    quarantine_status: str | None = None,
+    graph_support_score: float | None = None,
 ) -> dict:
     domain = _clean_filter_value(domain)
     product_id = _clean_filter_value(product_id)
@@ -278,12 +312,21 @@ def build_batch_aspect_graph(
                     "implicit_count": 0,
                     "_scores": [],
                     "_sentiments": Counter(),
+                    "contradiction_score": None,
+                    "contradiction_types": [],
+                    "quarantine_status": None,
                 },
             )
             stats["_scores"].append(SENTIMENT_SCORE.get(prediction.sentiment, 0.0))
             stats["_sentiments"][prediction.sentiment] += 1
             stats["explicit_count"] += 1 if origin == "explicit" else 0
             stats["implicit_count"] += 1 if origin == "implicit" else 0
+            if stats.get("contradiction_score") is None:
+                stats["contradiction_score"] = getattr(prediction, "contradiction_score", None)
+            if not stats.get("contradiction_types"):
+                stats["contradiction_types"] = list(getattr(prediction, "contradiction_types", []) or [])
+            if stats.get("quarantine_status") is None:
+                stats["quarantine_status"] = getattr(prediction, "quarantine_status", None)
             review_aspects.add(aspect_id)
 
         for aspect_id in review_aspects:
@@ -300,6 +343,8 @@ def build_batch_aspect_graph(
         dominant = _dominant_sentiment(stats["_sentiments"])
         negative_count = int(stats["_sentiments"].get("negative", 0))
         mention_count = sum(stats["_sentiments"].values())
+        derived_score, derived_types = _contradiction_from_sentiments(stats["_sentiments"])
+        explicit_score = stats.get("contradiction_score")
         nodes.append(
             {
                 "id": aspect_id,
@@ -310,6 +355,10 @@ def build_batch_aspect_graph(
                 "negative_ratio": round(negative_count / mention_count, 4) if mention_count else 0.0,
                 "explicit_count": int(stats["explicit_count"]),
                 "implicit_count": int(stats["implicit_count"]),
+                "contradiction_score": float(max(float(explicit_score or 0.0), float(derived_score or 0.0))),
+                "contradiction_types": stats.get("contradiction_types") or derived_types,
+                "quarantine_status": stats.get("quarantine_status"),
+                "graph_support_score": float(max(0.0, 1.0 - max(float(explicit_score or 0.0), float(derived_score or 0.0)))),
             }
         )
 
@@ -341,6 +390,9 @@ def build_batch_aspect_graph(
             "to": dt_to,
             "graph_mode": "accepted",
             "min_edge_weight": max(int(min_edge_weight or 1), 1),
+            "contradiction_type": contradiction_type,
+            "quarantine_status": quarantine_status,
+            "graph_support_score": graph_support_score,
             "time_bucket_ready": True,
             "review_limit": MAX_BATCH_GRAPH_REVIEWS,
             "truncated": len(reviews) >= MAX_BATCH_GRAPH_REVIEWS,
@@ -376,6 +428,7 @@ def _build_batch_novel_graph(
     aspects_by_review: dict[int, set[str]] = defaultdict(set)
     node_counts: Counter = Counter()
     novelty_sum: defaultdict[str, float] = defaultdict(float)
+    node_metadata: dict[str, dict] = {}
     edge_weights: defaultdict[tuple[str, str], int] = defaultdict(int)
 
     for novel_row, review in rows:
@@ -385,6 +438,20 @@ def _build_batch_novel_graph(
         node_counts[aspect] += 1
         novelty_sum[aspect] += float(novel_row.novelty_score or 0.0)
         aspects_by_review[int(review.id)].add(aspect)
+        metadata = node_metadata.setdefault(
+            aspect,
+            {
+                "contradiction_score": None,
+                "contradiction_types": [],
+                "quarantine_status": None,
+            },
+        )
+        if metadata.get("contradiction_score") is None:
+            metadata["contradiction_score"] = getattr(novel_row, "contradiction_score", None)
+        if not metadata.get("contradiction_types"):
+            metadata["contradiction_types"] = list(getattr(novel_row, "contradiction_types", []) or [])
+        if metadata.get("quarantine_status") is None:
+            metadata["quarantine_status"] = getattr(novel_row, "quarantine_status", None)
 
     for review_aspects in aspects_by_review.values():
         for source, target in combinations(sorted(review_aspects), 2):
@@ -392,6 +459,11 @@ def _build_batch_novel_graph(
 
     nodes = []
     for aspect, count in sorted(node_counts.items(), key=lambda item: (-item[1], item[0])):
+        derived_score, derived_types = _contradiction_from_sentiments(
+            node_metadata.get(aspect, {}).get("_sentiments", Counter())
+        )
+        metadata = node_metadata.get(aspect, {})
+        explicit_score = metadata.get("contradiction_score")
         nodes.append(
             {
                 "id": aspect,
@@ -404,6 +476,10 @@ def _build_batch_novel_graph(
                 "implicit_count": int(count),
                 "origin": "novel_side",
                 "confidence": round(novelty_sum[aspect] / max(count, 1), 4),
+                "contradiction_score": max(float(explicit_score or 0.0), float(derived_score or 0.0)),
+                "contradiction_types": metadata.get("contradiction_types") or derived_types,
+                "quarantine_status": metadata.get("quarantine_status"),
+                "graph_support_score": float(max(0.0, 1.0 - max(float(explicit_score or 0.0), float(derived_score or 0.0)))),
             }
         )
 
@@ -434,6 +510,9 @@ def _build_batch_novel_graph(
             "to": dt_to,
             "graph_mode": "novel_side",
             "min_edge_weight": max(int(min_edge_weight or 1), 1),
+            "contradiction_type": None,
+            "quarantine_status": None,
+            "graph_support_score": None,
             "time_bucket_ready": True,
         },
         "nodes": nodes,

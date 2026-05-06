@@ -3,11 +3,21 @@ from __future__ import annotations
 from typing import Any
 
 
+def _get_val(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def check_group_leakage(splits: dict[str, list[Any]]) -> dict[str, int | bool]:
-    groups_by_split = {
-        split: {str(getattr(row, "group_id", row.get("group_id") if isinstance(row, dict) else "")) for row in rows}
-        for split, rows in splits.items()
-    }
+    groups_by_split = {}
+    for split, rows in splits.items():
+        s_groups = set()
+        for row in rows:
+            gid = str(_get_val(row, "group_id", "")).strip()
+            if gid:
+                s_groups.add(gid)
+        groups_by_split[split] = s_groups
     leakage = 0
     names = list(groups_by_split)
     for index, left in enumerate(names):
