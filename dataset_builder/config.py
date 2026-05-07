@@ -73,6 +73,7 @@ class BuilderConfig:
     provisional_policy: str = "strict"
     evidence_window_tokens: int = 8
     aspect_memory_auto_promote: bool = False
+    aspect_memory_bootstrap: bool = False
     aspect_memory_review_queue_min_support: int = 3
     aspect_memory_review_queue_min_reviews: int = 3
     aspect_memory_review_queue_min_surface_forms: int = 2
@@ -121,6 +122,7 @@ def load_config(path: str | Path | None = None) -> BuilderConfig:
         provisional_policy=str(payload.get("provisional_policy", "strict")),
         evidence_window_tokens=int(payload.get("evidence_window_tokens", 8)),
         aspect_memory_auto_promote=bool(payload.get("aspect_memory_auto_promote", False)),
+        aspect_memory_bootstrap=bool(payload.get("aspect_memory_bootstrap", False)),
         aspect_memory_review_queue_min_support=int(payload.get("aspect_memory_review_queue_min_support", 3)),
         aspect_memory_review_queue_min_reviews=int(payload.get("aspect_memory_review_queue_min_reviews", 3)),
         aspect_memory_review_queue_min_surface_forms=int(payload.get("aspect_memory_review_queue_min_surface_forms", 2)),
@@ -174,6 +176,7 @@ def to_jsonable(cfg: BuilderConfig) -> dict[str, Any]:
         "provisional_policy": cfg.provisional_policy,
         "evidence_window_tokens": cfg.evidence_window_tokens,
         "aspect_memory_auto_promote": cfg.aspect_memory_auto_promote,
+        "aspect_memory_bootstrap": cfg.aspect_memory_bootstrap,
         "aspect_memory_review_queue_min_support": cfg.aspect_memory_review_queue_min_support,
         "aspect_memory_review_queue_min_reviews": cfg.aspect_memory_review_queue_min_reviews,
         "aspect_memory_review_queue_min_surface_forms": cfg.aspect_memory_review_queue_min_surface_forms,

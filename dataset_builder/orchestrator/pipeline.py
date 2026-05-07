@@ -53,6 +53,16 @@ def _get_code_hash() -> str:
     return h.hexdigest()[:12]
 
 
+def _load_json_dict(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
 def run_builder_pipeline(
     cfg: BuilderConfig, 
     raw_reviews: list[RawReview] | None = None,
@@ -98,7 +108,11 @@ def run_builder_pipeline(
                 domain_family=r.domain_family,
                 review_text=r.text,
                 gold_interpretations=[], # Will be filled by stages
-                provenance={"source_name": r.source_name, "source_split": r.source_split}
+                provenance={
+                    "source_name": r.source_name,
+                    "source_split": r.source_split,
+                    "metadata": dict(r.metadata or {}),
+                }
             ) for r in raw_reviews
         ]
         
@@ -260,6 +274,7 @@ def run_builder_pipeline(
             "review_queue_count": 0,
             "rejected_candidates_this_run": 0,
         }
+        aspect_memory_summary = _load_json_dict(output_dir / "aspect_memory_summary.json")
         if cfg.aspect_memory_path:
             runtime_metrics = getattr(cfg, "_aspect_memory_metrics", {}) or {}
             try:
@@ -274,6 +289,13 @@ def run_builder_pipeline(
             for key in ("candidates_added", "promoted_matches_used", "candidates_promoted_this_run", "rejected_candidates_this_run"):
                 if key in runtime_metrics:
                     aspect_memory_metrics[key] = runtime_metrics[key]
+        if aspect_memory_summary:
+            if "promoted_count" in aspect_memory_summary and "promoted_entries_total" not in aspect_memory_summary:
+                aspect_memory_metrics["promoted_entries_total"] = int(aspect_memory_summary.get("promoted_count", 0) or 0)
+            for key, value in aspect_memory_summary.items():
+                aspect_memory_metrics[key] = value
+            if "promoted_count" in aspect_memory_summary:
+                aspect_memory_metrics["promoted_entries_total"] = int(aspect_memory_summary.get("promoted_count", 0) or 0)
         metrics["aspect_memory"] = aspect_memory_metrics
         metrics["anchor_modifier_debug"] = getattr(cfg, "_anchor_modifier_debug", {}) or {}
         
@@ -419,6 +441,7 @@ def run_builder_pipeline(
                 "evidence_window_tokens": cfg.evidence_window_tokens,
                 "aspect_memory_path": cfg.aspect_memory_path,
                 "aspect_memory_auto_promote": cfg.aspect_memory_auto_promote,
+                "aspect_memory_bootstrap": cfg.aspect_memory_bootstrap,
                 "symptom_store_path": cfg.symptom_store_path,
                 "domain_holdout_domain": domain_holdout_domain,
                 "max_workers": cfg.max_workers,

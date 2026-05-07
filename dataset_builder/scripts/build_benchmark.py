@@ -56,6 +56,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provisional-policy", choices=["loose", "strict", "memory_only"], default="strict")
     parser.add_argument("--evidence-window-tokens", type=int, default=8)
     parser.add_argument("--aspect-memory-auto-promote", action="store_true")
+    parser.add_argument("--aspect-memory-bootstrap", action="store_true")
     parser.add_argument("--max-workers", type=int, default=20, help="Concurrency for LLM stages")
     return parser
 
@@ -107,6 +108,7 @@ def build_config_from_args(args: argparse.Namespace, resolved_input_paths: list[
         provisional_policy=args.provisional_policy,
         evidence_window_tokens=args.evidence_window_tokens,
         aspect_memory_auto_promote=args.aspect_memory_auto_promote,
+        aspect_memory_bootstrap=args.aspect_memory_bootstrap,
         aspect_memory_path=str(args.aspect_memory) if args.aspect_memory else None,
         domain_holdout_domain=str(args.domain_holdout_domain).strip() if args.domain_holdout_domain else None,
         max_workers=args.max_workers,
@@ -116,10 +118,18 @@ def build_config_from_args(args: argparse.Namespace, resolved_input_paths: list[
 
 
 def select_working_reviews(rows: Sequence[RawReview], cfg: BuilderConfig) -> list[RawReview]:
-    ordered = list(rows)
-    random.Random(cfg.random_seed).shuffle(ordered)
+    fixture_rows = [row for row in rows if str(row.metadata.get("fixture_priority", "")).strip().lower() == "must_include"]
+    regular_rows = [row for row in rows if row not in fixture_rows]
+    rng = random.Random(cfg.random_seed)
+    rng.shuffle(fixture_rows)
+    rng.shuffle(regular_rows)
+
     if cfg.sample_size is not None:
-        ordered = ordered[: cfg.sample_size]
+        reserved = fixture_rows[: cfg.sample_size]
+        remaining_slots = max(0, cfg.sample_size - len(reserved))
+        ordered = reserved + regular_rows[:remaining_slots]
+    else:
+        ordered = fixture_rows + regular_rows
     if cfg.chunk_size is not None:
         start = cfg.chunk_offset
         ordered = ordered[start : start + cfg.chunk_size]

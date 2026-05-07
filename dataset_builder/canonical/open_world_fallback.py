@@ -9,6 +9,16 @@ ACTION_START_VERBS = {
 PRONOUN_STARTS = {"this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its"}
 CONTEXT_NOUNS = {"occasion", "beginning", "time", "day", "night", "moment", "thing", "stuff", "way", "part", "kind", "type", "lot"}
 SENTIMENT_PREFIXES = {"great", "excellent", "amazing", "terrible", "awful", "bad", "good", "poor", "delicious", "tasty", "slow", "fast"}
+NOISY_SENTIMENT_LABELS = {
+    "good_luck",
+    "great_smile",
+    "great_evening",
+    "good_laugh",
+    "dam_good",
+    "good_choice",
+    "good_product",
+    "excellent_proprietary_software",
+}
 
 @dataclass(frozen=True)
 class CandidateDecision:
@@ -73,7 +83,15 @@ def mark_provisional_canonical(candidate: str) -> str:
     raw = str(candidate or "").strip()
     if not raw or is_noisy_label(raw):
         return ""
-    return raw.lower().replace(" ", "_")
+    normalized = raw.lower().replace(" ", "_")
+    if normalized in NOISY_SENTIMENT_LABELS:
+        return ""
+    tokens = raw.lower().split()
+    if tokens and tokens[0] in SENTIMENT_PREFIXES and len(tokens) <= 3:
+        stripped = strip_sentiment_modifiers(raw)
+        if stripped in CONTEXT_NOUNS or stripped in {"product", "software", "choice", "evening", "smile", "laugh", "luck"}:
+            return ""
+    return normalized
 
 
 def classify_unmapped_candidate(

@@ -312,6 +312,8 @@ class AspectMemory:
         total = len(self.entries)
         review_queue = [e for e in self.entries.values() if e.status == "review_queue"]
         promoted = [e for e in self.entries.values() if e.status == "promoted"]
+        bootstrap_entries = [e for e in self.entries.values() if self._is_bootstrap_entry(e)]
+        organic_entries = [e for e in self.entries.values() if not self._is_bootstrap_entry(e)]
         
         # Calculate broad noun rate for summary
         BROAD_NOUNS = {
@@ -334,14 +336,24 @@ class AspectMemory:
                 if not any(self._contains_behavior_cue(pattern) for pattern in e.trigger_patterns):
                     broad_count += 1
         
+        evidence_pattern_count = sum(
+            1
+            for e in self.entries.values()
+            if any(self._contains_behavior_cue(pattern) for pattern in e.trigger_patterns)
+        )
+
         payload = {
             "total_entries": total,
             "review_queue_count": len(review_queue),
             "promoted_count": len(promoted),
             "rejected_count": sum(1 for e in self.entries.values() if e.status == "rejected"),
+            "bootstrap_entry_count": len(bootstrap_entries),
+            "organic_entry_count": len(organic_entries),
+            "bootstrap_review_queue_count": sum(1 for e in bootstrap_entries if e.status == "review_queue"),
+            "organic_review_queue_count": sum(1 for e in organic_entries if e.status == "review_queue"),
             "unknown_candidate_count": unknown_count,
             "broad_noun_candidate_rate": broad_count / total if total > 0 else 0,
-            "evidence_pattern_candidate_rate": sum(1 for e in self.entries.values() if any(len(p.split()) > 2 for p in e.trigger_patterns)) / total if total > 0 else 0,
+            "evidence_pattern_candidate_rate": evidence_pattern_count / total if total > 0 else 0,
             "top_clusters": [
                 {
                     "cluster_id": e.cluster_id,
@@ -370,6 +382,15 @@ class AspectMemory:
         out_p = Path(output_path)
         out_p.parent.mkdir(parents=True, exist_ok=True)
         out_p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _is_bootstrap_entry(entry: MemoryEntry) -> bool:
+        if str(entry.run_id or "").strip().lower() == "synthetic_bootstrap":
+            return True
+        return bool(entry.evidence_examples) and all(
+            str(example.get("timestamp", "") or "").strip().lower() == "synthetic"
+            for example in entry.evidence_examples
+        )
 
     def match_promoted(self, text: str) -> list[MemoryEntry]:
         """Finds all promoted clusters that have a presence in the given text."""
@@ -501,9 +522,15 @@ class AspectMemory:
         cleaned = " ".join(str(text or "").split()).strip(" ,.;:!?")
         if not cleaned:
             return ""
+        original = cleaned.lower()
         words = cleaned.split()
         if len(words) > 8:
             cleaned = " ".join(words[:8])
+        cleaned = AspectMemory._trim_weak_start_tokens(cleaned)
+        cleaned_tokens = re.findall(r"\b\w+\b", cleaned.lower())
+        if cleaned.lower() != original:
+            if not cleaned_tokens or not any(token in AspectMemory.BEHAVIOR_CUES for token in cleaned_tokens):
+                return ""
         if aspect_norm and cleaned.lower() == aspect_norm:
             return ""
         return cleaned.lower()
@@ -555,8 +582,48 @@ class AspectMemory:
         token_set = set(tokens)
         if token_set & self.BEHAVIOR_CUES:
             return False
-        if len(tokens) <= 2 and token_set & self.SENTIMENT_CUES:
+        if token_set & self.SENTIMENT_CUES:
+            return True
+        if self._is_generic_evidence_phrase(phrase):
             return True
         if len(tokens) == 2 and self._looks_generic_clause(tokens):
             return True
         return False
+
+    @staticmethod
+    def _trim_weak_start_tokens(text: str) -> str:
+        tokens = re.findall(r"\b\w+\b", str(text or "").lower())
+        weak_single_starts = {
+            "that",
+            "which",
+            "where",
+            "quality",
+            "great",
+            "excellent",
+            "good",
+            "bad",
+            "poor",
+            "awful",
+            "terrible",
+        }
+        weak_start_pairs = {
+            ("i", "was"),
+            ("i", "am"),
+            ("they", "have"),
+            ("we", "have"),
+            ("it", "was"),
+            ("it", "is"),
+            ("that", "was"),
+            ("that", "is"),
+            ("this", "was"),
+            ("this", "is"),
+        }
+        while tokens:
+            if len(tokens) >= 2 and (tokens[0], tokens[1]) in weak_start_pairs:
+                tokens = tokens[2:]
+                continue
+            if tokens[0] in weak_single_starts:
+                tokens = tokens[1:]
+                continue
+            break
+        return " ".join(tokens).strip()

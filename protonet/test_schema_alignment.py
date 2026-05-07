@@ -11,7 +11,7 @@ import torch
 from protonet.code.config import ProtonetConfig
 from protonet.code.dataset_reader import load_input_dataset, validate_benchmark_rows
 from protonet.code.evaluator import evaluate_episodes
-from protonet.code.selective_decisions import decide_prediction_state
+from protonet.code.selective_decisions import combine_routing_score, decide_prediction_state
 
 
 class DatasetReaderSchemaAlignmentTests(unittest.TestCase):
@@ -112,6 +112,27 @@ class EvaluatorSchemaAlignmentTests(unittest.TestCase):
         self.assertEqual(state["decision"], "novel")
         self.assertTrue(state["route_novel"])
         self.assertIn("selective_score", state)
+
+    def test_combined_routing_score_penalizes_contradiction_signal(self) -> None:
+        base = combine_routing_score(
+            prototype_similarity=0.9,
+            evidence_support=0.8,
+            verifier_support=0.7,
+            memory_support=0.6,
+            ambiguity_penalty=0.1,
+            novelty_risk=0.1,
+        )
+        penalized = combine_routing_score(
+            prototype_similarity=0.9,
+            evidence_support=0.8,
+            verifier_support=0.7,
+            memory_support=0.6,
+            ambiguity_penalty=0.1,
+            novelty_risk=0.1,
+            contradiction_score=1.0,
+        )
+
+        self.assertLess(penalized, base)
 
 
 class DomainHoldoutLoaderTests(unittest.TestCase):

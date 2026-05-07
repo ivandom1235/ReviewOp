@@ -65,6 +65,16 @@ def derive_row_mapping_sources(gold_interpretations: Iterable[object]) -> tuple[
 
 
 def derive_row_metadata(row: BenchmarkRow) -> BenchmarkRow:
+    if bool(getattr(row, "abstain_acceptable", False)) and not tuple(row.gold_interpretations or ()):
+        return replace(
+            row,
+            source_type="abstain",
+            mapping_source="abstain",
+            mapping_scope="abstain",
+            row_source_type="abstain",
+            row_mapping_scope="abstain",
+            row_mapping_sources=("abstain",),
+        )
     mapping_sources = derive_row_mapping_sources(row.gold_interpretations)
     mapping_scope = derive_row_mapping_scope(row.gold_interpretations)
     source_type = derive_row_source_type(row.gold_interpretations)

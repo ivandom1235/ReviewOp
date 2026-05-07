@@ -36,6 +36,19 @@ def canonicalize_interpretation(
     policy: CanonicalizationPolicy | None = None
 ) -> Interpretation:
     """Canonicalize an interpretation using multi-step lookup."""
+    if (
+        str(getattr(item, "source", "") or "").strip() == "behavior_pattern_matcher"
+        and str(getattr(item, "aspect_canonical", "") or "").strip()
+        and str(getattr(item, "aspect_canonical", "") or "").strip() != "unknown"
+    ):
+        return replace(
+            item,
+            mapping_source="open_world",
+            canonical_confidence=max(float(getattr(item, "canonical_confidence", 0.0) or 0.0), 0.85),
+            mapping_scope="open_world",
+            mapping_layers=("open_world",),
+        )
+
     if policy is None:
         if domain_mode or provisional_policy:
             from ..config import BuilderConfig

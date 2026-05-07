@@ -120,7 +120,9 @@ def build_quality_report(
             dropped_reason_counts[str(key)] += int(val)
 
     row_reason_counts = {}
-    if rejected_rows > 0:
+    if runtime_reason_counts:
+        row_reason_counts = {str(key): int(val) for key, val in runtime_reason_counts.items()}
+    elif rejected_rows > 0:
         row_reason_counts["empty_gold_after_canonicalization"] = int(rejected_rows)
 
     return QualityReport(

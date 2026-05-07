@@ -77,18 +77,11 @@ def aggregate_row_novelty(interpretations: list[Interpretation]) -> str:
     if not interpretations:
         return "known"
 
-    # Normalize sources for aggregation
-    sources = {str(getattr(i, "mapping_source", "") or "").strip().lower() for i in interpretations}
-    discovery_sources = {"memory_candidate", "open_world_candidate", "provisional", "open_world"}
-    if any(s in discovery_sources for s in sources):
-        # Check if any discovery candidate is of decent quality
-        high_quality_discovery = any(
-            (str(getattr(i, "mapping_source", "")).lower() in discovery_sources)
-            and (i.canonical_confidence or 0.0) >= 0.35  # Match test requirement for provisional
-            for i in interpretations
-        )
-        if high_quality_discovery:
-            return "novel"
+    if any(getattr(i, "novelty_status", "unknown") == "novel" for i in interpretations):
+        return "novel"
+
+    if any(getattr(i, "novelty_status", "unknown") == "boundary" for i in interpretations):
+        return "boundary"
 
     high_conf = [i for i in interpretations if (i.canonical_confidence or 0.0) >= 0.6]
     if not high_conf:

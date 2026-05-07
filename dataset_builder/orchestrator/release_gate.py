@@ -148,7 +148,10 @@ def assert_release_ready(
         failures.append(msg)
     rejected_rows = int(q_data.get("rejected_rows", 0) or 0)
     reason_counts = q_data.get("reason_counts", {}) or {}
-    if rejected_rows > 0 and not reason_counts:
+    row_rejection_reason_counts = q_data.get("row_rejection_reason_counts", {}) or {}
+    dropped_interpretation_reason_counts = q_data.get("dropped_interpretation_reason_counts", {}) or {}
+    has_rejection_counts = bool(reason_counts) or bool(row_rejection_reason_counts) or bool(dropped_interpretation_reason_counts)
+    if rejected_rows > 0 and not has_rejection_counts:
         msg = "rejected_rows present but reason_counts is empty"
         if profile == "diagnostic_strict":
             failures.append(msg)

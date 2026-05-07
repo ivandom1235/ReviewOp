@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile
 
 
 PROFILE_DEFAULTS = {
@@ -24,6 +25,22 @@ def _load_json(path: Path) -> dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _load_jsonl_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if isinstance(payload, dict):
+                records.append(payload)
+    except Exception:
+        return []
+    return records
 
 
 def _percentage_target(expected_rows: int, ratio: float, minimum: int = 0) -> int:
@@ -53,6 +70,13 @@ def _profile_thresholds(profile: str, expected_rows: int) -> dict[str, Any]:
         "journal": 5,
         "diagnostic_strict": 3,
     }.get(profile, 1)
+    aspect_swap_floor = {
+        "smoke": 1,
+        "development": 3,
+        "stability": 10,
+        "journal": 25,
+        "diagnostic_strict": 5,
+    }.get(profile, 3)
     return {
         "profile": profile,
         "expected_rows": expected_rows,
@@ -66,17 +90,27 @@ def _profile_thresholds(profile: str, expected_rows: int) -> dict[str, Any]:
         "novel_rate_min": 0.05,
         "novel_rate_max": 0.15,
         "review_queue_min": review_queue_floor,
+        "min_aspect_swap_count": aspect_swap_floor,
         "broad_noun_rate_max": 0.20,
         "unknown_candidate_count_max": 0,
     }
 
 
-def verify(output_dir: str, *, profile: str = "development", expected_rows: int | None = None) -> int:
+def verify(
+    output_dir: str,
+    *,
+    profile: str = "development",
+    expected_rows: int | None = None,
+    require_organic_memory: bool = False,
+    require_rejected_row_audit: bool = False,
+    require_counterfactual_source_breakdown: bool = False,
+) -> int:
     p = Path(output_dir)
     manifest_path = p / "manifest.json"
     metrics_path = p / "metrics_summary.json"
     quality_path = p / "quality_report.json"
     cf_quality_path = p / "counterfactual" / "counterfactual_quality_report.json"
+    rejected_rows_path = p / "rejected_rows.jsonl"
 
     if not manifest_path.exists():
         print(f"FAILED: manifest.json not found in {output_dir}")
@@ -91,6 +125,7 @@ def verify(output_dir: str, *, profile: str = "development", expected_rows: int 
     quality = metrics.get("quality", {}) if isinstance(metrics.get("quality", {}), dict) else {}
     quality_file = _load_json(quality_path)
     cf_quality_file = _load_json(cf_quality_path)
+    rejected_row_records = _load_jsonl_records(rejected_rows_path)
 
     thresholds = _profile_thresholds(profile, expected_rows or int(manifest.get("sample_size_requested") or PROFILE_DEFAULTS.get(profile, 200)))
     expected_rows = thresholds["expected_rows"]
@@ -170,7 +205,8 @@ def verify(output_dir: str, *, profile: str = "development", expected_rows: int 
     mapping_scope_unknown_count = int(canonicalization.get("mapping_scope_unknown_count", 0) or 0)
     abstain_count = int(hardness.get("H2", 0) or 0) + int(hardness.get("H3", 0) or 0)
     abstain_rate = abstain_count / max(1, total_exported)
-    novel_rate = (int(novelty.get("novel", 0) or 0) + int(novelty.get("boundary", 0) or 0)) / max(1, total_exported)
+    strict_novel_rate = int(novelty.get("novel", 0) or 0) / max(1, total_exported)
+    boundary_rate = int(novelty.get("boundary", 0) or 0) / max(1, total_exported)
     domain_holdout_val = int((domain_holdout.get("counts", {}) or {}).get("val", 0) or 0)
     counterfactual_generated = int(cf_stats.get("generated", 0) or 0)
     counterfactual_exported = int(cf_payload.get("total", 0) or 0)
@@ -184,10 +220,17 @@ def verify(output_dir: str, *, profile: str = "development", expected_rows: int 
     cf_quality_rejected_unnatural = int(cf_quality_file.get("rejected_unnatural", 0) or 0)
     cf_quality_rejected_no_expected_change = int(cf_quality_file.get("rejected_no_expected_change", 0) or 0)
     cf_quality_type_counts = cf_quality_file.get("type_counts", {}) if isinstance(cf_quality_file.get("type_counts", {}), dict) else {}
+    aspect_swap_count = int(cf_quality_type_counts.get("aspect_swap", 0) or 0)
     review_queue_count = int(aspect_memory.get("review_queue_count", 0) or 0)
     promoted_count = int(aspect_memory.get("promoted_entries_total", 0) or aspect_memory.get("promoted_count", 0) or 0)
     unknown_candidate_count = int(aspect_memory.get("unknown_candidate_count", 0) or 0)
     broad_noun_rate = float(aspect_memory.get("broad_noun_candidate_rate", 0.0) or 0.0)
+    bootstrap_entry_count = int(aspect_memory.get("bootstrap_entry_count", 0) or 0)
+    organic_review_queue_count = int(aspect_memory.get("organic_review_queue_count", review_queue_count) or 0)
+    rejected_rows_count = int(quality_file.get("rejected_rows", quality.get("rejected_rows", 0)) or 0)
+    cf_source_counts = cf_stats.get("source_counts", {}) if isinstance(cf_stats.get("source_counts", {}), dict) else {}
+    natural_aspect_swap_count = int(cf_stats.get("natural_aspect_swap_count", 0) or 0)
+    synthetic_aspect_swap_count = int(cf_stats.get("synthetic_aspect_swap_count", 0) or 0)
 
     if total_exported < thresholds["min_exported_rows"]:
         failures.append(f"exported rows is {total_exported}, expected >= {thresholds['min_exported_rows']}")
@@ -199,8 +242,8 @@ def verify(output_dir: str, *, profile: str = "development", expected_rows: int 
         failures.append(f"anchor_modifier_count is {anchor_modifier_count}, expected >= {thresholds['min_anchor_modifier_count']}")
     if not (thresholds["abstain_rate_min"] <= abstain_rate <= thresholds["abstain_rate_max"]):
         failures.append(f"abstain rate is {abstain_rate:.2%}, expected between {thresholds['abstain_rate_min']:.0%} and {thresholds['abstain_rate_max']:.0%}")
-    if not (thresholds["novel_rate_min"] <= novel_rate <= thresholds["novel_rate_max"]):
-        failures.append(f"novel/open_world rate is {novel_rate:.2%}, expected between {thresholds['novel_rate_min']:.0%} and {thresholds['novel_rate_max']:.0%}")
+    if not (thresholds["novel_rate_min"] <= strict_novel_rate <= thresholds["novel_rate_max"]):
+        failures.append(f"strict novel rate is {strict_novel_rate:.2%}, expected between {thresholds['novel_rate_min']:.0%} and {thresholds['novel_rate_max']:.0%}")
     if domain_holdout_val < thresholds["min_domain_holdout_val"]:
         failures.append(f"domain_holdout val is {domain_holdout_val}, expected >= {thresholds['min_domain_holdout_val']}")
     if counterfactual_validated < thresholds["min_counterfactual_validated"]:
@@ -225,6 +268,8 @@ def verify(output_dir: str, *, profile: str = "development", expected_rows: int 
         failures.append(f"counterfactual quality report attempted count is {cf_quality_attempted}, generated count is {cf_quality_generated}")
     if cf_quality_file and cf_quality_rejected_unnatural == 0 and cf_quality_rejected_no_expected_change == 0:
         warnings.append("counterfactual quality report rejection breakdown is empty")
+    if aspect_swap_count < thresholds["min_aspect_swap_count"]:
+        failures.append(f"counterfactual aspect_swap_count is {aspect_swap_count}, expected >= {thresholds['min_aspect_swap_count']}")
     if review_queue_count < thresholds["review_queue_min"] and expected_rows >= 100:
         failures.append(f"aspect_memory review_queue_count is {review_queue_count}, expected >= {thresholds['review_queue_min']}")
     if unknown_candidate_count > thresholds["unknown_candidate_count_max"]:
@@ -235,18 +280,43 @@ def verify(output_dir: str, *, profile: str = "development", expected_rows: int 
         failures.append(f"found {mapping_scope_unknown_count} rows with unknown mapping_scope")
     if row_metadata_unknown_count > 0:
         failures.append(f"found {row_metadata_unknown_count} rows with unknown row metadata")
+    if require_organic_memory:
+        if bootstrap_entry_count > 0:
+            failures.append(f"bootstrap_entry_count is {bootstrap_entry_count}, expected 0 for organic-memory verification")
+        if organic_review_queue_count < thresholds["review_queue_min"]:
+            failures.append(f"organic_review_queue_count is {organic_review_queue_count}, expected >= {thresholds['review_queue_min']}")
+        if broad_noun_rate > thresholds["broad_noun_rate_max"]:
+            failures.append(f"organic memory broad_noun_candidate_rate is {broad_noun_rate:.2%}, expected <= {thresholds['broad_noun_rate_max']:.2%}")
+        if unknown_candidate_count > thresholds["unknown_candidate_count_max"]:
+            failures.append(f"organic memory unknown_candidate_count is {unknown_candidate_count}, expected {thresholds['unknown_candidate_count_max']}")
+    if require_rejected_row_audit:
+        if rejected_rows_count != len(rejected_row_records):
+            failures.append(f"rejected_rows.jsonl contains {len(rejected_row_records)} rows, but quality_report rejected_rows is {rejected_rows_count}")
+        for idx, record in enumerate(rejected_row_records, start=1):
+            if "candidate_trace" not in record:
+                failures.append(f"rejected_rows.jsonl row {idx} is missing candidate_trace")
+            if not record.get("recommended_recovery"):
+                failures.append(f"rejected_rows.jsonl row {idx} is missing recommended_recovery")
+    if require_counterfactual_source_breakdown:
+        if not cf_source_counts:
+            failures.append("counterfactual source_counts is missing or empty")
+        if natural_aspect_swap_count <= 0:
+            failures.append("counterfactual natural_aspect_swap_count is missing or zero")
+        if synthetic_aspect_swap_count < 0:
+            failures.append("counterfactual synthetic_aspect_swap_count is invalid")
     if matched_term_rate < 0.97:
         warnings.append(f"matched_term_in_evidence_rate is {matched_term_rate:.2%}")
     if counterfactual_rejected_unnatural == 0 and counterfactual_rejected_no_expected_change == 0:
         warnings.append("counterfactual rejection breakdown is empty")
 
+    quality_status = "pass" if not failures else "fail"
     source_artifact_consistency = {
         "code_hash": manifest.get("code_hash", ""),
         "config_hash": manifest.get("config_hash", ""),
         "run_command": manifest.get("run_command", ""),
         "sample_size_requested": requested,
         "sample_size_loaded": loaded,
-        "artifact_matches_source": len(failures) == 0,
+        "artifact_matches_source": requested == expected_rows and loaded == expected_rows,
     }
     (p / "source_artifact_consistency.json").write_text(json.dumps(source_artifact_consistency, indent=2), encoding="utf-8")
 
@@ -255,6 +325,7 @@ def verify(output_dir: str, *, profile: str = "development", expected_rows: int 
 
     verification_report = {
         "artifact_status": artifact_status,
+        "quality_status": quality_status,
         "ready_for_protonet": ready_for_protonet,
         "failed_checks": failures,
         "warnings": warnings,
@@ -268,12 +339,23 @@ def verify(output_dir: str, *, profile: str = "development", expected_rows: int 
             "anchor_modifier_count": anchor_modifier_count,
             "full_review_evidence_rate": full_review_rate,
             "abstain_rate": abstain_rate,
-            "novel_rate": novel_rate,
+            "strict_novel_rate": strict_novel_rate,
+            "boundary_rate": boundary_rate,
+            "bootstrap_entry_count": bootstrap_entry_count,
+            "organic_review_queue_count": organic_review_queue_count,
+            "rejected_rows_audit_count": len(rejected_row_records),
+            "natural_aspect_swap_count": natural_aspect_swap_count,
+            "synthetic_aspect_swap_count": synthetic_aspect_swap_count,
         },
         "source_artifact_consistency": source_artifact_consistency,
     }
 
     (p / "artifact_verification.json").write_text(json.dumps(verification_report, indent=2), encoding="utf-8")
+    artifact_zip_path = p / "artifact.zip"
+    if artifact_zip_path.exists():
+        with ZipFile(artifact_zip_path, "a", compression=ZIP_DEFLATED) as archive:
+            archive.write(p / "artifact_verification.json", arcname="artifact_verification.json")
+            archive.write(p / "source_artifact_consistency.json", arcname="source_artifact_consistency.json")
 
     if failures:
         print("VERIFICATION FAILED:")
@@ -290,8 +372,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("output_dir")
     parser.add_argument("--profile", default="development", choices=sorted(PROFILE_DEFAULTS))
     parser.add_argument("--expected-rows", type=int, default=None)
+    parser.add_argument("--require-organic-memory", action="store_true")
+    parser.add_argument("--require-rejected-row-audit", action="store_true")
+    parser.add_argument("--require-counterfactual-source-breakdown", action="store_true")
     args = parser.parse_args(argv)
-    return verify(args.output_dir, profile=args.profile, expected_rows=args.expected_rows)
+    return verify(
+        args.output_dir,
+        profile=args.profile,
+        expected_rows=args.expected_rows,
+        require_organic_memory=args.require_organic_memory,
+        require_rejected_row_audit=args.require_rejected_row_audit,
+        require_counterfactual_source_breakdown=args.require_counterfactual_source_breakdown,
+    )
 
 
 if __name__ == "__main__":

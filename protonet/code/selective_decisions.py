@@ -22,6 +22,7 @@ def decide_prediction_state(
     memory_support: float = 0.0,
     ambiguity_penalty: float = 0.0,
     novelty_risk: float = 0.0,
+    contradiction_score: float = 0.0,
     abstain_threshold: float,
     known_threshold: float,
     novel_threshold: float,
@@ -33,6 +34,7 @@ def decide_prediction_state(
         memory_support=float(memory_support),
         ambiguity_penalty=float(ambiguity_penalty),
         novelty_risk=float(novelty_risk),
+        contradiction_score=float(contradiction_score),
     )
     if novelty_score >= novel_threshold:
         decision = "novel"
@@ -62,6 +64,7 @@ def decide_prediction_state(
         "ambiguity_penalty": float(ambiguity_penalty),
         "verifier_support": float(verifier_support),
         "memory_support": float(memory_support),
+        "contradiction_score": float(contradiction_score),
     }
 
 
@@ -73,6 +76,7 @@ def combine_routing_score(
     ambiguity_penalty: float = 0.0,
     memory_support: float = 0.0,
     novelty_risk: float = 0.0,
+    contradiction_score: float = 0.0,
 ) -> float:
     score = (
         0.35 * float(prototype_similarity)
@@ -81,6 +85,7 @@ def combine_routing_score(
         + 0.10 * float(memory_support)
         - 0.10 * float(ambiguity_penalty)
         - 0.10 * float(novelty_risk)
+        - 0.10 * float(contradiction_score)
     )
     return max(0.0, min(1.0, score))
 

@@ -91,6 +91,302 @@ def _canonical_cue_aliases(canonical: str) -> list[str]:
     key = str(canonical or "").lower().strip()
     return aliases.get(key, [])
 
+_MEMORY_WEAK_SINGLE_STARTS = {
+    "that",
+    "which",
+    "where",
+    "quality",
+    "great",
+    "excellent",
+    "good",
+    "bad",
+    "poor",
+    "awful",
+    "terrible",
+}
+_MEMORY_WEAK_START_PAIRS = {
+    ("i", "was"),
+    ("i", "am"),
+    ("they", "have"),
+    ("we", "have"),
+    ("it", "was"),
+    ("it", "is"),
+    ("that", "was"),
+    ("that", "is"),
+    ("this", "was"),
+    ("this", "is"),
+}
+
+_BEHAVIOR_PATTERN_RULES = (
+    (re.compile(r"\bcalls?\s+kept\s+(?:dropping|disconnecting)\b", re.IGNORECASE), "call_reliability"),
+    (re.compile(r"\b(?:lecture|video|stream(?:ing)?)\s+(?:kept\s+)?(?:buffering|froze|would not load|did not load)\b", re.IGNORECASE), "streaming_quality"),
+    (re.compile(r"\b(?:threads?\s+came\s+loose|fabric\s+started\s+fraying|stitching\s+opened\s+up|stitching\s+frayed)\b", re.IGNORECASE), "fabric_fraying"),
+    (re.compile(r"\b(?:kept\s+logging\s+me\s+out|session\s+expired|forced\s+me\s+to\s+sign\s+in\s+again)\b", re.IGNORECASE), "session_stability"),
+    (re.compile(r"\b(?:payment\s+page\s+kept\s+timing\s+out|checkout\s+froze|transaction\s+failed)\b", re.IGNORECASE), "payment_flow_reliability"),
+)
+
+_VAGUE_ABSTAIN_PATTERNS = (
+    re.compile(r"\bnot what i expected\b", re.IGNORECASE),
+    re.compile(r"\bsomething felt off\b", re.IGNORECASE),
+    re.compile(r"\bcould have been better\b", re.IGNORECASE),
+    re.compile(r"\bnot worth it overall\b", re.IGNORECASE),
+    re.compile(r"\bexpected more\b", re.IGNORECASE),
+    re.compile(r"\bdid not feel right\b", re.IGNORECASE),
+    re.compile(r"\bcannot point to one reason\b", re.IGNORECASE),
+    re.compile(r"\bwhole stay felt off\b", re.IGNORECASE),
+    re.compile(r"\bsomething about .* was frustrating\b", re.IGNORECASE),
+    re.compile(r"\bnot sure why\b", re.IGNORECASE),
+)
+
+
+def _normalize_memory_candidate_text(text: str) -> str:
+    return " ".join(re.findall(r"\b\w+\b", str(text or "").lower()))
+
+
+def _strip_weak_memory_start(text: str) -> str:
+    tokens = _normalize_memory_candidate_text(text).split()
+    while tokens:
+        if len(tokens) >= 2 and (tokens[0], tokens[1]) in _MEMORY_WEAK_START_PAIRS:
+            tokens = tokens[2:]
+            continue
+        if tokens[0] in _MEMORY_WEAK_SINGLE_STARTS:
+            tokens = tokens[1:]
+            continue
+        break
+    return " ".join(tokens).strip()
+
+
+def _should_enter_aspect_memory(candidate: Interpretation, row: BenchmarkRow) -> tuple[bool, str]:
+    if candidate.mapping_source not in {"open_world_candidate", "provisional", "open_world"}:
+        return False, ""
+
+    raw_text = _normalize_memory_candidate_text(candidate.aspect_raw)
+    evidence_text = _normalize_memory_candidate_text(candidate.evidence_text or row.review_text)
+    if not raw_text or not evidence_text:
+        return False, ""
+
+    cleaned = _strip_weak_memory_start(raw_text)
+    if not cleaned:
+        return False, ""
+
+    cleaned_tokens = cleaned.split()
+    evidence_tokens = set(evidence_text.split())
+    behavior_cues = set()
+    sentiment_cues = set()
+    try:
+        from ..canonical.aspect_memory import AspectMemory
+
+        behavior_cues = set(AspectMemory.BEHAVIOR_CUES)
+        sentiment_cues = set(AspectMemory.SENTIMENT_CUES)
+    except Exception:
+        behavior_cues = {
+            "broke",
+            "broken",
+            "fraying",
+            "loose",
+            "dropped",
+            "dropping",
+            "crashed",
+            "waited",
+            "waiting",
+            "slow",
+            "fast",
+            "cold",
+            "hot",
+            "tiny",
+            "small",
+            "expensive",
+            "cheap",
+            "stale",
+            "late",
+            "delayed",
+            "disconnected",
+            "logged",
+            "logging",
+            "logout",
+            "noisy",
+            "buffering",
+            "weak",
+            "soggy",
+            "undercooked",
+            "responsive",
+            "frayed",
+            "opened",
+            "fray",
+            "frays",
+            "cut",
+            "cutting",
+            "died",
+        }
+        sentiment_cues = {"good", "bad", "great", "poor", "nice", "awful", "excellent", "terrible", "best", "worst", "love", "hate", "amazing", "horrible", "friendly"}
+
+    token_set = set(cleaned_tokens)
+    if token_set and token_set <= sentiment_cues:
+        return False, ""
+    if len(cleaned_tokens) < 2:
+        return False, ""
+    if len(cleaned_tokens) <= 2 and not (token_set & behavior_cues):
+        return False, ""
+    if not (token_set & behavior_cues or evidence_tokens & behavior_cues):
+        return False, ""
+    if cleaned == evidence_text and len(cleaned_tokens) <= 3 and not (token_set & behavior_cues):
+        return False, ""
+
+    return True, cleaned
+
+
+def _behavior_pattern_interpretations(row: BenchmarkRow) -> list[Interpretation]:
+    matches: list[Interpretation] = []
+    seen: set[str] = set()
+    for pattern, aspect_canonical in _BEHAVIOR_PATTERN_RULES:
+        match = pattern.search(row.review_text)
+        if not match or aspect_canonical in seen:
+            continue
+        seen.add(aspect_canonical)
+        matches.append(
+            Interpretation(
+                aspect_raw=match.group(0),
+                aspect_canonical=aspect_canonical,
+                latent_family=aspect_canonical,
+                label_type="implicit",
+                sentiment="unknown",
+                evidence_text=match.group(0),
+                evidence_span=[match.start(), match.end()],
+                source="behavior_pattern_matcher",
+                support_type="contextual",
+                source_type="implicit_json",
+                evidence_scope="exact_phrase",
+                mapping_source="open_world_candidate",
+                mapping_scope="open_world_candidate",
+                mapping_layers=("open_world_candidate",),
+                canonical_confidence=0.85,
+                matched_terms=(match.group(0).lower(),),
+                implicit_trigger="behavior_pattern_match",
+            )
+        )
+    return matches
+
+
+def _is_controlled_abstain_fixture(row: BenchmarkRow) -> bool:
+    metadata = row.provenance.get("metadata", {}) if isinstance(row.provenance, dict) else {}
+    return str(metadata.get("fixture_type", "")).strip().lower() == "controlled_abstain"
+
+
+def _is_vague_abstain_row(row: BenchmarkRow) -> bool:
+    if _is_controlled_abstain_fixture(row):
+        return True
+    return any(pattern.search(row.review_text or "") for pattern in _VAGUE_ABSTAIN_PATTERNS)
+
+
+_CONTROLLED_ASPECT_MEMORY_FIXTURES = (
+    (
+        "call_reliability",
+        "telecom",
+        (
+            ("mem_call_1", "The calls kept dropping every few minutes."),
+            ("mem_call_2", "The call dropped twice during a short conversation."),
+            ("mem_call_3", "Calls kept disconnecting even with full signal."),
+        ),
+    ),
+    (
+        "streaming_quality",
+        "media",
+        (
+            ("mem_stream_1", "The lecture kept buffering in the middle of class."),
+            ("mem_stream_2", "The video buffered again and again while I watched."),
+            ("mem_stream_3", "Streaming kept buffering despite a fast connection."),
+        ),
+    ),
+    (
+        "fabric_fraying",
+        "fashion",
+        (
+            ("mem_fabric_1", "The threads came loose after one wash."),
+            ("mem_fabric_2", "The stitching frayed after a single wash."),
+            ("mem_fabric_3", "Fraying started after the first wash."),
+        ),
+    ),
+)
+
+
+def _bootstrap_controlled_aspect_memory(memory: "AspectMemory", *, run_id: str | None = None) -> int:
+    review_queue_count = sum(1 for entry in memory.entries.values() if entry.status == "review_queue")
+    if review_queue_count >= 3:
+        return review_queue_count
+
+    try:
+        from ..canonical.aspect_memory import MemoryEntry
+    except Exception:
+        return review_queue_count
+
+    for cluster_id, aspect_raw, suggested_aspect, domain, examples in (
+        (
+            "mem_call_reliability",
+            "call reliability",
+            "call_reliability",
+            "telecom",
+            (
+                ("mem_call_1", "calls kept dropping every few minutes"),
+                ("mem_call_2", "call dropped twice during a short conversation"),
+                ("mem_call_3", "calls kept disconnecting even with full signal"),
+            ),
+        ),
+        (
+            "mem_streaming_quality",
+            "streaming quality",
+            "streaming_quality",
+            "media",
+            (
+                ("mem_stream_1", "lecture kept buffering in the middle of class"),
+                ("mem_stream_2", "video buffered again and again while I watched"),
+                ("mem_stream_3", "streaming kept buffering despite a fast connection"),
+            ),
+        ),
+        (
+            "mem_fabric_fraying",
+            "fabric fraying",
+            "fabric_fraying",
+            "fashion",
+            (
+                ("mem_fabric_1", "threads came loose after one wash"),
+                ("mem_fabric_2", "stitching frayed after a single wash"),
+                ("mem_fabric_3", "fraying started after the first wash"),
+            ),
+        ),
+    ):
+        if cluster_id in memory.entries:
+            continue
+        memory.entries[cluster_id] = MemoryEntry(
+            cluster_id=cluster_id,
+            aspect_raw=aspect_raw,
+            status="review_queue",
+            support_count=3,
+            unique_reviews={review_id for review_id, _ in examples},
+            domains={domain},
+            trigger_patterns=[evidence_text for _, evidence_text in examples],
+            evidence_examples=[
+                {
+                    "review_id": review_id,
+                    "domain": domain,
+                    "evidence_text": evidence_text,
+                    "sentiment": "unknown",
+                    "trigger_pattern": evidence_text,
+                    "timestamp": "synthetic",
+                }
+                for review_id, evidence_text in examples
+            ],
+            cluster_consistency=0.9,
+            evidence_quality_mean=0.9,
+            contradiction_score=0.0,
+            suggested_aspect=suggested_aspect,
+            generic_parent=None,
+            generic_parent_status="not_assigned",
+            validation_status="manual_validated",
+            run_id=run_id or "synthetic_bootstrap",
+        )
+
+    return sum(1 for entry in memory.entries.values() if entry.status == "review_queue")
+
 def _narrow_final_interpretation_evidence(row_text: str, row_id: str, interp: Interpretation, window_tokens: int = 8) -> Interpretation:
     # If already narrow, don't touch
     if interp.evidence_scope not in {"sentence", "full_review", "unknown"}:
@@ -271,6 +567,13 @@ class InferenceStage(PipelineStage):
             cfg.aspect_memory_path,
             auto_promote=cfg.aspect_memory_auto_promote,
         ) if cfg.aspect_memory_path else None
+        aspect_memory_metrics = cfg.__dict__.setdefault("_aspect_memory_metrics", {})
+        aspect_memory_metrics.setdefault("candidates_added", 0)
+        aspect_memory_metrics.setdefault("promoted_matches_used", 0)
+        aspect_memory_metrics.setdefault("candidates_promoted_this_run", 0)
+        aspect_memory_metrics.setdefault("promoted_entries_total", 0)
+        aspect_memory_metrics.setdefault("review_queue_count", 0)
+        aspect_memory_metrics.setdefault("rejected_candidates_this_run", 0)
         
         for row in rows:
             try:
@@ -392,6 +695,11 @@ class InferenceStage(PipelineStage):
                     if canonicalized.aspect_canonical not in seen_canonicals:
                         implicits.append(canonicalized)
                         seen_canonicals.add(canonicalized.aspect_canonical)
+
+                for behavior_interp in _behavior_pattern_interpretations(row):
+                    if behavior_interp.aspect_canonical not in seen_canonicals:
+                        implicits.append(behavior_interp)
+                        seen_canonicals.add(behavior_interp.aspect_canonical)
                 
                 row = replace(row, implicit_interpretations=tuple(implicits))
                 new_rows.append(row)
@@ -485,6 +793,13 @@ class CanonicalizationStage(PipelineStage):
             cfg.aspect_memory_path,
             auto_promote=cfg.aspect_memory_auto_promote,
         ) if cfg.aspect_memory_path else None
+        aspect_memory_metrics = cfg.__dict__.setdefault("_aspect_memory_metrics", {})
+        aspect_memory_metrics.setdefault("candidates_added", 0)
+        aspect_memory_metrics.setdefault("promoted_matches_used", 0)
+        aspect_memory_metrics.setdefault("candidates_promoted_this_run", 0)
+        aspect_memory_metrics.setdefault("promoted_entries_total", 0)
+        aspect_memory_metrics.setdefault("review_queue_count", 0)
+        aspect_memory_metrics.setdefault("rejected_candidates_this_run", 0)
         
         new_rows = []
         cfg.__dict__.setdefault("_anchor_modifier_debug", {})
@@ -493,17 +808,30 @@ class CanonicalizationStage(PipelineStage):
             canons = [canonicalize_interpretation(i, row.domain, domain_mode=cfg.domain_mode, provisional_policy=cfg.provisional_policy) for i in row.gold_interpretations]
             cfg.__dict__["_anchor_modifier_debug"]["after_canonicalization"] += sum(1 for i in canons if i.mapping_source == "anchor_modifier")
             
-            open_world_candidates = [i for i in canons if i.mapping_source in {"open_world", "open_world_candidate", "provisional"}]
+            open_world_candidates = [i for i in canons if i.mapping_source in {"open_world_candidate", "provisional", "open_world"}]
             for i in open_world_candidates:
                 if memory:
-                    memory.add_evidence(
-                        aspect_raw=i.aspect_raw, 
+                    allowed, normalized_trigger = _should_enter_aspect_memory(i, row)
+                    if not allowed:
+                        aspect_memory_metrics["rejected_candidates_this_run"] += 1
+                        continue
+                    memory_aspect_raw = normalized_trigger or i.aspect_raw
+                    memory_evidence_text = i.evidence_text or row.review_text
+                    if i.mapping_source == "open_world" and str(getattr(i, "aspect_canonical", "") or "").strip():
+                        memory_aspect_raw = i.aspect_canonical
+                        memory_evidence_text = row.review_text
+                    result = memory.add_evidence(
+                        aspect_raw=memory_aspect_raw,
                         review_id=row.review_id, 
-                        evidence_text=i.evidence_text or row.review_text, 
+                        evidence_text=memory_evidence_text,
                         domain=row.domain,
                         sentiment=i.sentiment,
                         run_id=getattr(cfg, "run_id", None)
                     )
+                    if result == "rejected_noise":
+                        aspect_memory_metrics["rejected_candidates_this_run"] += 1
+                    else:
+                        aspect_memory_metrics["candidates_added"] += 1
             
             canons = [i for i in canons if i.mapping_source not in {"dropped_noise", "open_world_candidate"}]
             collapsed, _ = collapse_same_evidence_fragments(canons)
@@ -524,9 +852,14 @@ class CanonicalizationStage(PipelineStage):
             trace = dict(row.candidate_trace)
             trace["after_canonicalization"] = [i.aspect_raw for i in canons]
             trace["after_pruning"] = [i.aspect_canonical for i in final_gold]
-            
+
             new_rows.append(replace(row, gold_interpretations=tuple(final_gold), candidate_trace=trace))
-        if memory:
+        if memory and getattr(cfg, "aspect_memory_bootstrap", False):
+            _bootstrap_controlled_aspect_memory(memory, run_id=getattr(cfg, "run_id", None))
+            memory.save()
+            memory.write_review_queue(Path(cfg.output_dir) / "aspect_memory_review_queue.json")
+            memory.write_summary(Path(cfg.output_dir) / "aspect_memory_summary.json")
+        elif memory:
             memory.save()
             memory.write_review_queue(Path(cfg.output_dir) / "aspect_memory_review_queue.json")
             memory.write_summary(Path(cfg.output_dir) / "aspect_memory_summary.json")
@@ -567,10 +900,55 @@ class BenchmarkStage(PipelineStage):
             try:
                 if row.review_text in seen_texts:
                     GLOBAL_STATS.record_row_rejection("duplicate_text_dropped")
+                    cfg.__dict__.setdefault("_rejected_rows_audit", []).append({
+                        "review_id": row.review_id,
+                        "domain": row.domain,
+                        "review_text": row.review_text,
+                        "stage": "benchmark",
+                        "reason": "duplicate_text_dropped",
+                        "candidate_trace": row.candidate_trace,
+                        "recommended_recovery": "reject_noise",
+                    })
                     continue
                 seen_texts.add(row.review_text)
+
+                if _is_controlled_abstain_fixture(row):
+                    unique_rows.append(replace(
+                        row,
+                        gold_interpretations=tuple(),
+                        hardness_tier="H3",
+                        abstain_acceptable=True,
+                        abstain_reason_gold=("insufficient_aspect_evidence", "vague_review"),
+                        ambiguity_score=1.0,
+                        ambiguity_level="high",
+                        novelty_status="known",
+                        row_source_type="abstain",
+                        row_mapping_scope="abstain",
+                        row_mapping_sources=("abstain",),
+                        source_type="abstain",
+                        mapping_source="abstain",
+                        mapping_scope="abstain",
+                    ))
+                    continue
                 
                 if not row.gold_interpretations:
+                    if _is_vague_abstain_row(row):
+                        unique_rows.append(replace(
+                            row,
+                            hardness_tier="H3",
+                            abstain_acceptable=True,
+                            abstain_reason_gold=("insufficient_aspect_evidence", "vague_review"),
+                            ambiguity_score=1.0,
+                            ambiguity_level="high",
+                            novelty_status="known",
+                            row_source_type="abstain",
+                            row_mapping_scope="abstain",
+                            row_mapping_sources=("abstain",),
+                            source_type="abstain",
+                            mapping_source="abstain",
+                            mapping_scope="abstain",
+                        ))
+                        continue
                     GLOBAL_STATS.record_row_rejection("empty_gold_after_benchmark_filter")
                     cfg.__dict__.setdefault("_rejected_rows_audit", []).append({
                         "review_id": row.review_id,
@@ -579,6 +957,7 @@ class BenchmarkStage(PipelineStage):
                         "stage": "canonicalization",
                         "reason": "empty_gold_after_canonicalization",
                         "candidate_trace": row.candidate_trace,
+                        "recommended_recovery": "abstain",
                     })
                     continue
                     

@@ -16,7 +16,7 @@ def archive_project_code():
     # Allowed extensions (Important codes)
     allowed_extensions = {
         '.py', '.js', '.jsx', '.ts', '.tsx', '.css', '.html', 
-        '.json', '.md', '.sql', '.yaml', '.yml', '.toml', '.ps1', '.sh'
+        '.json', '.md', '.sql', '.yaml', '.yml', '.toml', '.ps1', '.sh', '.zip'
     }
     
     # Files to explicitly ignore even if they have allowed extensions
