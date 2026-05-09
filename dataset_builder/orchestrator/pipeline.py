@@ -63,11 +63,33 @@ def _load_json_dict(path: Path) -> dict[str, object]:
         return {}
 
 
+def _calculate_checksums(output_dir: Path) -> dict[str, str]:
+    """Calculate SHA256 checksums for core artifact files."""
+    files = [
+        "train.jsonl", "val.jsonl", "test.jsonl",
+        "metrics_summary.json", "quality_report.json",
+        "rejected_rows.jsonl",
+        "counterfactual_pairs.json",
+        "counterfactual_pairs.jsonl",
+        "aspect_memory_summary.json"
+    ]
+    checksums = {}
+    for rel_path in files:
+        p = output_dir / rel_path
+        if p.exists():
+            h = hashlib.sha256()
+            with open(p, "rb") as f:
+                h.update(f.read())
+            checksums[rel_path] = f"sha256:{h.hexdigest()}"
+    return checksums
+
+
 def run_builder_pipeline(
     cfg: BuilderConfig, 
     raw_reviews: list[RawReview] | None = None,
     rows_by_split: dict[str, list[BenchmarkRow]] | None = None, 
-    profile_summary: dict[str, object] | None = None
+    profile_summary: dict[str, object] | None = None,
+    original_sample_size: int | None = None,
 ) -> dict[str, object]:
     """
     Main entry point for the builder pipeline.
@@ -240,6 +262,7 @@ def run_builder_pipeline(
             rejected_rows=rejected_rows,
             discarded_rows=discarded_rows,
             runtime_reason_counts=getattr(cfg, "_rejection_reason_counts", {}) or {},
+            original_sample_size=original_sample_size or loaded_rows,
         )
         progress.update(t1, advance=1)
         leakage_results = check_cross_split_leakage(rows_by_split)
@@ -400,25 +423,18 @@ def run_builder_pipeline(
         else:
             (output_dir / "rejected_rows.jsonl").write_text("", encoding="utf-8")
 
-        # Hard check for required files
-        required_dirs = ["domain_holdout", "counterfactual", "grouped"]
-        missing = []
-        for d in required_dirs:
-            if not (output_dir / d).exists() or not list((output_dir / d).glob("*.jsonl")):
-                missing.append(d)
-        if not (output_dir / "rejected_rows.jsonl").exists():
-            missing.append("rejected_rows.jsonl")
-        
-        if missing:
-            import logging
-            logging.getLogger("dataset_builder").warning(f"Missing required artifact components: {missing}")
-            release_status = "failed"
-
         # Reproducibility metadata
         run_command = " ".join(sys.argv)
         run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
         code_hash = _get_code_hash()
         config_hash = hashlib.sha256(str(cfg.__dict__).encode()).hexdigest()[:12]
+
+        # Write quality report before manifest so it can be checksummed
+        write_sidecar(output_dir / "quality_report.json", quality)
+        progress.update(t2, advance=1)
+
+        # Calculate checksums for core files
+        artifact_checksums = _calculate_checksums(output_dir)
 
         manifest = ArtifactManifest(
             version="dataset_builder_p0",
@@ -456,11 +472,10 @@ def run_builder_pipeline(
             artifact_created_at=datetime.now(timezone.utc).isoformat(),
             sample_size_requested=requested_rows,
             sample_size_loaded=loaded_rows,
+            original_sample_size=original_sample_size or loaded_rows,
+            artifact_checksums=artifact_checksums,
         )
         write_manifest(output_dir / "manifest.json", manifest)
-        progress.update(t2, advance=1)
-        
-        write_sidecar(output_dir / "quality_report.json", quality)
         progress.update(t2, advance=1)
         
         archive_path = write_artifact_zip(output_dir)

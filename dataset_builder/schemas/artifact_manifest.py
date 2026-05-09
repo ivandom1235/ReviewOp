@@ -25,5 +25,6 @@ class ArtifactManifest:
     # Sample size verification
     sample_size_requested: int = 0
     sample_size_loaded: int = 0
+    original_sample_size: int = 0
     
     artifact_checksums: dict[str, str] = field(default_factory=dict)

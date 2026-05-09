@@ -28,6 +28,13 @@ class CounterfactualGenerator:
         (r"\bkeyboard\s+(?:is|was)\s+responsive\b", "staff is responsive", "service_speed"),
         (r"\bportion(?:s)?\s+(?:was|were|are|is)\s+(?:very\s+)?small\b", "price was very small", "value"),
         (r"\bprice\s+(?:was|is)\s+(?:very\s+)?small\b", "portion was very small", "portion_size"),
+        
+        # Context-aware extensions from Part B.2
+        (r"\bcalls\s+kept\s+dropping\s+even\s+with\s+full\s+signal\b", "prices kept dropping even after the discount period", "value"),
+        (r"\bfood\s+(?:was|is)\s+cold\b", "staff behavior was cold", "staff_behavior"),
+        (r"\bdelivery\s+was\s+late\b", "support replied late", "customer_support"),
+        (r"\bscreen\s+was\s+too\s+bright\b", "room was too bright", "ambience"),
+        (r"\bbattery\s+died\s+early\b", "screen dimmed quickly", "display"),
     ]
 
     # Sentiment flips (more robust)

@@ -31,6 +31,7 @@ class MemoryEntry:
     
     # Labels
     suggested_aspect: Optional[str] = None
+    representative_trigger: Optional[str] = None
     generic_parent: Optional[str] = None
     generic_parent_status: str = "not_assigned"
     
@@ -239,7 +240,15 @@ class AspectMemory:
             
         # Labeling (Phase 2)
         if not entry.suggested_aspect or entry.support_count < 5 or entry.support_count % 5 == 0:
-            entry.suggested_aspect = self.labeler.label_cluster(entry.trigger_patterns, entry.aspect_raw)
+            label = self.labeler.label_cluster(entry.trigger_patterns, entry.aspect_raw)
+            
+            # If aspect_raw is a real aspect name (not unknown), use it as suggested_aspect
+            if entry.aspect_raw and entry.aspect_raw.lower() != "unknown":
+                entry.suggested_aspect = entry.aspect_raw
+            else:
+                entry.suggested_aspect = label
+                
+            entry.representative_trigger = label.replace("_", " ")
             entry.generic_parent = None
             entry.generic_parent_status = "not_assigned"
 
@@ -357,7 +366,9 @@ class AspectMemory:
             "top_clusters": [
                 {
                     "cluster_id": e.cluster_id,
+                    "aspect_raw": e.aspect_raw,
                     "suggested_aspect": e.suggested_aspect,
+                    "representative_trigger": e.representative_trigger,
                     "trigger_patterns": e.trigger_patterns[:3],
                     "support_count": e.support_count,
                     "status": e.status,
@@ -369,7 +380,9 @@ class AspectMemory:
             "top_candidates": [
                 {
                     "cluster_id": e.cluster_id,
+                    "aspect_raw": e.aspect_raw,
                     "suggested_aspect": e.suggested_aspect,
+                    "representative_trigger": e.representative_trigger,
                     "trigger_patterns": e.trigger_patterns[:3],
                     "support_count": e.support_count,
                     "status": e.status,
@@ -429,6 +442,7 @@ class AspectMemory:
                 "cluster_id": e.cluster_id,
                 "aspect_raw": e.aspect_raw,
                 "suggested_aspect": e.suggested_aspect,
+                "representative_trigger": e.representative_trigger,
                 "support_count": e.support_count,
                 "unique_review_count": e.unique_review_count,
                 "trigger_patterns": e.trigger_patterns,

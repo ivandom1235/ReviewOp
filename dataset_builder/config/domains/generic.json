@@ -22,7 +22,18 @@
         "design": "design",
         "comfort": "comfort",
         "cleanliness": "cleanliness",
-        "availability": "availability"
+        "availability": "availability",
+        "excellent_suggestions": "service_quality",
+        "great_place": "overall_experience",
+        "good_eats": "food_quality",
+        "great_job": "service_quality",
+        "good_bartender": "staff_behavior",
+        "excellent_beers": "beverage_quality",
+        "amazing_dessert": "food_quality",
+        "excellent_meal": "food_quality",
+        "excellent_sushi": "food_quality",
+        "great_feature": "feature_quality",
+        "great_program": "software_feature"
     },
     "modifier_maps": {}
 }

@@ -147,12 +147,13 @@ def main() -> None:
     from dataset_builder.profile.dataset_profiler import profile_dataset
     args = build_arg_parser().parse_args()
     paths = resolve_input_paths(args.input)
-    rows = load_reviews(paths)
+    all_rows = load_reviews(paths)
+    original_count = len(all_rows)
     cfg = build_config_from_args(args, paths)
-    rows = select_working_reviews(rows, cfg)
+    rows = select_working_reviews(all_rows, cfg)
     
     profile = profile_dataset(rows)
-    run_builder_pipeline(cfg, raw_reviews=rows, profile_summary=profile)
+    run_builder_pipeline(cfg, raw_reviews=rows, profile_summary=profile, original_sample_size=original_count)
 
 
 if __name__ == "__main__":

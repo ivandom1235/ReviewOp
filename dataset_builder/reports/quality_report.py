@@ -17,6 +17,7 @@ def build_quality_report(
     rejected_rows: int = 0,
     discarded_rows: int = 0,
     runtime_reason_counts: dict[str, int] | None = None,
+    original_sample_size: int = 0,
 ) -> QualityReport:
     counts = {split: len(rows) for split, rows in splits.items()}
     rejected_interps = 0
@@ -138,6 +139,7 @@ def build_quality_report(
         mapping_layer_distribution=dict(mapping_layers),
         evidence_scope_distribution=dict(evidence_scope_dist),
         abstain_reason_distribution=dict(abstain_reason_dist),
+        original_sample_size=original_sample_size,
         rejected_interpretations=rejected_interps,
         reason_counts=dict(reason_counts),
         row_rejection_reason_counts=row_reason_counts,
