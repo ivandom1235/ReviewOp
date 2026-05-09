@@ -12,6 +12,7 @@ class DomainConfig:
     generic: dict[str, Any]
     domain_raw: dict[str, Any]
     merged: dict[str, Any]
+    domain_config_source: str = "generic_fallback"
 
     def generic_map(self) -> dict[str, str]:
         return self.generic.get("domain_maps", {})
@@ -99,16 +100,24 @@ class DomainRegistry:
         cls._validate_schema(generic, "generic")
 
         domain_raw: dict[str, Any] = {}
+        source = "generic_fallback"
         if domain != "generic":
             domain_path = config_dir / f"{domain}.json"
             if domain_path.exists():
                 domain_raw = json.loads(domain_path.read_text(encoding="utf-8"))
                 cls._validate_schema(domain_raw, domain)
+                source = "domain_specific"
 
         merged = json.loads(json.dumps(generic))
         if domain_raw:
             cls._deep_merge(merged, domain_raw)
 
-        out = DomainConfig(domain=domain, generic=generic, domain_raw=domain_raw, merged=merged)
+        out = DomainConfig(
+            domain=domain, 
+            generic=generic, 
+            domain_raw=domain_raw, 
+            merged=merged,
+            domain_config_source=source
+        )
         cls._source_cache[domain] = out
         return out

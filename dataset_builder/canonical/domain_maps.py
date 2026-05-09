@@ -28,10 +28,95 @@ class CanonicalizationPolicy:
             allow_open_world=mode == "full"
         )
 
+@dataclass(frozen=True)
+class GenericFamilyMatch:
+    generic_family: str
+    level_1: str
+    description: str
+    matched_by: str  # "behavior_trigger" or "alias" or "exact"
+
+_GENERIC_FAMILIES_CACHE: dict[str, Any] = {}
+
+def _load_generic_families_bank() -> dict[str, Any]:
+    global _GENERIC_FAMILIES_CACHE
+    if _GENERIC_FAMILIES_CACHE:
+        return _GENERIC_FAMILIES_CACHE
+    
+    path = Path("dataset_builder/config/generic_aspect_families.json")
+    if not path.exists():
+        return {}
+    
+    import json
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            _GENERIC_FAMILIES_CACHE = data
+            return data
+    except Exception:
+        return {}
+
+def lookup_generic_family(phrase: str) -> GenericFamilyMatch | None:
+    """
+    Looks up a phrase in the expanded generic aspect family bank.
+    Matches by exact family name, aliases, or behavior triggers.
+    """
+    bank = _load_generic_families_bank()
+    phrase_l = phrase.lower().strip()
+    
+    # 1. Exact match on generic_family key
+    if phrase_l in bank:
+        info = bank[phrase_l]
+        return GenericFamilyMatch(
+            generic_family=phrase_l,
+            level_1=info.get("level_1", "unknown"),
+            description=info.get("description", ""),
+            matched_by="exact"
+        )
+    
+    # 2. Match by aliases
+    phrase_norm = phrase_l.replace(" ", "_")
+    for family, info in bank.items():
+        aliases = [str(a).lower().replace(" ", "_") for a in info.get("aliases", [])]
+        if phrase_norm in aliases:
+            return GenericFamilyMatch(
+                generic_family=family,
+                level_1=info.get("level_1", "unknown"),
+                description=info.get("description", ""),
+                matched_by="alias"
+            )
+            
+    # 3. Match by behavior triggers (whole-word boundary for short triggers)
+    import re
+    for family, info in bank.items():
+        triggers = [str(t).lower() for t in info.get("behavior_triggers", [])]
+        for trigger in triggers:
+            if len(trigger) <= 6:
+                # Require word boundary to prevent "late" matching "unrelated"
+                pattern = r"\b" + re.escape(trigger) + r"\b"
+                if re.search(pattern, phrase_l):
+                    return GenericFamilyMatch(
+                        generic_family=family,
+                        level_1=info.get("level_1", "unknown"),
+                        description=info.get("description", ""),
+                        matched_by="behavior_trigger",
+                    )
+            else:
+                if trigger in phrase_l:
+                    return GenericFamilyMatch(
+                        generic_family=family,
+                        level_1=info.get("level_1", "unknown"),
+                        description=info.get("description", ""),
+                        matched_by="behavior_trigger",
+                    )
+
+    return None
+
 @dataclass
 class CanonicalMappingResult:
     aspect_canonical: str | None
     latent_family: str | None = None
+    generic_family: str | None = None
+    universal_dimension: str | None = None
     mapping_source: str = "unknown"
     mapping_confidence: float = 0.0
     matched_key: str | None = None
@@ -216,4 +301,54 @@ def lookup_domain_map(domain: str | None, target: Any, config_dir: Path | None =
             result = make_result(matched, "fuzzy_family_inference", (score / 100.0) * 0.45, matched)
             if result.aspect_canonical: return result
 
+    # 8. Generic Aspect Family Bank lookup
+    if raw_phrase and policy.allow_generic:
+        match = lookup_generic_family(raw_phrase)
+        if match:
+            return CanonicalMappingResult(
+                aspect_canonical=match.generic_family,
+                generic_family=match.generic_family,
+                universal_dimension=match.level_1,
+                mapping_source="generic_family_bank",
+                mapping_confidence=0.5,
+                matched_key=match.generic_family,
+                mapping_layers=("generic",),
+                mapping_scope="generic"
+            )
+
+
+    # 9. Sentiment-Adjective + Broad Noun generic mapping (Legacy/Fallback)
+    if raw_phrase and policy.allow_generic:
+        parts = raw_phrase.lower().split()
+        if len(parts) == 2:
+            from ..explicit.phrase_cleaning import SENTIMENT_ADJECTIVES, BROAD_NOUNS
+            if parts[0] in SENTIMENT_ADJECTIVES and parts[1] in BROAD_NOUNS:
+                generic_family_map = {
+                    "service": "service_quality",
+                    "experience": "overall_experience",
+                    "quality": "quality",
+                    "job": "service_quality",
+                    "work": "service_quality",
+                    "program": "usability",
+                    "feature": "functionality",
+                    "item": "quality",
+                    "product": "quality",
+                    "stuff": "quality",
+                    "place": "ambience",
+                    "area": "ambience",
+                    "part": "quality"
+                }
+                mapped = generic_family_map.get(parts[1])
+                if mapped:
+                    return CanonicalMappingResult(
+                        aspect_canonical=mapped,
+                        mapping_source="generic_sentiment_pattern",
+                        mapping_confidence=0.45,
+                        matched_key=parts[1],
+                        mapping_layers=("generic",),
+                        mapping_scope="generic"
+                    )
+
     return CanonicalMappingResult(None, mapping_source="no_match", mapping_scope="unmapped_internal")
+
+

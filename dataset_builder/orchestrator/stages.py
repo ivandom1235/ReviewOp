@@ -64,32 +64,12 @@ def _span_hint_from_review_id(review_id: str) -> tuple[str, int, int] | None:
         return None
     return None
 
-def _canonical_cue_aliases(canonical: str) -> list[str]:
-    aliases = {
-        "food_quality": ["food", "dish", "meal", "flavor", "taste"],
-        "service_quality": ["service", "staff", "server", "waiter", "waitress"],
-        "display": ["screen", "display", "lcd", "monitor"],
-        "performance": ["processor", "memory", "speed", "hard drive", "ram"],
-        "value": ["price", "cost", "worth", "value"],
-        "battery_life": ["battery", "charge", "charging", "lasted", "drain"],
-        "cleanliness": ["clean", "dirty", "smell", "sanitary"],
-        "delivery": ["delivery", "arrived", "shipping", "late"],
-        "customer_support": ["support", "help", "response", "agent"],
-        "support": ["support", "help", "response", "agent"],
-        "comfort": ["comfort", "comfortable", "noise", "fit"],
-        "durability": ["durable", "broke", "worn", "lasting"],
-        "reliability": ["reliable", "disconnect", "drop", "crash"],
-        "quality": ["quality", "build", "craftsmanship"],
-        "availability": ["available", "stock", "reservation"],
-        "design": ["design", "style", "look"],
-        "usability": ["easy", "use", "usability", "interface"],
-        "storage": ["storage", "space", "drive", "disk"],
-        "audio": ["audio", "sound", "speaker", "volume"],
-        "camera": ["camera", "webcam", "photo", "video"],
-        "connectivity": ["wifi", "bluetooth", "network", "connect"],
-    }
+def _canonical_cue_aliases(canonical: str, domain: str = "generic") -> list[str]:
+    config = DomainRegistry.get_config(domain)
+    aliases = config.get("canonical_aliases", {})
     key = str(canonical or "").lower().strip()
     return aliases.get(key, [])
+
 
 _MEMORY_WEAK_SINGLE_STARTS = {
     "that",
@@ -387,7 +367,7 @@ def _bootstrap_controlled_aspect_memory(memory: "AspectMemory", *, run_id: str |
 
     return sum(1 for entry in memory.entries.values() if entry.status == "review_queue")
 
-def _narrow_final_interpretation_evidence(row_text: str, row_id: str, interp: Interpretation, window_tokens: int = 8) -> Interpretation:
+def _narrow_final_interpretation_evidence(row_text: str, row_id: str, interp: Interpretation, window_tokens: int = 8, domain: str = "generic") -> Interpretation:
     # If already narrow, don't touch
     if interp.evidence_scope not in {"sentence", "full_review", "unknown"}:
         if str(interp.evidence_text or "").strip() != str(row_text or "").strip():
@@ -404,7 +384,8 @@ def _narrow_final_interpretation_evidence(row_text: str, row_id: str, interp: In
     cues.extend(list(interp.matched_terms or ()))
     cues.extend(list(interp.modifier_terms or ()))
     cues.append(str(interp.aspect_raw or "").replace("_", " "))
-    cues.extend(_canonical_cue_aliases(interp.aspect_canonical))
+    cues.extend(_canonical_cue_aliases(interp.aspect_canonical, domain=domain))
+
     
     seen = set()
     for cue in [c.strip() for c in cues if str(c).strip()]:
@@ -847,7 +828,7 @@ class CanonicalizationStage(PipelineStage):
                         break
             
             final_gold = [i for i in final_gold if str(getattr(i, "aspect_canonical", "") or "") != "unknown"]
-            final_gold = [_narrow_final_interpretation_evidence(row.review_text, row.review_id, i, cfg.evidence_window_tokens) for i in final_gold]
+            final_gold = [_narrow_final_interpretation_evidence(row.review_text, row.review_id, i, cfg.evidence_window_tokens, domain=row.domain) for i in final_gold]
             
             trace = dict(row.candidate_trace)
             trace["after_canonicalization"] = [i.aspect_raw for i in canons]
@@ -962,7 +943,7 @@ class BenchmarkStage(PipelineStage):
                     continue
                     
                 final_gold = sorted(list(row.gold_interpretations), key=lambda i: i.canonical_confidence, reverse=True)[:8]
-                final_gold = [_narrow_final_interpretation_evidence(row.review_text, row.review_id, i, cfg.evidence_window_tokens) for i in final_gold]
+                final_gold = [_narrow_final_interpretation_evidence(row.review_text, row.review_id, i, cfg.evidence_window_tokens, domain=row.domain) for i in final_gold]
                 cfg.__dict__["_anchor_modifier_debug"]["after_final"] += sum(1 for i in final_gold if i.mapping_source == "anchor_modifier")
                 
                 domain_cfg = DomainRegistry.get_config(row.domain)

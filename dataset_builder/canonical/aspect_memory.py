@@ -240,15 +240,15 @@ class AspectMemory:
             
         # Labeling (Phase 2)
         if not entry.suggested_aspect or entry.support_count < 5 or entry.support_count % 5 == 0:
-            label = self.labeler.label_cluster(entry.trigger_patterns, entry.aspect_raw)
+            canonical, phrase = self.labeler.label_cluster_v2(entry.trigger_patterns, entry.aspect_raw)
             
-            # If aspect_raw is a real aspect name (not unknown), use it as suggested_aspect
-            if entry.aspect_raw and entry.aspect_raw.lower() != "unknown":
+            # If aspect_raw is a real aspect name (not unknown), prefer it for canonical
+            if entry.aspect_raw and entry.aspect_raw.lower() != "unknown" and len(entry.aspect_raw.split()) <= 2:
                 entry.suggested_aspect = entry.aspect_raw
             else:
-                entry.suggested_aspect = label
+                entry.suggested_aspect = canonical
                 
-            entry.representative_trigger = label.replace("_", " ")
+            entry.representative_trigger = phrase
             entry.generic_parent = None
             entry.generic_parent_status = "not_assigned"
 

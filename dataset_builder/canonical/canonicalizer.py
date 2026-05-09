@@ -133,4 +133,7 @@ def canonicalize_interpretation(
         canonical_confidence=confidence,
         mapping_scope=mapping_scope,
         mapping_layers=tuple(mapping_layers),
+        universal_dimension=res.universal_dimension if "res" in locals() else None,
+        generic_family=res.generic_family if "res" in locals() else None,
     )
+

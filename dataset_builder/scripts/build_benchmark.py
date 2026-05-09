@@ -58,6 +58,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--aspect-memory-auto-promote", action="store_true")
     parser.add_argument("--aspect-memory-bootstrap", action="store_true")
     parser.add_argument("--max-workers", type=int, default=20, help="Concurrency for LLM stages")
+    parser.add_argument(
+        "--input-adapter",
+        choices=["canonical", "amazon", "yelp", "generic_csv"],
+        default="canonical",
+        help="Input format adapter for source data",
+    )
     return parser
 
 
@@ -112,6 +118,7 @@ def build_config_from_args(args: argparse.Namespace, resolved_input_paths: list[
         aspect_memory_path=str(args.aspect_memory) if args.aspect_memory else None,
         domain_holdout_domain=str(args.domain_holdout_domain).strip() if args.domain_holdout_domain else None,
         max_workers=args.max_workers,
+        input_adapter=args.input_adapter,
     )
     validate_config(cfg)
     return cfg

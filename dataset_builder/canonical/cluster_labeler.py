@@ -18,10 +18,18 @@ class ClusterLabeler:
     BROAD_LABELS = {"unknown", "general", "misc", "thing", "item", "product", "place", "good", "bad", "food", "service", "quality", "battery", "screen", "computer", "restaurant"}
 
     def label_cluster(self, trigger_patterns: List[str], base_aspect: str) -> str:
+        """Old API for backward compatibility."""
+        label, _ = self.label_cluster_v2(trigger_patterns, base_aspect)
+        return label
+
+    def label_cluster_v2(self, trigger_patterns: List[str], base_aspect: str) -> tuple[str, str]:
+        """
+        Returns (canonical_label, representative_phrase).
+        """
         cleaned = [p for p in (self._clean(p) for p in trigger_patterns) if p]
         base_clean = self._clean(base_aspect)
         if not cleaned:
-            return base_clean or "unknown"
+            return (base_clean or "unknown"), (base_aspect or "unknown")
 
         counts = Counter(cleaned)
         candidates = list(dict.fromkeys(cleaned))
@@ -53,7 +61,21 @@ class ClusterLabeler:
                 best_score = score
                 best_label = candidate
 
-        return best_label or base_clean or "unknown"
+        # Find best original phrase matching the best label
+        best_phrase = trigger_patterns[0] if trigger_patterns else base_aspect
+        for p in trigger_patterns:
+            if self._clean(p) == best_label:
+                best_phrase = p
+                break
+
+        # If best_label is too long/noisy, simplify for canonical version
+        canonical = best_label
+        if len(canonical.split("_")) > 2:
+             # Try to find a shorter sub-pattern or use base_aspect
+             if base_clean and base_clean in canonical:
+                 canonical = base_clean
+
+        return canonical, best_phrase
 
     def _clean(self, text: str) -> str:
         # Remove common stop words and punctuation

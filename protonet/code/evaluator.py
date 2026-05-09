@@ -1,477 +1,188 @@
 from __future__ import annotations
 
 from collections import defaultdict
-import hashlib
-import importlib.util
-from pathlib import Path
-import sys
-from typing import Any, Dict, List
-import time
+from typing import Any
 
-import numpy as np
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-import torch
-
-try:
-    from .config import ProtonetConfig
-    from .novelty_utils import compute_novelty_score
-    from .quality_signals import prediction_error_buckets, top_aspect_confusions
-    from .progress import task_bar
-    from .selective_decisions import decide_prediction_state, decide_selective_routing
-    from .evaluation_utils import (
-        aspect_from_joint as _aspect_from_joint,
-        compact_mode_metrics as _compact_mode_metrics,
-        decode_post_aspect_prediction as _decode_post_aspect_prediction,
-        diagnostic_summary as _diagnostic_summary,
-        expected_calibration_error as _expected_calibration_error,
-        project_prediction_rows as _project_prediction_rows,
-        stable_cluster_id as _stable_cluster_id,
-    )
-except ImportError:
-    _config_path = Path(__file__).resolve().with_name("config.py")
-    _config_spec = importlib.util.spec_from_file_location("protonet_local_config", _config_path)
-    if _config_spec is None or _config_spec.loader is None:  # pragma: no cover
-        raise
-    _config_module = importlib.util.module_from_spec(_config_spec)
-    sys.modules[_config_spec.name] = _config_module
-    _config_spec.loader.exec_module(_config_module)
-    ProtonetConfig = _config_module.ProtonetConfig
-    from novelty_utils import compute_novelty_score
-    from quality_signals import prediction_error_buckets, top_aspect_confusions
-    from progress import task_bar
-    from selective_decisions import decide_prediction_state, decide_selective_routing
-    from evaluation_utils import (
-        aspect_from_joint as _aspect_from_joint,
-        compact_mode_metrics as _compact_mode_metrics,
-        decode_post_aspect_prediction as _decode_post_aspect_prediction,
-        diagnostic_summary as _diagnostic_summary,
-        expected_calibration_error as _expected_calibration_error,
-        project_prediction_rows as _project_prediction_rows,
-        stable_cluster_id as _stable_cluster_id,
-    )
+from .schema import ReviewExample, ECScore
 
 
-def evaluate_episodes(
-    model,
-    episodes: List[Dict[str, Any]],
-    cfg: ProtonetConfig,
-    split_name: str,
-    *,
-    include_predictions: bool = True,
-    compute_curves: bool = True,
-) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    model.eval()
-    eval_temperature = float(model.temperature.detach().cpu().item())
-    y_true: List[str] = []
-    y_pred: List[str] = []
-    y_true_aspect: List[str] = []
-    y_pred_aspect: List[str] = []
-    confidences: List[float] = []
-    correctness: List[int] = []
-    low_confidence_count = 0
-    abstain_true_positive = 0
-    abstain_false_positive = 0
-    abstain_false_negative = 0
-    running_correct = 0
-    per_aspect: Dict[str, List[int]] = defaultdict(list)
-    predictions: List[Dict[str, Any]] = []
-    novelty_truth: List[int] = []
-    novelty_scores: List[float] = []
-    novelty_pred: List[int] = []
+def compute_f1(precision: float, recall: float) -> float:
+    if precision + recall == 0:
+        return 0.0
+    return 2 * (precision * recall) / (precision + recall)
 
-    start_time = time.perf_counter()
-    with torch.no_grad():
-        with task_bar(total=len(episodes), desc=f"eval:{split_name}", enabled=cfg.progress_enabled) as bar:
-            for episode in episodes:
-                out = model.episode_forward(episode)
-                dist2_queries = torch.cdist(out.query_embeddings, out.prototypes, p=2).pow(2)
-                probs = out.probabilities.numpy()
-                target_indices = out.targets.detach().cpu().tolist()
-                query_rows = list(episode.get("query_set", []))
-                for row_index, target_idx in enumerate(target_indices):
-                    true_label = out.ordered_labels[target_idx]
-                    pred_label = out.predictions[row_index]
-                    post_aspect = _decode_post_aspect_prediction(
-                        probs[row_index],
-                        out.ordered_labels,
-                        separator=cfg.joint_label_separator,
-                        multi_label_margin=cfg.multi_label_margin,
-                    )
-                    post_pred_label = str(post_aspect.get("pred_label") or pred_label)
-                    post_pred_labels = list(post_aspect.get("pred_labels") or ([post_pred_label] if post_pred_label else []))
-                    confidence = float(probs[row_index].max())
-                    top_predictions: List[Dict[str, Any]] = []
-                    if include_predictions:
-                        top_indices = np.argsort(probs[row_index])[::-1][: cfg.top_k_debug].tolist()
-                        top_predictions = [
-                            {
-                                "label": out.ordered_labels[idx],
-                                "probability": float(probs[row_index][idx]),
-                            }
-                            for idx in top_indices
-                        ]
-                    y_true.append(true_label)
-                    y_pred.append(pred_label)
-                    y_true_aspect.append(_aspect_from_joint(true_label, cfg.joint_label_separator))
-                    y_pred_aspect.append(_aspect_from_joint(pred_label, cfg.joint_label_separator))
-                    confidences.append(confidence)
-                    is_correct = int(true_label == pred_label)
-                    correctness.append(is_correct)
-                    running_correct += is_correct
-                    did_abstain = confidence < cfg.low_confidence_threshold
-                    if did_abstain:
-                        low_confidence_count += 1
-                        if not is_correct:
-                            abstain_true_positive += 1
-                        else:
-                            abstain_false_positive += 1
-                    elif not is_correct:
-                        abstain_false_negative += 1
-                    per_aspect[_aspect_from_joint(true_label, cfg.joint_label_separator)].append(is_correct)
-                    query_row = query_rows[row_index] if row_index < len(query_rows) else {}
-                    interpretations = list(query_row.get("gold_interpretations") or []) if isinstance(query_row, dict) else []
-                    if interpretations:
-                        true_set = {f"{it.get('aspect_label')}{cfg.joint_label_separator}{it.get('sentiment')}" for it in interpretations if isinstance(it, dict)}
-                    else:
-                        gold_joint_labels = list(query_row.get("gold_joint_labels") or []) if isinstance(query_row, dict) else []
-                        true_set = set(gold_joint_labels) if gold_joint_labels else {true_label}
-                    
-                    pred_set = {pred_label}
-                    jaccard = len(true_set & pred_set) / max(1, len(true_set | pred_set))
-                    
-                    dist2 = dist2_queries[row_index : row_index + 1]
-                    min_distance_sq = float(dist2.min().item())
-                    distance_score = max(0.0, min(1.0, min_distance_sq / (min_distance_sq + 1.0)))
-                    ranked_probs = np.sort(probs[row_index])[::-1]
-                    p_top1 = float(ranked_probs[0]) if len(ranked_probs) > 0 else 0.0
-                    p_top2 = float(ranked_probs[1]) if len(ranked_probs) > 1 else 0.0
-                    ambiguity_score = max(0.0, min(1.0, 1.0 - (p_top1 - p_top2)))
-                    energy_logits = -dist2 / max(1e-6, float(eval_temperature))
-                    energy_raw = float((-eval_temperature * torch.logsumexp(energy_logits, dim=-1))[0].item())
-                    energy_score = max(0.0, min(1.0, (energy_raw + 5.0) / 10.0))
-                    novelty_score = compute_novelty_score(distance_score, ambiguity_score, energy_score)
-                    split_protocol = query_row.get("split_protocol") if isinstance(query_row, dict) else {}
-                    novel_truth_label = 1 if bool(query_row.get("novel_acceptable", False)) else 0
-                    novelty_truth.append(novel_truth_label)
-                    novelty_scores.append(float(novelty_score))
-                    selective_state = decide_prediction_state(
-                        novelty_score=float(novelty_score),
-                        selective_confidence=float(confidence),
-                        abstain_threshold=float(cfg.abstain_threshold),
-                        known_threshold=float(cfg.novelty_known_threshold),
-                        novel_threshold=float(cfg.novelty_novel_threshold),
-                    )
-                    selective_route = decide_selective_routing(
-                        novelty_score=float(novelty_score),
-                        selective_confidence=float(confidence),
-                        abstain_threshold=float(cfg.abstain_threshold),
-                        known_threshold=float(cfg.novelty_known_threshold),
-                        novel_threshold=float(cfg.novelty_novel_threshold),
-                    )
-                    decision_band = str(selective_state["decision_band"])
-                    routing = "novel" if bool(selective_state["route_novel"]) else "known"
-                    novelty_pred.append(1 if routing == "novel" else 0)
-                    evidence_hint = ""
-                    domain_hint = "unknown"
-                    if isinstance(query_row, dict):
-                        evidence_hint = str(
-                            query_row.get("novel_evidence_text")
-                            or query_row.get("evidence_text")
-                            or query_row.get("review_text")
-                            or ""
-                        )
-                        domain_hint = str(query_row.get("domain") or "unknown")
-                    predicted_cluster_id = (
-                        _stable_cluster_id(domain=domain_hint, hint=evidence_hint)
-                        if routing == "novel"
-                        else None
-                    )
-                    prediction_row = {
-                        "episode_id": episode.get("episode_id"),
-                        "true_label": true_label,
-                        "pred_label": pred_label,
-                        "post_aspect_pred_label": post_pred_label,
-                        "post_aspect_pred_labels": post_pred_labels,
-                        "post_aspect_confidence": float(post_aspect.get("confidence", confidence)),
-                        "confidence": confidence,
-                        "low_confidence": confidence < cfg.low_confidence_threshold,
-                        "post_aspect_low_confidence": float(post_aspect.get("confidence", confidence)) < cfg.low_confidence_threshold,
-                        "correct": bool(is_correct),
-                        "post_aspect_correct": bool(true_label == post_pred_label),
-                        "split": split_name,
-                        "flex_correct": bool(pred_label in true_set),
-                        "post_aspect_flex_correct": bool(set(post_pred_labels) & true_set),
-                        "multi_label_overlap": float(jaccard),
-                        "post_aspect_multi_label_overlap": float(len(true_set & set(post_pred_labels)) / max(1, len(true_set | set(post_pred_labels)))),
-                        "abstained": did_abstain,
-                        "post_aspect_abstained": float(post_aspect.get("confidence", confidence)) < cfg.low_confidence_threshold,
-                        "novelty_score": float(novelty_score),
-                        "novelty_components": {
-                            "distance_score": float(distance_score),
-                            "ambiguity_score": float(ambiguity_score),
-                            "energy_score": float(energy_score),
-                        },
-                        "routing": routing,
-                        "decision_band": decision_band,
-                        "abstain_reason": selective_state["abstain_reason"] or selective_route.abstain_reason,
-                        "selective_score": float(selective_state["selective_score"]),
-                        "split_protocol": split_protocol if isinstance(split_protocol, dict) else {},
-                        "benchmark_ambiguity_score": float(query_row.get("benchmark_ambiguity_score", 0.0)) if isinstance(query_row, dict) else 0.0,
-                        "abstain_acceptable": bool(query_row.get("abstain_acceptable", False)) if isinstance(query_row, dict) else False,
-                        "ambiguity_type": query_row.get("ambiguity_type") if isinstance(query_row, dict) else None,
-                        "novel_acceptable": bool(query_row.get("novel_acceptable", False)) if isinstance(query_row, dict) else False,
-                        "source_type": str(query_row.get("source_type") or "unknown") if isinstance(query_row, dict) else "unknown",
-                        "label_type": str(query_row.get("label_type") or "unknown") if isinstance(query_row, dict) else "unknown",
-                        "mapping_scope": str(query_row.get("mapping_scope") or "unknown") if isinstance(query_row, dict) else "unknown",
-                        "mapping_source": str(query_row.get("mapping_source") or "unknown") if isinstance(query_row, dict) else "unknown",
-                        "evidence_scope": str(query_row.get("evidence_scope") or "unknown") if isinstance(query_row, dict) else "unknown",
-                        "domain": str(query_row.get("domain") or "unknown") if isinstance(query_row, dict) else "unknown",
-                        "hardness_tier": str(query_row.get("hardness_tier") or "unknown") if isinstance(query_row, dict) else "unknown",
-                        "gold_novel_cluster_id": str(query_row.get("novel_cluster_id") or "").strip() if isinstance(query_row, dict) else "",
-                        "pred_novel_cluster_id": predicted_cluster_id,
-                        "counterfactual_group_id": str(query_row.get("counterfactual_group_id") or "").strip() if isinstance(query_row, dict) else "",
-                        "counterfactual_role": str(query_row.get("counterfactual_role") or "").strip() if isinstance(query_row, dict) else "",
-                        "counterfactual_source_id": str(query_row.get("counterfactual_source_id") or "").strip() if isinstance(query_row, dict) else "",
-                        "post_aspect_selected_aspects": list(post_aspect.get("selected_aspects") or []),
-                        "post_aspect_sentiment": str(post_aspect.get("sentiment") or "neutral"),
-                    }
-                    if include_predictions:
-                        prediction_row["top_k"] = top_predictions
-                    predictions.append(prediction_row)
-                bar.update(1)
-                if y_true:
-                    bar.set_postfix(
-                        acc=f"{running_correct / len(y_true):.3f}",
-                        queries=len(y_true),
-                        low_conf=f"{low_confidence_count / max(1, len(y_true)):.3f}",
-                    )
 
-    elapsed = time.perf_counter() - start_time
-    abstain_precision = abstain_true_positive / max(1, abstain_true_positive + abstain_false_positive)
-    abstain_recall = abstain_true_positive / max(1, abstain_true_positive + abstain_false_negative)
-    abstain_f1 = (2 * abstain_precision * abstain_recall / (abstain_precision + abstain_recall)) if (abstain_precision + abstain_recall) else 0.0
-    coverage = 1.0 - (low_confidence_count / max(1, len(y_true)))
-    risk = 1.0 - (running_correct / max(1, len(y_true)))
-    avg_overlap = float(np.mean([float(row.get("multi_label_overlap", 0.0)) for row in predictions])) if predictions else 0.0
-    flex_correct_rate = float(np.mean([1.0 if row.get("flex_correct") else 0.0 for row in predictions])) if predictions else 0.0
-    has_novel_positives = any(int(value) == 1 for value in novelty_truth)
-    has_novel_negatives = any(int(value) == 0 for value in novelty_truth)
-    known_novel_quality = float(np.mean([1.0 if int(pred) == int(truth) else 0.0 for pred, truth in zip(novelty_pred, novelty_truth)])) if novelty_truth else 0.0
-    known_vs_novel_auroc = 0.0
-    if has_novel_positives and len(set(novelty_truth)) > 1:
-        try:
-            known_vs_novel_auroc = float(roc_auc_score(novelty_truth, novelty_scores))
-        except ValueError:
-            known_vs_novel_auroc = 0.0
-    tp = sum(1 for pred, truth in zip(novelty_pred, novelty_truth) if pred == 1 and truth == 1)
-    fp = sum(1 for pred, truth in zip(novelty_pred, novelty_truth) if pred == 1 and truth == 0)
-    fn = sum(1 for pred, truth in zip(novelty_pred, novelty_truth) if pred == 0 and truth == 1)
-    tn = sum(1 for pred, truth in zip(novelty_pred, novelty_truth) if pred == 0 and truth == 0)
-    precision_novel = tp / max(1, tp + fp)
-    recall_novel = tp / max(1, tp + fn)
-    f1_novel = (2 * precision_novel * recall_novel / (precision_novel + recall_novel)) if (precision_novel + recall_novel) else 0.0
-    precision_known = tn / max(1, tn + fn)
-    recall_known = tn / max(1, tn + fp)
-    f1_known = (2 * precision_known * recall_known / (precision_known + recall_known)) if (precision_known + recall_known) else 0.0
-    known_novel_f1_macro = (f1_known + f1_novel) / 2.0 if has_novel_positives else 0.0
-    boundary_rows = [row for row in predictions if str(row.get("decision_band") or "") == "boundary"]
-    boundary_abstain_quality = float(
-        np.mean(
-            [
-                1.0
-                if (bool(row.get("abstained", False)) or bool(row.get("abstain_acceptable", False)))
-                else 0.0
-                for row in boundary_rows
-            ]
-        )
-    ) if boundary_rows else 0.0
-    cluster_pairs = [
-        row
-        for row in predictions
-        if bool(row.get("novel_acceptable", False))
-        and str(row.get("routing") or "") == "novel"
-        and str(row.get("gold_novel_cluster_id") or "").strip()
-    ]
-    cluster_consistency = float(
-        np.mean(
-            [
-                1.0 if str(row.get("pred_novel_cluster_id") or "") == str(row.get("gold_novel_cluster_id") or "") else 0.0
-                for row in cluster_pairs
-            ]
-        )
-    ) if cluster_pairs else 0.0
-    open_set_curve = []
-    if predictions and compute_curves:
-        quantiles = [0.2, 0.4, 0.6, 0.8, 1.0]
-        novelty_array = np.asarray(novelty_scores if novelty_scores else [0.0], dtype=float)
-        for q in quantiles:
-            threshold = float(np.quantile(novelty_array, q))
-            covered = [row for row in predictions if float(row.get("novelty_score", 0.0)) <= threshold]
-            coverage_q = len(covered) / max(1, len(predictions))
-            risk_q = 1.0 - (sum(1 for row in covered if bool(row.get("correct"))) / max(1, len(covered)))
-            open_set_curve.append({"quantile": q, "threshold": threshold, "coverage": float(coverage_q), "risk": float(risk_q)})
-    high_ambiguity_values = [1.0 if row.get("correct") else 0.0 for row in predictions if float(row.get("benchmark_ambiguity_score", 0.0)) >= 0.5]
-    high_ambiguity_accuracy = float(np.mean(high_ambiguity_values)) if high_ambiguity_values else 0.0
-    risk_coverage_auc = 0.0
-    if open_set_curve:
-        points = sorted(((float(item["coverage"]), float(item["risk"])) for item in open_set_curve), key=lambda x: x[0])
-        if len(points) >= 2:
-            auc = 0.0
-            prev_cov, prev_risk = points[0]
-            for cov, risk in points[1:]:
-                auc += (cov - prev_cov) * (risk + prev_risk) / 2.0
-                prev_cov, prev_risk = cov, risk
-            risk_coverage_auc = float(max(0.0, min(1.0, auc)))
-    counterfactual_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for row in predictions:
-        group_id = str(row.get("counterfactual_group_id") or "").strip()
-        if group_id:
-            counterfactual_groups[group_id].append(row)
-    counterfactual_eval = [
-        group_rows
-        for group_rows in counterfactual_groups.values()
-        if len(group_rows) >= 2 and any(str(r.get("counterfactual_role") or "") in {"original", "counterfactual"} for r in group_rows)
-    ]
-    counterfactual_consistency = float(
-        np.mean(
-            [
-                1.0
-                if len({str(r.get("pred_label") or "") for r in group_rows if str(r.get("pred_label") or "")})
-                >= 2
-                or any(bool(r.get("post_aspect_abstained")) for r in group_rows)
-                else 0.0
-                for group_rows in counterfactual_eval
-            ]
-        )
-    ) if counterfactual_eval else 0.0
-    protocol_groups: Dict[str, List[int]] = {"random": [], "grouped": [], "domain_holdout": []}
-    protocol_seen: Dict[str, bool] = {"random": False, "grouped": False, "domain_holdout": False}
-    for idx, row in enumerate(predictions):
-        protocol_payload = row.get("split_protocol") or {}
-        grouped_value = protocol_payload.get("grouped", protocol_payload.get("source_holdout"))
-        normalized_protocol_payload = {
-            "random": protocol_payload.get("random"),
-            "grouped": grouped_value,
-            "domain_holdout": protocol_payload.get("domain_holdout"),
-        }
-        for protocol in ("random", "grouped", "domain_holdout"):
-            if normalized_protocol_payload.get(protocol) is not None:
-                protocol_seen[protocol] = True
-            if normalized_protocol_payload.get(protocol) is not None and str(normalized_protocol_payload.get(protocol)) == split_name:
-                protocol_groups[protocol].append(idx)
+class ECEvaluator:
+    def __init__(self):
+        self.results: list[dict[str, Any]] = []
 
-    def _protocol_acc(indices: List[int]) -> float:
-        if not indices:
-            return 0.0
-        vals = [correctness[i] for i in indices if i < len(correctness)]
-        return float(np.mean(vals)) if vals else 0.0
-    def _protocol_macro_f1(indices: List[int]) -> float:
-        if not indices:
-            return 0.0
-        true_vals = [y_true[i] for i in indices if i < len(y_true)]
-        pred_vals = [y_pred[i] for i in indices if i < len(y_pred)]
-        if not true_vals:
-            return 0.0
-        return float(f1_score(true_vals, pred_vals, average="macro"))
-    def _protocol_payload(protocol: str) -> Dict[str, Any]:
-        if not protocol_seen[protocol]:
-            return {"status": "skipped", "reason": "missing split_protocol"}
+    def evaluate(
+        self,
+        examples: list[ReviewExample],
+        predictions: list[list[ECScore]],
+    ) -> dict[str, float]:
+        tp_strict = fp_strict = fn_strict = 0
+        tp_relaxed = rows_hit = total_valid_rows = 0
+
+        # Selective / abstention counters
+        accept_tp = accept_fp = 0
+        abstain_tp = abstain_fp = abstain_fn = 0
+
+        # Novelty counters
+        novel_tp = novel_fp = novel_fn = 0
+
+        # Decision distribution
+        decision_dist: dict[str, int] = defaultdict(int)
+
+        # Coverage (rows where model made ≥1 accepted prediction)
+        covered_rows = 0
+
+        for ex, preds in zip(examples, predictions):
+            gold_aspects = {g.aspect for g in ex.gold_interpretations}
+            gold_novel = {g.aspect for g in ex.gold_interpretations if g.novelty_status != "known"}
+
+            accepted = [p for p in preds if p.decision in {"accept_known", "accept_multi_gold"}]
+            abstained = [p for p in preds if p.decision == "abstain"]
+            novel_routed = [p for p in preds if p.decision in {"open_world_candidate", "novel_candidate"}]
+
+            for p in preds:
+                decision_dist[p.decision] += 1
+
+            if accepted:
+                covered_rows += 1
+
+            pred_aspects = {p.aspect for p in accepted}
+
+            if not gold_aspects:
+                fp_strict += len(pred_aspects)
+                continue
+
+            total_valid_rows += 1
+
+            # Strict
+            matched = gold_aspects & pred_aspects
+            tp_strict += len(matched)
+            fp_strict += len(pred_aspects - gold_aspects)
+            fn_strict += len(gold_aspects - pred_aspects)
+
+            # Relaxed (row-level)
+            if matched:
+                rows_hit += 1
+                tp_relaxed += 1
+
+            # Selective accepted accuracy
+            for p in accepted:
+                if p.aspect in gold_aspects:
+                    accept_tp += 1
+                else:
+                    accept_fp += 1
+
+            # Abstention: correct if model abstains and gold has no accepted aspect
+            if not matched and ex.abstain_acceptable:
+                if abstained:
+                    abstain_tp += 1
+                else:
+                    abstain_fn += 1
+            elif abstained and matched:
+                abstain_fp += 1
+
+            # Novelty
+            novel_pred_aspects = {p.aspect for p in novel_routed}
+            novel_matched = gold_novel & novel_pred_aspects
+            novel_tp += len(novel_matched)
+            novel_fp += len(novel_pred_aspects - gold_novel)
+            novel_fn += len(gold_novel - novel_pred_aspects)
+
+        precision_strict = tp_strict / (tp_strict + fp_strict) if (tp_strict + fp_strict) > 0 else 0.0
+        recall_strict = tp_strict / (tp_strict + fn_strict) if (tp_strict + fn_strict) > 0 else 0.0
+        f1_strict = compute_f1(precision_strict, recall_strict)
+
+        relaxed_hit_rate = rows_hit / total_valid_rows if total_valid_rows > 0 else 0.0
+        coverage = covered_rows / total_valid_rows if total_valid_rows > 0 else 0.0
+        accepted_accuracy = accept_tp / (accept_tp + accept_fp) if (accept_tp + accept_fp) > 0 else 0.0
+
+        abstain_prec = abstain_tp / (abstain_tp + abstain_fp) if (abstain_tp + abstain_fp) > 0 else 0.0
+        abstain_rec = abstain_tp / (abstain_tp + abstain_fn) if (abstain_tp + abstain_fn) > 0 else 0.0
+        abstain_f1 = compute_f1(abstain_prec, abstain_rec)
+
+        novel_prec = novel_tp / (novel_tp + novel_fp) if (novel_tp + novel_fp) > 0 else 0.0
+        novel_rec = novel_tp / (novel_tp + novel_fn) if (novel_tp + novel_fn) > 0 else 0.0
+        novel_f1 = compute_f1(novel_prec, novel_rec)
+
         return {
-            "status": "ok",
-            "accuracy": _protocol_acc(protocol_groups[protocol]),
-            "macro_f1": _protocol_macro_f1(protocol_groups[protocol]),
+            "strict_precision": precision_strict,
+            "strict_recall": recall_strict,
+            "strict_f1": f1_strict,
+            "relaxed_multi_gold_f1": relaxed_hit_rate,
+            "coverage": coverage,
+            "accepted_accuracy": accepted_accuracy,
+            "abstention_precision": abstain_prec,
+            "abstention_recall": abstain_rec,
+            "abstention_f1": abstain_f1,
+            "novel_precision": novel_prec,
+            "novel_recall": novel_rec,
+            "novel_f1": novel_f1,
+            "decision_distribution": dict(decision_dist),
+            "total_rows_evaluated": float(len(examples)),
+            "valid_gold_rows": float(total_valid_rows),
         }
 
-    hardness_breakdown: Dict[str, Dict[str, Any]] = {}
-    for hardness in sorted({str(row.get("hardness_tier") or "unknown") for row in predictions}):
-        rows_for_hardness = [row for row in predictions if str(row.get("hardness_tier") or "unknown") == hardness]
-        hardness_breakdown[hardness] = {
-            "count": len(rows_for_hardness),
-            "accuracy": float(np.mean([1.0 if row.get("correct") else 0.0 for row in rows_for_hardness])) if rows_for_hardness else 0.0,
+    def evaluate_counterfactuals(
+        self, pairs: list[dict], scorer: Any
+    ) -> dict[str, float]:
+        if not pairs:
+            return {}
+
+        consistent_count = 0
+        aspect_swap_top1 = 0
+        aspect_swap_top3 = 0
+        sentiment_flip_success = 0
+        total_valid = 0
+
+        for pair in pairs:
+            orig_text = pair.get("original_text")
+            cf_text = pair.get("counterfactual_text")
+            cf_gold = pair.get("expected_change", {}).get("aspect_changed_to")
+            orig_gold = pair.get("expected_change", {}).get("aspect_changed_from")
+            cf_type = pair.get("rewrite_type", "aspect_swap")
+
+            if not orig_text or not cf_text:
+                continue
+
+            orig_ex = ReviewExample(
+                row_id="orig", review_id="orig", text=orig_text, domain="unknown",
+                split="test", source_type="explicit", novelty_status="known",
+                abstain_acceptable=False, abstain_reason_gold=[], gold_interpretations=[],
+            )
+            cf_ex = ReviewExample(
+                row_id="cf", review_id="cf", text=cf_text, domain="unknown",
+                split="test", source_type="explicit", novelty_status="known",
+                abstain_acceptable=False, abstain_reason_gold=[], gold_interpretations=[],
+            )
+
+            orig_preds = scorer.predict(orig_ex, top_k=3)
+            cf_preds = scorer.predict(cf_ex, top_k=3)
+
+            orig_top1 = orig_preds[0].aspect if orig_preds else None
+            cf_top1 = cf_preds[0].aspect if cf_preds else None
+            cf_top3 = {p.aspect for p in cf_preds}
+
+            total_valid += 1
+
+            if cf_type == "aspect_swap":
+                if cf_top1 == cf_gold:
+                    aspect_swap_top1 += 1
+                    consistent_count += 1
+                if cf_gold in cf_top3:
+                    aspect_swap_top3 += 1
+            elif cf_type == "sentiment_flip":
+                if cf_top1 == orig_top1:
+                    sentiment_flip_success += 1
+                    consistent_count += 1
+
+        return {
+            "counterfactual_consistency": consistent_count / total_valid if total_valid > 0 else 0.0,
+            "aspect_swap_top1_success_rate": aspect_swap_top1 / total_valid if total_valid > 0 else 0.0,
+            "aspect_swap_top3_success_rate": aspect_swap_top3 / total_valid if total_valid > 0 else 0.0,
+            "sentiment_flip_success_rate": sentiment_flip_success / total_valid if total_valid > 0 else 0.0,
         }
-
-    def _get_breakdown(field: str) -> Dict[str, Dict[str, Any]]:
-        breakdown: Dict[str, Dict[str, Any]] = {}
-        for val in sorted({str(row.get(field) or "unknown") for row in predictions}):
-            rows = [row for row in predictions if str(row.get(field) or "unknown") == val]
-            breakdown[val] = {
-                "count": len(rows),
-                "accuracy": float(np.mean([1.0 if row.get("correct") else 0.0 for row in rows])) if rows else 0.0,
-                "macro_f1": float(f1_score([r["true_label"] for r in rows], [r["pred_label"] for r in rows], average="macro")) if rows and len(set(r["true_label"] for r in rows)) > 0 else 0.0,
-            }
-        return breakdown
-
-    mapping_scope_breakdown = _get_breakdown("mapping_scope")
-    domain_breakdown = _get_breakdown("domain")
-    evidence_scope_breakdown = _get_breakdown("evidence_scope")
-    label_type_breakdown = _get_breakdown("label_type")
-    source_type_breakdown = _get_breakdown("source_type")
-
-    metrics = {
-        "split": split_name,
-        "num_episodes": len(episodes),
-        "num_queries": len(y_true),
-        "accuracy": float(accuracy_score(y_true, y_pred)) if y_true else 0.0,
-        "aspect_only_accuracy": float(accuracy_score(y_true_aspect, y_pred_aspect)) if y_true else 0.0,
-        "macro_f1": float(f1_score(y_true, y_pred, average="macro")) if y_true else 0.0,
-        "strict_f1": float(f1_score(y_true, y_pred, average="macro")) if y_true else 0.0,
-        "flexible_match_score": flex_correct_rate,
-        "relaxed_multi_gold_f1": flex_correct_rate,
-        "multi_label_overlap_score": avg_overlap,
-        "abstention_precision": float(abstain_precision),
-        "abstention_recall": float(abstain_recall),
-        "abstention_f1": float(abstain_f1),
-        "coverage": float(coverage),
-        "risk": float(risk),
-        "coverage_risk": {"coverage": float(coverage), "risk": float(risk)},
-        "risk_coverage_auc": float(risk_coverage_auc),
-        "known_vs_novel_quality": float(known_novel_quality),
-        "known_vs_novel_auroc": float(known_vs_novel_auroc),
-        "novel_detection_auroc": float(known_vs_novel_auroc),
-        "known_vs_novel_f1_macro": float(known_novel_f1_macro),
-        "known_vs_novel_f1": {"known": float(f1_known), "novel": float(f1_novel)},
-        "known_vs_novel_confusion": {"tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn)},
-        "known_vs_novel_not_applicable": bool(not has_novel_positives),
-        "novelty_evaluation_skipped_reason": (
-            "no_novel_positive_examples"
-            if not has_novel_positives
-            else ("no_known_negative_examples" if not has_novel_negatives else None)
-        ),
-        "open_set_risk_coverage_curve": open_set_curve,
-        "boundary_abstain_quality": float(boundary_abstain_quality),
-        "novel_cluster_consistency": float(cluster_consistency),
-        "ambiguity_sliced": {"high_ambiguity_accuracy": float(high_ambiguity_accuracy)},
-        "protocol_breakdown": {
-            "random": _protocol_payload("random"),
-            "grouped": _protocol_payload("grouped"),
-            "domain_holdout": _protocol_payload("domain_holdout"),
-        },
-        "domain_holdout_f1": _protocol_payload("domain_holdout").get("macro_f1", 0.0),
-        "source_type_breakdown": source_type_breakdown,
-        "label_type_breakdown": label_type_breakdown,
-        "mapping_scope_breakdown": mapping_scope_breakdown,
-        "domain_breakdown": domain_breakdown,
-        "evidence_scope_breakdown": evidence_scope_breakdown,
-        "hardness_breakdown": hardness_breakdown,
-        "explicit_accuracy": source_type_breakdown.get("explicit", {}).get("accuracy", 0.0),
-        "implicit_accuracy": source_type_breakdown.get("implicit_json", source_type_breakdown.get("implicit", {})).get("accuracy", 0.0),
-        "per_aspect_accuracy": {aspect: float(sum(values) / max(1, len(values))) for aspect, values in sorted(per_aspect.items())},
-        "calibration_ece": _expected_calibration_error(confidences, correctness),
-        "low_confidence_rate": low_confidence_count / max(1, len(y_true)),
-        "inference_seconds": elapsed,
-        "avg_seconds_per_episode": elapsed / max(1, len(episodes)),
-        "counterfactual_consistency": float(counterfactual_consistency),
-        **_diagnostic_summary(predictions, cfg.joint_label_separator),
-    }
-    joint_mode_metrics = _compact_mode_metrics(predictions, cfg, split_name, mode="joint", elapsed=elapsed, episodes=episodes)
-    post_aspect_rows = _project_prediction_rows(predictions, "post_aspect")
-    post_aspect_mode_metrics = _compact_mode_metrics(post_aspect_rows, cfg, split_name, mode="post_aspect", elapsed=elapsed, episodes=episodes)
-    metrics["selected_mode"] = cfg.sentiment_pipeline
-    metrics["primary_modes"] = ["joint", "post_aspect", "abstain_aware"]
-    metrics["mode_metrics"] = {
-        "joint": joint_mode_metrics,
-        "post_aspect": post_aspect_mode_metrics,
-    }
-    if cfg.sentiment_pipeline == "post_aspect":
-        metrics.update(post_aspect_mode_metrics)
-    return metrics, predictions if include_predictions else []

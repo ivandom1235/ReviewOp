@@ -23,17 +23,32 @@
         "comfort": "comfort",
         "cleanliness": "cleanliness",
         "availability": "availability",
-        "excellent_suggestions": "service_quality",
-        "great_place": "overall_experience",
-        "good_eats": "food_quality",
-        "great_job": "service_quality",
-        "good_bartender": "staff_behavior",
-        "excellent_beers": "beverage_quality",
-        "amazing_dessert": "food_quality",
-        "excellent_meal": "food_quality",
-        "excellent_sushi": "food_quality",
-        "great_feature": "feature_quality",
-        "great_program": "software_feature"
+        "availability": "availability"
+    },
+
+    "canonical_aliases": {
+        "food_quality": ["food", "dish", "meal", "flavor", "taste"],
+        "service_quality": ["service", "staff", "server", "waiter", "waitress"],
+        "display": ["screen", "display", "lcd", "monitor"],
+        "performance": ["processor", "memory", "speed", "hard drive", "ram"],
+        "value": ["price", "cost", "worth", "value"],
+        "battery_life": ["battery", "charge", "charging", "lasted", "drain"],
+        "cleanliness": ["clean", "dirty", "smell", "sanitary"],
+        "delivery": ["delivery", "arrived", "shipping", "late"],
+        "customer_support": ["support", "help", "response", "agent"],
+        "support": ["support", "help", "response", "agent"],
+        "comfort": ["comfort", "comfortable", "noise", "fit"],
+        "durability": ["durable", "broke", "worn", "lasting"],
+        "reliability": ["reliable", "disconnect", "drop", "crash"],
+        "quality": ["quality", "build", "craftsmanship"],
+        "availability": ["available", "stock", "reservation"],
+        "design": ["design", "style", "look"],
+        "usability": ["easy", "use", "usability", "interface"],
+        "storage": ["storage", "space", "drive", "disk"],
+        "audio": ["audio", "sound", "speaker", "volume"],
+        "camera": ["camera", "webcam", "photo", "video"],
+        "connectivity": ["wifi", "bluetooth", "network", "connect"]
     },
     "modifier_maps": {}
+
 }

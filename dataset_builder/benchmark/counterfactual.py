@@ -12,6 +12,15 @@ class CounterfactualGenerator:
     
     # Template-aware aspect swaps. Phrase-level rules avoid unnatural blind swaps.
     ASPECT_TEMPLATES = [
+        # Domain-Agnostic Semantic Frame Swaps
+        (r"\bcalls\s+kept\s+dropping\s+even\s+with\s+full\s+signal\b", "prices kept dropping even after the discount period", "price_value"),
+        (r"\bdelivery\s+was\s+late\s+despite\s+expedited\s+shipping\b", "support replied late despite the urgent ticket", "support_quality"),
+        (r"\bfood\s+was\s+cold\s+when\s+it\s+arrived\b", "staff behavior was cold during our interaction", "staff_behavior"),
+        (r"\bscreen\s+was\s+too\s+bright\s+for\s+dark\s+rooms\b", "room was too bright for a comfortable stay", "ambience"),
+        (r"\bbattery\s+died\s+early\s+after\s+full\s+charge\b", "session expired early after login", "session_stability"),
+        (r"\bpayment\s+timed\s+out\s+during\s+checkout\b", "login timed out during authentication", "session_stability"),
+        
+        # Original Templates
         (r"\bfood\s+(?:was|is)\s+cold\b", "staff was cold", "service_attitude"),
         (r"\bstaff\s+(?:was|is)\s+cold\b", "food was cold", "food_quality"),
         (r"\bservice\s+(?:was|is)\s+slow\b", "food was slow to arrive", "delivery_speed"),
@@ -28,14 +37,8 @@ class CounterfactualGenerator:
         (r"\bkeyboard\s+(?:is|was)\s+responsive\b", "staff is responsive", "service_speed"),
         (r"\bportion(?:s)?\s+(?:was|were|are|is)\s+(?:very\s+)?small\b", "price was very small", "value"),
         (r"\bprice\s+(?:was|is)\s+(?:very\s+)?small\b", "portion was very small", "portion_size"),
-        
-        # Context-aware extensions from Part B.2
-        (r"\bcalls\s+kept\s+dropping\s+even\s+with\s+full\s+signal\b", "prices kept dropping even after the discount period", "value"),
-        (r"\bfood\s+(?:was|is)\s+cold\b", "staff behavior was cold", "staff_behavior"),
-        (r"\bdelivery\s+was\s+late\b", "support replied late", "customer_support"),
-        (r"\bscreen\s+was\s+too\s+bright\b", "room was too bright", "ambience"),
-        (r"\bbattery\s+died\s+early\b", "screen dimmed quickly", "display"),
     ]
+
 
     # Sentiment flips (more robust)
     SENTIMENT_FLIPS = [

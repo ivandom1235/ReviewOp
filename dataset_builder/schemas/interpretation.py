@@ -40,6 +40,8 @@ class Interpretation:
     implicit_trigger: Optional[str] = None
     mapping_scope: str = "unknown"
     generic_parent: Optional[str] = None
+    universal_dimension: Optional[str] = None
+    generic_family: Optional[str] = None
     conflict_resolution: str = "none"
     provenance_trace: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 

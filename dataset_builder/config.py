@@ -80,6 +80,7 @@ class BuilderConfig:
     aspect_memory_path: Optional[str] = None
     domain_holdout_domain: Optional[str] = None
     max_workers: int = 20
+    input_adapter: str = "canonical"
 
 
 def load_config(path: str | Path | None = None) -> BuilderConfig:
@@ -129,6 +130,7 @@ def load_config(path: str | Path | None = None) -> BuilderConfig:
         aspect_memory_path=payload.get("aspect_memory_path"),
         domain_holdout_domain=payload.get("domain_holdout_domain"),
         max_workers=max_workers,
+        input_adapter=str(payload.get("input_adapter", "canonical")),
     )
 
 
@@ -150,6 +152,8 @@ def validate_config(cfg: BuilderConfig) -> None:
         raise ValueError(f"unsupported domain_mode: {cfg.domain_mode}")
     if cfg.provisional_policy not in {"loose", "strict", "memory_only"}:
         raise ValueError(f"unsupported provisional_policy: {cfg.provisional_policy}")
+    if cfg.input_adapter not in {"canonical", "amazon", "yelp", "generic_csv"}:
+        raise ValueError(f"unsupported input_adapter: {cfg.input_adapter}")
 
 
 def to_jsonable(cfg: BuilderConfig) -> dict[str, Any]:
@@ -183,4 +187,5 @@ def to_jsonable(cfg: BuilderConfig) -> dict[str, Any]:
         "aspect_memory_path": cfg.aspect_memory_path,
         "domain_holdout_domain": cfg.domain_holdout_domain,
         "max_workers": cfg.max_workers,
+        "input_adapter": cfg.input_adapter,
     }
