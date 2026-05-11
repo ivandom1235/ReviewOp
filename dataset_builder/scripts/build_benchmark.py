@@ -64,6 +64,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="canonical",
         help="Input format adapter for source data",
     )
+    parser.add_argument(
+        "--profile",
+        choices=["smoke", "development", "stability", "journal", "diagnostic_strict"],
+        default="development",
+        help="Target release profile for quality gates",
+    )
     return parser
 
 
@@ -119,6 +125,7 @@ def build_config_from_args(args: argparse.Namespace, resolved_input_paths: list[
         domain_holdout_domain=str(args.domain_holdout_domain).strip() if args.domain_holdout_domain else None,
         max_workers=args.max_workers,
         input_adapter=args.input_adapter,
+        profile=args.profile,
     )
     validate_config(cfg)
     return cfg

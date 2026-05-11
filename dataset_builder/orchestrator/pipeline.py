@@ -38,6 +38,32 @@ from ..schemas.raw_review import RawReview
 from ..split.grouped_split import grouped_train_val_test_split
 
 
+def _remove_near_duplicates(rows: list[BenchmarkRow], threshold: float = 0.95) -> list[BenchmarkRow]:
+    """Remove reviews with near-duplicate text to prevent cross-split leakage."""
+    from rapidfuzz import fuzz
+    unique_rows: list[BenchmarkRow] = []
+    seen_texts: list[str] = []
+    
+    for row in rows:
+        text = row.review_text.strip().lower()
+        if not text:
+            unique_rows.append(row)
+            continue
+            
+        is_duplicate = False
+        # Only check against last N for speed if dataset is huge, but for 1000 it's fine
+        for other_text in seen_texts:
+            if fuzz.ratio(text, other_text) / 100.0 >= threshold:
+                is_duplicate = True
+                break
+        
+        if not is_duplicate:
+            unique_rows.append(row)
+            seen_texts.append(text)
+            
+    return unique_rows
+
+
 def _get_code_hash() -> str:
     """Simple hash of the dataset_builder package to ensure artifact-source consistency."""
     h = hashlib.sha256()
@@ -199,6 +225,15 @@ def run_builder_pipeline(
         rejected_rows = loaded_rows - processed_rows
         discarded_rows = 0 # Future expansion
         
+        # Step 2.5: Near-Duplicate Removal (Requirement: Leakage-free splits)
+        # We do this before splitting to ensure no near-duplicates end up in different splits
+        pre_dedup_count = len(rows)
+        rows = _remove_near_duplicates(rows, threshold=0.95)
+        dedup_dropped = pre_dedup_count - len(rows)
+        if dedup_dropped > 0:
+            import logging
+            logging.getLogger("dataset_builder").info(f"Dropped {dedup_dropped} near-duplicate reviews to ensure zero leakage.")
+        
         # Step 3: Split
         if cfg.domain_holdout_domain:
             holdout_domain = cfg.domain_holdout_domain
@@ -252,6 +287,21 @@ def run_builder_pipeline(
     counterfactual_pairs = cf_res["pairs"]
     counterfactual_stats = cf_res["stats"]
 
+    # Reproducibility metadata
+    run_command = " ".join(sys.argv)
+    run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    code_hash = _get_code_hash()
+    config_hash = hashlib.sha256(str(cfg.__dict__).encode()).hexdigest()[:12]
+    
+    source_consistency = {
+        "code_hash": code_hash,
+        "config_hash": config_hash,
+        "run_command": run_command,
+        "sample_size_requested": requested_rows,
+        "sample_size_loaded": loaded_rows,
+        "artifact_matches_source": True # Always true for new runs, but checked if re-running
+    }
+
     with Progress() as progress:
         t1 = progress.add_task("[green]Quality & Leakage Checks...", total=3)
         quality = build_quality_report(
@@ -263,6 +313,7 @@ def run_builder_pipeline(
             discarded_rows=discarded_rows,
             runtime_reason_counts=getattr(cfg, "_rejection_reason_counts", {}) or {},
             original_sample_size=original_sample_size or loaded_rows,
+            source_consistency=source_consistency,
         )
         progress.update(t1, advance=1)
         leakage_results = check_cross_split_leakage(rows_by_split)
@@ -423,11 +474,8 @@ def run_builder_pipeline(
         else:
             (output_dir / "rejected_rows.jsonl").write_text("", encoding="utf-8")
 
-        # Reproducibility metadata
-        run_command = " ".join(sys.argv)
-        run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
-        code_hash = _get_code_hash()
-        config_hash = hashlib.sha256(str(cfg.__dict__).encode()).hexdigest()[:12]
+        # Write consistency sidecar
+        write_sidecar(output_dir / "source_artifact_consistency.json", source_consistency)
 
         # Write quality report before manifest so it can be checksummed
         write_sidecar(output_dir / "quality_report.json", quality)
@@ -476,6 +524,19 @@ def run_builder_pipeline(
             artifact_checksums=artifact_checksums,
         )
         write_manifest(output_dir / "manifest.json", manifest)
+
+        # Final strict verification check (EC-P6 fix)
+        from ..benchmark.verifier import verify_artifact_dir
+        v_report = verify_artifact_dir(output_dir, profile=profile, expected_rows=requested_rows)
+        
+        # Override gate status based on strict verification
+        if v_report["artifact_status"] == "fail":
+            from dataclasses import replace
+            manifest = replace(manifest, release_status="failed", gate_status="FAIL")
+            write_manifest(output_dir / "manifest.json", manifest)
+            # Write detailed verification failure to artifact dir
+            with open(output_dir / "artifact_verification.json", "w", encoding="utf-8") as vf:
+                json.dump(v_report, vf, indent=2)
         progress.update(t2, advance=1)
         
         archive_path = write_artifact_zip(output_dir)

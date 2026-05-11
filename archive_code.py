@@ -10,7 +10,7 @@ def archive_project_code():
     # Exclude patterns
     exclude_dirs = {
         'venv', '.venv', '__pycache__', 'node_modules', '.git', 
-        '.idea', '.vscode', 'dist', 'build', 'cache', '.pytest_cache'
+        '.idea', '.vscode', 'dist', 'build', 'cache', '.pytest_cache','.tmp'
     }
     
     # Allowed extensions (Important codes)

@@ -807,6 +807,7 @@ class CanonicalizationStage(PipelineStage):
                         evidence_text=memory_evidence_text,
                         domain=row.domain,
                         sentiment=i.sentiment,
+                        source_type=i.source_type,
                         run_id=getattr(cfg, "run_id", None)
                     )
                     if result == "rejected_noise":

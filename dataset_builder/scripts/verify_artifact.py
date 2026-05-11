@@ -7,14 +7,7 @@ from pathlib import Path
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
-
-PROFILE_DEFAULTS = {
-    "smoke": 50,
-    "development": 200,
-    "stability": 400,
-    "journal": 1000,
-    "diagnostic_strict": 200,
-}
+from dataset_builder.benchmark.verification_policy import PROFILE_DEFAULTS, profile_thresholds
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -41,59 +34,6 @@ def _load_jsonl_records(path: Path) -> list[dict[str, Any]]:
     except Exception:
         return []
     return records
-
-
-def _percentage_target(expected_rows: int, ratio: float, minimum: int = 0) -> int:
-    return max(minimum, int(round(expected_rows * ratio)))
-
-
-def _profile_thresholds(profile: str, expected_rows: int) -> dict[str, Any]:
-    profile = str(profile or "development").lower()
-    counterfactual_floor = {
-        "smoke": 10,
-        "development": 30,
-        "stability": 50,
-        "journal": 125,
-        "diagnostic_strict": 30,
-    }.get(profile, 30)
-    anchor_floor = {
-        "smoke": 10,
-        "development": 20,
-        "stability": 40,
-        "journal": 100,
-        "diagnostic_strict": 20,
-    }.get(profile, 20)
-    review_queue_floor = {
-        "smoke": 1,
-        "development": 1,
-        "stability": 3,
-        "journal": 5,
-        "diagnostic_strict": 3,
-    }.get(profile, 1)
-    aspect_swap_floor = {
-        "smoke": 1,
-        "development": 3,
-        "stability": 10,
-        "journal": 25,
-        "diagnostic_strict": 5,
-    }.get(profile, 3)
-    return {
-        "profile": profile,
-        "expected_rows": expected_rows,
-        "min_exported_rows": _percentage_target(expected_rows, 0.85),
-        "min_domain_holdout_val": max(10, _percentage_target(expected_rows, 0.05)),
-        "min_counterfactual_validated": max(counterfactual_floor, _percentage_target(expected_rows, 0.125)),
-        "min_anchor_modifier_count": max(anchor_floor, _percentage_target(expected_rows, 0.10)),
-        "full_review_evidence_rate_max": 0.10,
-        "abstain_rate_min": 0.10,
-        "abstain_rate_max": 0.25,
-        "novel_rate_min": 0.05,
-        "novel_rate_max": 0.15,
-        "review_queue_min": review_queue_floor,
-        "min_aspect_swap_count": aspect_swap_floor,
-        "broad_noun_rate_max": 0.20,
-        "unknown_candidate_count_max": 0,
-    }
 
 
 def verify(
@@ -127,7 +67,7 @@ def verify(
     cf_quality_file = _load_json(cf_quality_path)
     rejected_row_records = _load_jsonl_records(rejected_rows_path)
 
-    thresholds = _profile_thresholds(profile, expected_rows or int(manifest.get("sample_size_requested") or PROFILE_DEFAULTS.get(profile, 200)))
+    thresholds = profile_thresholds(profile, expected_rows or int(manifest.get("sample_size_requested") or PROFILE_DEFAULTS.get(profile, 200)))
     expected_rows = thresholds["expected_rows"]
 
     failures: list[str] = []

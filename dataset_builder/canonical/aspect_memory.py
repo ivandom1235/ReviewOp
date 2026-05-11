@@ -23,6 +23,7 @@ class MemoryEntry:
     domains: set[str] = field(default_factory=set)
     trigger_patterns: list[str] = field(default_factory=list)
     evidence_examples: list[dict[str, Any]] = field(default_factory=list)
+    source_types: set[str] = field(default_factory=set)
     
     # Validation Metrics
     cluster_consistency: float = 0.0
@@ -48,6 +49,7 @@ class MemoryEntry:
         d = asdict(self)
         d["unique_reviews"] = list(self.unique_reviews)
         d["domains"] = list(self.domains)
+        d["source_types"] = list(self.source_types)
         return d
 
     @classmethod
@@ -74,6 +76,7 @@ class MemoryEntry:
 
         d["unique_reviews"] = set(d.get("unique_reviews", []))
         d["domains"] = set(d.get("domains", []))
+        d["source_types"] = set(d.get("source_types", []))
         return cls(**d)
 
 
@@ -151,6 +154,7 @@ class AspectMemory:
         domain: str,
         *,
         sentiment: str = "unknown",
+        source_type: str = "unknown",
         run_id: Optional[str] = None,
     ) -> str:
         """
@@ -178,6 +182,7 @@ class AspectMemory:
         entry.support_count += 1
         entry.unique_reviews.add(review_id)
         entry.domains.add(domain)
+        entry.source_types.add(source_type)
         
         if trigger not in entry.trigger_patterns:
             entry.trigger_patterns.append(trigger)
@@ -188,6 +193,7 @@ class AspectMemory:
                 "domain": domain,
                 "evidence_text": evidence_text,
                 "sentiment": sentiment,
+                "source_type": source_type,
                 "trigger_pattern": trigger,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
@@ -249,8 +255,20 @@ class AspectMemory:
                 entry.suggested_aspect = canonical
                 
             entry.representative_trigger = phrase
-            entry.generic_parent = None
-            entry.generic_parent_status = "not_assigned"
+
+            # Phase 8: Generic Parent Discovery (Active Learning)
+            try:
+                from .domain_maps import lookup_generic_family
+                match = lookup_generic_family(entry.suggested_aspect or entry.aspect_raw)
+                if match:
+                    entry.generic_parent = match.generic_family
+                    entry.generic_parent_status = "assigned_via_family_bank"
+                else:
+                    entry.generic_parent = None
+                    entry.generic_parent_status = "not_assigned"
+            except Exception:
+                entry.generic_parent = None
+                entry.generic_parent_status = "not_assigned"
 
     def _mean_pairwise_similarity(self, patterns: list[str]) -> float:
         return self.clusterer.mean_similarity(patterns)
@@ -294,6 +312,7 @@ class AspectMemory:
             "contradiction_score": entry.contradiction_score,
             "aspect_raw": entry.aspect_raw,
             "trigger_patterns": tuple(entry.trigger_patterns),
+            "source_types": tuple(entry.source_types),
             "unique_surface_form_count": self._unique_surface_form_count(entry.trigger_patterns),
         }
         # print(f"DEBUG AspectMemory: {entry.cluster_id} - {metrics}")
@@ -372,6 +391,7 @@ class AspectMemory:
                     "trigger_patterns": e.trigger_patterns[:3],
                     "support_count": e.support_count,
                     "status": e.status,
+                    "source_types": list(e.source_types),
                     "consistency": e.cluster_consistency,
                     "quality": e.evidence_quality_mean
                 }
@@ -386,6 +406,7 @@ class AspectMemory:
                     "trigger_patterns": e.trigger_patterns[:3],
                     "support_count": e.support_count,
                     "status": e.status,
+                    "source_types": list(e.source_types),
                     "consistency": e.cluster_consistency,
                     "quality": e.evidence_quality_mean
                 }
@@ -446,6 +467,7 @@ class AspectMemory:
                 "support_count": e.support_count,
                 "unique_review_count": e.unique_review_count,
                 "trigger_patterns": e.trigger_patterns,
+                "source_types": list(e.source_types),
                 "evidence_examples": e.evidence_examples[:3],
                 "consistency": e.cluster_consistency,
                 "quality": e.evidence_quality_mean

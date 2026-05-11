@@ -47,6 +47,22 @@ def main():
     p2.add_argument("--export-predictions", action="store_true", help="Export row-level prediction JSONL files")
     p3 = subparsers.add_parser("counterfactual", help="Run counterfactual consistency evaluation")
     
+    p4 = subparsers.add_parser("compare", help="Compare old vs EC models")
+    p4.add_argument("--input-dir", type=str, required=True, help="Input artifact directory")
+    p4.add_argument("--output-dir", type=str, required=True, help="Output directory")
+    p4.add_argument("--models", nargs="+", required=True, help="Models to compare")
+    p4.add_argument("--export-predictions", action="store_true", help="Export predictions")
+    p4.add_argument("--overwrite", action="store_true", help="Overwrite output directory")
+
+    p5 = subparsers.add_parser("evaluate-novelty", help="Run novelty / open-world evaluation")
+    p5.add_argument("--input-file", type=str, required=True, help="Novelty evaluation JSONL file")
+    p5.add_argument("--artifact-dir", type=str, required=True, help="Verified dataset artifact directory")
+    p5.add_argument("--output-dir", type=str, required=True, help="Output directory")
+    
+    p6 = subparsers.add_parser("learning-loop", help="Run learning loop study (Pass A vs Pass B)")
+    p6.add_argument("--artifact-dir", type=str, required=True, help="Input artifact directory")
+    p6.add_argument("--output-dir", type=str, required=True, help="Output directory")
+    
     args = parser.parse_args()
     
     if args.command == "phase1":
@@ -88,6 +104,18 @@ def main():
             json.dump(metrics, f, indent=2)
             
         print(f"Counterfactual evaluation complete. Results: {metrics}")
+        sys.exit(0)
+    elif args.command == "compare":
+        from .ablations import run_compare_study
+        run_compare_study(args.input_dir, args.output_dir, args.models, export_preds=args.export_predictions, overwrite=args.overwrite)
+        sys.exit(0)
+    elif args.command == "evaluate-novelty":
+        from .ablations import run_novelty_study
+        run_novelty_study(args.input_file, args.artifact_dir, args.output_dir)
+        sys.exit(0)
+    elif args.command == "learning-loop":
+        from .ablations import run_learning_loop_study
+        run_learning_loop_study(args.artifact_dir, args.output_dir)
         sys.exit(0)
 
 

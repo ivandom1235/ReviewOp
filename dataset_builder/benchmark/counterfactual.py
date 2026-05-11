@@ -10,33 +10,28 @@ class CounterfactualGenerator:
     Avoids unnatural 'blind swaps' (e.g., 'food staff').
     """
     
-    # Template-aware aspect swaps. Phrase-level rules avoid unnatural blind swaps.
+    # Template-aware aspect swaps: (source_pattern, target_phrase, target_aspect, source_aspect)
     ASPECT_TEMPLATES = [
         # Domain-Agnostic Semantic Frame Swaps
-        (r"\bcalls\s+kept\s+dropping\s+even\s+with\s+full\s+signal\b", "prices kept dropping even after the discount period", "price_value"),
-        (r"\bdelivery\s+was\s+late\s+despite\s+expedited\s+shipping\b", "support replied late despite the urgent ticket", "support_quality"),
-        (r"\bfood\s+was\s+cold\s+when\s+it\s+arrived\b", "staff behavior was cold during our interaction", "staff_behavior"),
-        (r"\bscreen\s+was\s+too\s+bright\s+for\s+dark\s+rooms\b", "room was too bright for a comfortable stay", "ambience"),
-        (r"\bbattery\s+died\s+early\s+after\s+full\s+charge\b", "session expired early after login", "session_stability"),
-        (r"\bpayment\s+timed\s+out\s+during\s+checkout\b", "login timed out during authentication", "session_stability"),
+        (r"\bcalls\s+kept\s+dropping\s+even\s+with\s+full\s+signal\b", "prices kept dropping even after the discount period", "price_value", "call_reliability"),
+        (r"\bdelivery\s+was\s+late\s+despite\s+expedited\s+shipping\b", "support replied late despite the urgent ticket", "support_quality", "delivery_speed"),
+        (r"\bfood\s+was\s+cold\s+when\s+it\s+arrived\b", "staff behavior was cold during our interaction", "staff_behavior", "food_quality"),
+        (r"\bscreen\s+was\s+too\s+bright\s+for\s+dark\s+rooms\b", "room was too bright for a comfortable stay", "ambience", "display_quality"),
+        (r"\bbattery\s+died\s+early\s+after\s+full\s+charge\b", "session expired early after login", "session_stability", "battery_life"),
+        (r"\bpayment\s+timed\s+out\s+during\s+checkout\b", "login timed out during authentication", "session_stability", "payment_process"),
         
-        # Original Templates
-        (r"\bfood\s+(?:was|is)\s+cold\b", "staff was cold", "service_attitude"),
-        (r"\bstaff\s+(?:was|is)\s+cold\b", "food was cold", "food_quality"),
-        (r"\bservice\s+(?:was|is)\s+slow\b", "food was slow to arrive", "delivery_speed"),
-        (r"\bfood\s+(?:was|is)\s+slow\s+to\s+arrive\b", "service was slow", "service_speed"),
-        (r"\bwait(?:ed|ing)?\s+(?:time\s+)?(?:was\s+)?(?:too\s+)?long\b", "support took too long", "customer_support"),
-        (r"\bdelivery\s+(?:was|is)\s+late\b", "support replied late", "customer_support"),
-        (r"\bsupport\s+replied\s+late\b", "delivery was late", "delivery"),
-        (r"\bcalls?\s+kept\s+dropping\b", "prices kept dropping", "value"),
-        (r"\bprice(?:s)?\s+kept\s+dropping\b", "calls kept dropping", "call_reliability"),
-        (r"\bbattery(?:\s+life)?\s+(?:is|was)\s+(?:great|amazing|excellent|good)\b", "screen is excellent", "display"),
-        (r"\bscreen\s+(?:is|was)\s+(?:great|amazing|excellent|good)\b", "battery life is excellent", "battery_life"),
-        (r"\bbattery(?:\s+life)?\s+(?:died|drained)\s+(?:early|fast|quickly)\b", "restaurant died down early", "ambience"),
-        (r"\bscreen\s+(?:is|was)\s+bright\b", "room is bright", "ambience"),
-        (r"\bkeyboard\s+(?:is|was)\s+responsive\b", "staff is responsive", "service_speed"),
-        (r"\bportion(?:s)?\s+(?:was|were|are|is)\s+(?:very\s+)?small\b", "price was very small", "value"),
-        (r"\bprice\s+(?:was|is)\s+(?:very\s+)?small\b", "portion was very small", "portion_size"),
+        # Quality Swaps
+        (r"\bfood\s+(?:was|is)\s+cold\b", "staff was cold", "service_attitude", "food_quality"),
+        (r"\bstaff\s+(?:was|is)\s+cold\b", "food was cold", "food_quality", "service_attitude"),
+        (r"\bservice\s+(?:was|is)\s+slow\b", "food was slow to arrive", "delivery_speed", "service_speed"),
+        (r"\bfood\s+(?:was|is)\s+slow\s+to\s+arrive\b", "service was slow", "service_speed", "delivery_speed"),
+        (r"\bwait(?:ed|ing)?\s+(?:time\s+)?(?:was\s+)?(?:too\s+)?long\b", "support took too long", "customer_support", "service_speed"),
+        (r"\bdelivery\s+(?:was|is)\s+late\b", "support replied late", "customer_support", "delivery_speed"),
+        (r"\bsupport\s+replied\s+late\b", "delivery was late", "delivery_speed", "customer_support"),
+        (r"\bbattery(?:\s+life)?\s+(?:is|was)\s+(?:great|amazing|excellent|good)\b", "screen is excellent", "display_quality", "battery_life"),
+        (r"\bscreen\s+(?:is|was)\s+(?:great|amazing|excellent|good)\b", "battery life is excellent", "battery_life", "display_quality"),
+        (r"\bportion(?:s)?\s+(?:was|were|are|is)\s+(?:very\s+)?small\b", "price was very small", "price_value", "portion_size"),
+        (r"\bprice\s+(?:was|is)\s+(?:very\s+)?small\b", "portion was very small", "portion_size", "price_value"),
     ]
 
 
@@ -62,9 +57,9 @@ class CounterfactualGenerator:
         "dam good",
     }
 
-    def rewrite(self, text: str, enable_simple_swaps: bool = False) -> Optional[Tuple[str, str, str, str]]:
+    def rewrite(self, text: str, enable_simple_swaps: bool = False) -> Optional[Tuple[str, str, str, str, str, str]]:
         """
-        Attempts to rewrite the text. Returns (rewritten_text, src, tgt, type).
+        Attempts to rewrite the text. Returns (rewritten_text, src_phrase, tgt_phrase, type, target_aspect, source_aspect).
         """
         low = text.lower()
         if any(phrase in low for phrase in self.BLOCKED_PHRASES):
@@ -72,30 +67,33 @@ class CounterfactualGenerator:
 
         if re.search(r"\bi highly recommend\b", text, re.IGNORECASE):
             rewritten = re.sub(r"\bi highly recommend\b", "I would avoid", text, count=1, flags=re.IGNORECASE)
-            return rewritten, "I highly recommend", "I would avoid", "sentiment_flip"
+            return rewritten, "I highly recommend", "I would avoid", "sentiment_flip", None, None
         
         # 1. Template-based Aspect Swap (Highest Quality)
-        for src_pattern, tgt_phrase, tgt_aspect in self.ASPECT_TEMPLATES:
+        for src_pattern, tgt_phrase, tgt_aspect, src_aspect in self.ASPECT_TEMPLATES:
             pattern = re.compile(src_pattern, re.IGNORECASE)
             if pattern.search(text):
                 rewritten = pattern.sub(tgt_phrase, text, count=1)
                 if self._is_natural(rewritten):
-                    return rewritten, src_pattern, tgt_phrase, "aspect_swap"
+                    return rewritten, src_pattern, tgt_phrase, "aspect_swap", tgt_aspect, src_aspect
 
         # 2. Robust Sentiment Flip
         for src_pattern, tgt_word in self.SENTIMENT_FLIPS:
             pattern = re.compile(src_pattern, re.IGNORECASE)
             if pattern.search(text):
                 rewritten = pattern.sub(tgt_word, text, count=1)
-                return rewritten, src_pattern.replace(r"\b", ""), tgt_word, "sentiment_flip"
+                return rewritten, src_pattern.replace(r"\b", ""), tgt_word, "sentiment_flip", None, None
 
         # 3. Simple Aspect Swap (with safety gate)
         if enable_simple_swaps:
             simple_swaps = [
-                ("battery", "screen"), ("service", "food"), ("price", "quality"),
-                ("delivery", "support"), ("calls", "prices"), ("food", "staff")
+                ("battery", "screen", "display", "battery"), 
+                ("service", "food", "food", "service"), 
+                ("price", "quality", "quality", "price"),
+                ("delivery", "support", "support", "delivery"), 
+                ("calls", "prices", "price", "calls")
             ]
-            for src, tgt in simple_swaps:
+            for src, tgt, tgt_asp, src_asp in simple_swaps:
                 pattern = re.compile(rf"\b{re.escape(src)}\b", re.IGNORECASE)
                 if pattern.search(text):
                     rewritten = pattern.sub(tgt, text, count=1)
@@ -103,7 +101,7 @@ class CounterfactualGenerator:
                     bad_phrases = ["food staff", "service taste", "battery waiter", "screen meal", "software waiter", "good french staff"]
                     if any(bad in rewritten.lower() for bad in bad_phrases):
                         continue
-                    return rewritten, src, tgt, "simple_aspect_swap"
+                    return rewritten, src, tgt, "simple_aspect_swap", tgt_asp, src_asp
 
         return None
 
@@ -232,7 +230,7 @@ def generate_counterfactual_pairs(
         if rewrite is None:
             stats["rejected_no_expected_change"] += 1
             return False
-        counterfactual_text, source_trigger, target_trigger, rewrite_type = rewrite
+        counterfactual_text, source_trigger, target_trigger, rewrite_type, target_aspect, source_aspect = rewrite
         if aspect_only and rewrite_type != "aspect_swap":
             stats["rejected_no_expected_change"] += 1
             return False
@@ -264,6 +262,8 @@ def generate_counterfactual_pairs(
                 "counterfactual_review_id": f"{review_id}_cf_{digest}",
                 "changed_trigger": f"{source_trigger} -> {target_trigger}",
                 "rewrite_type": rewrite_type,
+                "target_aspect": target_aspect,
+                "source_aspect": source_aspect,
                 "counterfactual_source": "natural_match",
                 "expected_behavior": {
                     "aspect_should_change": "aspect" in rewrite_type,

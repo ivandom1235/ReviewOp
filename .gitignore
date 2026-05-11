@@ -64,3 +64,4 @@ tests/
 *.db
 obsidian/*.md
 docs/
+.tmp/

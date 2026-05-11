@@ -8,29 +8,45 @@ class SelectiveRouter:
     def __init__(self, config: ECConfig):
         self.config = config
 
-    def route(self, query: ReviewExample, scores: list[ECScore]) -> str:
+    def route_candidates(self, query: ReviewExample, scores: list[ECScore]) -> list[ECScore]:
+        """
+        Route each candidate independently based on its signals.
+        Returns a new list of scores with updated decision fields.
+        """
         if not scores:
-            return "abstain"
-            
-        top1 = scores[0]
-        top2 = scores[1] if len(scores) > 1 else None
+            return []
+
+        from dataclasses import replace
+        results = []
         
-        # Rule 1: Gold abstain check
-        if query.abstain_acceptable and top1.final_score < self.config.accept_threshold:
-            return "abstain"
+        for i, current in enumerate(scores):
+            next_score = scores[i+1] if i + 1 < len(scores) else None
             
-        # Rule 2: Hard abstain threshold
-        if top1.final_score < self.config.abstain_threshold:
-            return "abstain"
+            decision = "accept_known"
             
-        # Rule 3: Margin / Ambiguity check
-        if top2:
-            margin = top1.final_score - top2.final_score
-            if margin < self.config.margin_threshold:
-                return "needs_review"
+            # Rule 1: Abstain (Very low score)
+            if current.final_score < self.config.abstain_threshold:
+                decision = "abstain"
+            
+            # Rule 2: Novelty check
+            elif current.novelty_risk > self.config.novel_threshold:
+                decision = "open_world_candidate"
                 
-        # Rule 4: Novelty check
-        if top1.novelty_risk > self.config.novel_threshold:
-            return "open_world_candidate"
+            # Rule 3: Acceptance threshold
+            elif current.final_score < self.config.accept_threshold:
+                decision = "needs_review"
+                
+            # Rule 4: Margin / Ambiguity check (with next candidate)
+            elif next_score:
+                margin = current.final_score - next_score.final_score
+                if margin < self.config.margin_threshold:
+                    decision = "needs_review"
             
-        return "accept_known"
+            results.append(replace(current, decision=decision))
+            
+        return results
+
+    def route(self, query: ReviewExample, scores: list[ECScore]) -> str:
+        """Legacy row-level routing for backward compatibility. Returns the top decision."""
+        routed = self.route_candidates(query, scores)
+        return routed[0].decision if routed else "abstain"

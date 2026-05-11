@@ -20,6 +20,7 @@ class ECConfig:
     novel_threshold: float = 0.80
     margin_threshold: float = 0.03
     multi_gold_delta: float = 0.06
+    memory_sim_threshold: float = 0.65
     
     # Module toggles
     use_evidence: bool = True

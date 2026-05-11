@@ -17,6 +17,8 @@ class PrototypeStore:
         self.prototypes: dict[str, torch.Tensor] = {}
         self.aspect_counts: dict[str, int] = {}
         self.prototype_sources: dict[str, str] = {}
+        self.description_embeddings: dict[str, torch.Tensor] = {}
+        self.trigger_embeddings: dict[str, list[torch.Tensor]] = {}
 
     def build_from_examples(
         self,
@@ -65,12 +67,20 @@ class PrototypeStore:
             description = info.get("description", "").strip()
             if not description:
                 continue
+            
+            embedding = encoder.encode([description])[0]
+            self.description_embeddings[aspect] = embedding
+            
+            triggers = info.get("behavior_triggers", []) + info.get("aliases", []) + [aspect]
+            if triggers:
+                self.trigger_embeddings[aspect] = [encoder.encode([t])[0] for t in triggers if t]
+
             if aspect in self.prototypes:
                 source = self.prototype_sources.get(aspect, "")
                 if "generic_description" not in source:
                     self.prototype_sources[aspect] = source + "+generic_description"
                 continue
-            embedding = encoder.encode([description])[0]
+            
             self.prototypes[aspect] = embedding
             self.aspect_counts[aspect] = 0
             self.prototype_sources[aspect] = "generic_description"

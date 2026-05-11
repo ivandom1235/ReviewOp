@@ -33,6 +33,7 @@ class QualityReport:
     canonicalization: dict[str, float] = field(default_factory=dict)
     gold_stats: dict[str, float] = field(default_factory=dict)
     accounting_valid: bool = True
+    source_artifact_consistency: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

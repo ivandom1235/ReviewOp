@@ -42,6 +42,13 @@ class ClusterValidator:
         contradiction = cluster_metrics.get("contradiction_score", 0.0)
         trigger_patterns = tuple(cluster_metrics.get("trigger_patterns", ()) or ())
         unique_surface_form_count = int(cluster_metrics.get("unique_surface_form_count", 0) or 0)
+        source_types = set(cluster_metrics.get("source_types", ()) or ())
+        
+        # Phase 8: Adjust thresholds based on provenance
+        # Explicit or previously learned patterns are more trusted
+        is_trusted = bool(source_types & {"explicit", "implicit_learned", "implicit_json"})
+        adj_min_consistency = self.min_consistency if not is_trusted else self.min_consistency - 0.05
+        adj_min_ev_quality = self.min_evidence_quality if not is_trusted else self.min_evidence_quality - 0.10
         
         aspect_raw = str(cluster_metrics.get("aspect_raw", "")).lower().strip()
         if aspect_raw in {"unknown", "none", "null", "general", "misc"} and not trigger_patterns:
@@ -80,8 +87,8 @@ class ClusterValidator:
             support >= self.min_support
             and reviews >= self.min_reviews
             and unique_surface_form_count >= self.min_surface_forms
-            and consistency >= self.min_consistency
-            and ev_quality >= self.min_evidence_quality
+            and consistency >= adj_min_consistency
+            and ev_quality >= adj_min_ev_quality
             and contradiction <= self.max_contradiction
         )
 

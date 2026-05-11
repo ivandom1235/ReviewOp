@@ -18,6 +18,7 @@ def build_quality_report(
     discarded_rows: int = 0,
     runtime_reason_counts: dict[str, int] | None = None,
     original_sample_size: int = 0,
+    source_consistency: dict[str, Any] | None = None,
 ) -> QualityReport:
     counts = {split: len(rows) for split, rows in splits.items()}
     rejected_interps = 0
@@ -170,4 +171,5 @@ def build_quality_report(
             "max_gold_per_row": float(max_gold),
         },
         accounting_valid=(loaded_rows == total_exported + rejected_rows + discarded_rows),
+        source_artifact_consistency=source_consistency,
     )

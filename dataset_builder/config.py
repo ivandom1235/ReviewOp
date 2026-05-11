@@ -81,6 +81,7 @@ class BuilderConfig:
     domain_holdout_domain: Optional[str] = None
     max_workers: int = 20
     input_adapter: str = "canonical"
+    profile: str = "development"
 
 
 def load_config(path: str | Path | None = None) -> BuilderConfig:

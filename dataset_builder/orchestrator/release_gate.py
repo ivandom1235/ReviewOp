@@ -35,8 +35,8 @@ def run_release_gate(output_dir: Path, cfg: Any) -> tuple[bool, dict[str, Any]]:
     }
     
     try:
-        # Use diagnostic_strict if requested in cfg
-        profile = "diagnostic_strict" if getattr(cfg, "strict", False) else "research_default"
+        # Use diagnostic_strict if requested in cfg, otherwise use the configured profile
+        profile = "diagnostic_strict" if getattr(cfg, "strict", False) else getattr(cfg, "profile", "development")
         gate_results = assert_release_ready(splits, reports={"quality": metrics["quality"]}, leakage=leakage, profile=profile)
         metrics["gate_results"] = gate_results
         return True, metrics

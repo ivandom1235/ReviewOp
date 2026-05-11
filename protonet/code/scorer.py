@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+import re
 from .schema import ReviewExample, ECScore
 from .prototype_store import PrototypeStore
 from .encoder import ECEncoder
@@ -24,7 +25,7 @@ class ECProtoNetScorer:
         self.store = store
         self.config = config
 
-        self.evidence_mod = EvidenceSupportModule(config)
+        self.evidence_mod = EvidenceSupportModule(config, encoder=encoder, store=store)
         self.memory_mod = memory_mod if memory_mod is not None else MemorySupportModule(config)
         self.novelty_mod = NoveltyModule(config)
         self.contradiction_mod = ContradictionModule(config)
@@ -32,11 +33,25 @@ class ECProtoNetScorer:
 
     def score_row(self, query: ReviewExample) -> list[ECScore]:
         """Compute full EC scores for a query row."""
-        # Query strategy: try to use first sentence if full text is too long
+        # Query strategy: Evidence-aware sentence selection (EC-P4 / Section 6.2.6)
         query_text = query.text
-        if len(query_text.split()) > 20:
-            # Simple heuristic: first sentence usually contains the main aspect
-            query_text = query_text.split(".")[0]
+        
+        if query.evidence_text:
+            query_text = query.evidence_text
+        elif len(query_text.split()) > 20:
+            # Evidence-aware sentence selection (EC-P4 / Section 6.2.6)
+            # Find the sentence that most likely contains the aspect evidence
+            sentences = [s.strip() for s in re.split(r'[.!?]', query_text) if len(s.strip()) > 5]
+            if sentences:
+                sentence_embs = self.encoder.encode(sentences)
+                max_sims = []
+                for s_emb in sentence_embs:
+                    # Find max similarity of this sentence to ANY prototype
+                    s_sims = self.store.get_similarity(s_emb)
+                    max_sims.append(max(s_sims.values()) if s_sims else 0.0)
+                
+                best_idx = int(torch.tensor(max_sims).argmax().item())
+                query_text = sentences[best_idx]
             
         query_embedding = self.encoder.encode([query_text])[0]
         similarities = self.store.get_similarity(query_embedding)
@@ -76,34 +91,17 @@ class ECProtoNetScorer:
         # Sort by score descending
         scores.sort(key=lambda x: x.final_score, reverse=True)
         
-        # Apply selective routing
+        # Apply selective routing (EC-P4 / Section 6.2.5 bug fix)
         if self.config.use_router:
-            decision = self.router.route(query, scores)
-            for s in scores:
-                s = ECScore(**{**s.__dict__, "decision": decision}) # Simplified update
+            scores = self.router.route_candidates(query, scores)
         
         return scores
 
     def predict(self, query: ReviewExample, top_k: int = 1) -> list[ECScore]:
+        """Predict top-k aspects for a query row."""
+        # Use score_row which already handles routing correctly
         scores = self.score_row(query)
         if not scores:
             return []
             
-        # For evaluation, we return the decision-aware scores
-        results = []
-        decision = self.router.route(query, scores) if self.config.use_router else "accept_known"
-        
-        for s in scores[:top_k]:
-            results.append(
-                ECScore(
-                    aspect=s.aspect,
-                    proto_similarity=s.proto_similarity,
-                    evidence_support=s.evidence_support,
-                    memory_support=s.memory_support,
-                    novelty_risk=s.novelty_risk,
-                    contradiction_score=s.contradiction_score,
-                    final_score=s.final_score,
-                    decision=decision
-                )
-            )
-        return results
+        return scores[:top_k]

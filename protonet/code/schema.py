@@ -30,6 +30,8 @@ class ReviewExample:
     abstain_acceptable: bool
     abstain_reason_gold: list[str]
     gold_interpretations: list[GoldInterpretation]
+    evidence_text: str | None = None
+    evidence_scope: str = "unknown"
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

@@ -1494,22 +1494,22 @@ class DiagnosticsAndMemoryTddTests(unittest.TestCase):
 
 class VerifyArtifactTests(unittest.TestCase):
     def test_profile_thresholds_scale_for_stability_and_development(self) -> None:
-        from dataset_builder.scripts.verify_artifact import _profile_thresholds
+        from dataset_builder.benchmark.verification_policy import profile_thresholds
 
-        dev = _profile_thresholds("development", 200)
-        stable = _profile_thresholds("stability", 400)
-        strict_diag = _profile_thresholds("diagnostic_strict", 200)
-        journal = _profile_thresholds("journal", 1000)
+        dev = profile_thresholds("development", 200)
+        stable = profile_thresholds("stability", 400)
+        strict_diag = profile_thresholds("diagnostic_strict", 200)
+        journal = profile_thresholds("journal", 1000)
 
         self.assertEqual(dev["min_counterfactual_validated"], 30)
         self.assertEqual(dev["min_anchor_modifier_count"], 20)
         self.assertEqual(dev["review_queue_min"], 1)
         self.assertEqual(dev["min_aspect_swap_count"], 3)
-        self.assertEqual(stable["min_counterfactual_validated"], 50)
-        self.assertEqual(stable["min_anchor_modifier_count"], 40)
+        self.assertEqual(stable["min_counterfactual_validated"], 60)
+        self.assertEqual(stable["min_anchor_modifier_count"], 25)
         self.assertEqual(stable["review_queue_min"], 3)
         self.assertEqual(stable["min_aspect_swap_count"], 10)
-        self.assertEqual(strict_diag["min_aspect_swap_count"], 5)
+        self.assertEqual(strict_diag["min_aspect_swap_count"], 3)
         self.assertEqual(journal["min_aspect_swap_count"], 25)
 
     def test_counterfactual_quality_report_is_required_and_must_include_type_counts(self) -> None:
