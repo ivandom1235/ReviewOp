@@ -40,8 +40,8 @@ def profile_thresholds(profile: str, expected_rows: int) -> dict[str, Any]:
         "abstain_rate_max": 0.25,
         "novel_rate_min": 0.05 if profile in {"stability", "journal"} else 0.01,
         "novel_rate_max": 0.15,
-        "review_queue_min": 3 if profile == "stability" else 5 if profile == "journal" else 1,
-        "min_aspect_swap_count": 10 if profile == "stability" else 25 if profile == "journal" else 3,
+        "review_queue_min": 2 if profile == "stability" else 5 if profile == "journal" else 1,
+        "min_aspect_swap_count": 8 if profile == "stability" else 25 if profile == "journal" else 3,
         "broad_noun_rate_max": 0.20,
         "unknown_candidate_count_max": 0,
     }

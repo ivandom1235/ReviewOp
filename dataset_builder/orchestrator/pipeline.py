@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
+from collections import defaultdict
 
 from rich.progress import Progress
 
@@ -36,6 +38,8 @@ from .stages import (
 from ..schemas.benchmark_row import BenchmarkRow
 from ..schemas.raw_review import RawReview
 from ..split.grouped_split import grouped_train_val_test_split
+from ..canonical.domain_registry import DomainRegistry
+logger = logging.getLogger(__name__)
 
 
 def _remove_near_duplicates(rows: list[BenchmarkRow], threshold: float = 0.95) -> list[BenchmarkRow]:
@@ -110,6 +114,62 @@ def _calculate_checksums(output_dir: Path) -> dict[str, str]:
     return checksums
 
 
+def _build_label_equivalence(rows: list[BenchmarkRow]) -> dict[str, list[str]]:
+    eq: dict[str, set[str]] = defaultdict(set)
+    domains = sorted({str(r.domain or "generic").lower() for r in rows})
+    for domain in domains:
+        cfg = DomainRegistry.get_config(domain)
+        domain_map = cfg.get("domain_maps", {}) if isinstance(cfg, dict) else {}
+        for alias, canonical in (domain_map or {}).items():
+            a = str(alias or "").strip().lower().replace(" ", "_")
+            c = str(canonical or "").strip().lower().replace(" ", "_")
+            if not a or not c:
+                continue
+            eq[c].add(a)
+            eq[c].add(c)
+        canonical_aliases = cfg.get("canonical_aliases", {}) if isinstance(cfg, dict) else {}
+        for canonical, aliases in (canonical_aliases or {}).items():
+            c = str(canonical or "").strip().lower().replace(" ", "_")
+            if not c:
+                continue
+            eq[c].add(c)
+            for alias in aliases or []:
+                a = str(alias or "").strip().lower().replace(" ", "_")
+                if a:
+                    eq[c].add(a)
+    return {k: sorted(v) for k, v in sorted(eq.items())}
+
+
+def _build_promoted_memory_sidecar(memory_path: str | None) -> dict[str, object]:
+    if not memory_path:
+        return {"created_at": datetime.now(timezone.utc).isoformat(), "total": 0, "items": []}
+    p = Path(memory_path)
+    if not p.exists():
+        return {"created_at": datetime.now(timezone.utc).isoformat(), "total": 0, "items": []}
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+        entries = payload.get("entries", {}) if isinstance(payload, dict) else {}
+        items = []
+        for cluster_id, entry in entries.items():
+            if str(entry.get("status", "")).strip().lower() != "promoted":
+                continue
+            items.append(
+                {
+                    "cluster_id": cluster_id,
+                    "aspect_raw": entry.get("aspect_raw"),
+                    "suggested_aspect": entry.get("suggested_aspect"),
+                    "support_count": int(entry.get("support_count", 0) or 0),
+                    "trigger_patterns": list(entry.get("trigger_patterns", []) or []),
+                    "quality": float(entry.get("evidence_quality_mean", 0.0) or 0.0),
+                    "consistency": float(entry.get("cluster_consistency", 0.0) or 0.0),
+                    "status": "promoted",
+                }
+            )
+        return {"created_at": datetime.now(timezone.utc).isoformat(), "total": len(items), "items": items}
+    except Exception:
+        return {"created_at": datetime.now(timezone.utc).isoformat(), "total": 0, "items": []}
+
+
 def run_builder_pipeline(
     cfg: BuilderConfig, 
     raw_reviews: list[RawReview] | None = None,
@@ -123,6 +183,7 @@ def run_builder_pipeline(
     If rows_by_split are provided directly, it skips to checks and export.
     """
     output_dir = Path(cfg.output_dir)
+    run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     
     # Ensure output cleaning (Requirement)
     if not cfg.dry_run:
@@ -276,6 +337,16 @@ def run_builder_pipeline(
     if rows_by_split is None:
         raise ValueError("Either raw_reviews or rows_by_split must be provided")
 
+    # Ensure all rows have a stable unique row_id
+    from dataclasses import replace
+    rows_by_split = {
+        split: [
+            replace(row, row_id=f"{run_id}_{split}_{idx:06d}")
+            for idx, row in enumerate(split_rows)
+        ]
+        for split, split_rows in rows_by_split.items()
+    }
+
     rejected_audit = list(getattr(cfg, "_rejected_rows_audit", []) or [])
     if rejected_audit:
         rejected_rows = max(rejected_rows, len(rejected_audit))
@@ -289,7 +360,6 @@ def run_builder_pipeline(
 
     # Reproducibility metadata
     run_command = " ".join(sys.argv)
-    run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     code_hash = _get_code_hash()
     config_hash = hashlib.sha256(str(cfg.__dict__).encode()).hexdigest()[:12]
     
@@ -325,7 +395,7 @@ def run_builder_pipeline(
             "near_duplicate_leakage": int(leakage_results.get("near_duplicate_leakage", 0)),
         }
         
-        profile = "diagnostic_strict" if getattr(cfg, "strict", False) else "research_default"
+        profile = "diagnostic_strict" if getattr(cfg, "strict", False) else getattr(cfg, "profile", "development")
         metrics = {
             "counts": quality.export_counts,
             "quality": quality.__dict__ if hasattr(quality, "__dict__") else quality,
@@ -359,7 +429,11 @@ def run_builder_pipeline(
                 aspect_memory_metrics["promoted_entries_total"] = promoted_total
                 aspect_memory_metrics["review_queue_count"] = review_queue_total
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to load aspect memory metrics from %s",
+                    cfg.aspect_memory_path,
+                    exc_info=True,
+                )
             for key in ("candidates_added", "promoted_matches_used", "candidates_promoted_this_run", "rejected_candidates_this_run"):
                 if key in runtime_metrics:
                     aspect_memory_metrics[key] = runtime_metrics[key]
@@ -474,6 +548,9 @@ def run_builder_pipeline(
         else:
             (output_dir / "rejected_rows.jsonl").write_text("", encoding="utf-8")
 
+        write_sidecar(output_dir / "label_equivalence.json", _build_label_equivalence(all_rows))
+        write_sidecar(output_dir / "aspect_memory_promoted.json", _build_promoted_memory_sidecar(cfg.aspect_memory_path))
+
         # Write consistency sidecar
         write_sidecar(output_dir / "source_artifact_consistency.json", source_consistency)
 
@@ -529,14 +606,15 @@ def run_builder_pipeline(
         from ..benchmark.verifier import verify_artifact_dir
         v_report = verify_artifact_dir(output_dir, profile=profile, expected_rows=requested_rows)
         
+        # Always write detailed verification report to artifact dir
+        with open(output_dir / "artifact_verification.json", "w", encoding="utf-8") as vf:
+            json.dump(v_report, vf, indent=2)
+
         # Override gate status based on strict verification
         if v_report["artifact_status"] == "fail":
             from dataclasses import replace
             manifest = replace(manifest, release_status="failed", gate_status="FAIL")
             write_manifest(output_dir / "manifest.json", manifest)
-            # Write detailed verification failure to artifact dir
-            with open(output_dir / "artifact_verification.json", "w", encoding="utf-8") as vf:
-                json.dump(v_report, vf, indent=2)
         progress.update(t2, advance=1)
         
         archive_path = write_artifact_zip(output_dir)

@@ -1,5 +1,7 @@
 from __future__ import annotations
+import logging
 from typing import Any
+logger = logging.getLogger(__name__)
 
 try:
     import numpy as np
@@ -20,7 +22,7 @@ except ImportError:
     sklearn_cosine_similarity = None
 
 class EvidenceClusterer:
-    def __init__(self, threshold: float = 0.72):
+    def __init__(self, threshold: float = 0.70):
         self.threshold = threshold
         self._model = None
 
@@ -56,7 +58,7 @@ class EvidenceClusterer:
                 emb_b = self.model.encode(b, convert_to_tensor=True, show_progress_bar=False)
                 return float(util.cos_sim(emb_a, emb_b).item())
             except Exception:
-                pass
+                logger.debug("Embedding similarity failed; falling back to TF-IDF/Jaccard", exc_info=True)
 
         if TfidfVectorizer is not None and sklearn_cosine_similarity is not None:
             try:
@@ -64,7 +66,7 @@ class EvidenceClusterer:
                 matrix = vectorizer.fit_transform([a, b])
                 return float(sklearn_cosine_similarity(matrix[0], matrix[1])[0][0])
             except Exception:
-                pass
+                logger.debug("TF-IDF similarity failed; falling back to Jaccard", exc_info=True)
 
         return self._jaccard_similarity(a, b)
 
@@ -82,7 +84,7 @@ class EvidenceClusterer:
                 matrix = util.cos_sim(embeddings, embeddings)
                 return self._mean_upper_triangle(matrix.cpu().numpy() if hasattr(matrix, "cpu") else matrix)
             except Exception:
-                pass
+                logger.debug("Embedding mean similarity failed; falling back to TF-IDF/Jaccard", exc_info=True)
 
         if TfidfVectorizer is not None and sklearn_cosine_similarity is not None:
             try:
@@ -91,7 +93,7 @@ class EvidenceClusterer:
                 sims = sklearn_cosine_similarity(matrix)
                 return self._mean_upper_triangle(sims)
             except Exception:
-                pass
+                logger.debug("TF-IDF mean similarity failed; falling back to Jaccard", exc_info=True)
 
         scores = [self._jaccard_similarity(cleaned[i], cleaned[j]) for i in range(len(cleaned)) for j in range(i + 1, len(cleaned))]
         return sum(scores) / len(scores) if scores else 0.0

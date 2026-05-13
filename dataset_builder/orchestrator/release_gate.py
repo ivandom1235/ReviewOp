@@ -1,48 +1,8 @@
 from __future__ import annotations
-import json
-from pathlib import Path
-from typing import Any
-from ..reports.quality_report import build_quality_report
-from ..split.leakage_checks import check_cross_split_leakage
-from .exceptions import QualityGateError
 
-def run_release_gate(output_dir: Path, cfg: Any) -> tuple[bool, dict[str, Any]]:
-    """Generate reports and verify the artifact is ready for release."""
-    splits = {}
-    for split in ["train", "val", "test"]:
-        path = output_dir / f"{split}.jsonl"
-        if not path.exists():
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                splits[split] = [json.loads(line) for line in f]
-        except Exception:
-            continue
-            
-    if not splits:
-        return False, {"error": "no splits found"}
-        
-    # 1. Leakage Checks
-    leakage = check_cross_split_leakage(splits)
-    
-    # 2. Quality Report
-    report = build_quality_report(splits)
-    
-    metrics = {
-        "total_rows": sum(len(r) for r in splits.values()),
-        "leakage": leakage,
-        "quality": report.__dict__ if hasattr(report, "__dict__") else report
-    }
-    
-    try:
-        # Use diagnostic_strict if requested in cfg, otherwise use the configured profile
-        profile = "diagnostic_strict" if getattr(cfg, "strict", False) else getattr(cfg, "profile", "development")
-        gate_results = assert_release_ready(splits, reports={"quality": metrics["quality"]}, leakage=leakage, profile=profile)
-        metrics["gate_results"] = gate_results
-        return True, metrics
-    except Exception as e:
-        metrics["error"] = str(e)
-        return False, metrics
+from typing import Any
+
+from .exceptions import QualityGateError
 
 def assert_release_ready(
     splits: dict[str, list[Any]],
@@ -78,6 +38,21 @@ def assert_release_ready(
             "metrics": {}
         }
         raise QualityGateError(gate_results, "Critical Failure: exact text leakage detected")
+        
+    # Near-duplicate leakage enforcement (EC-P1)
+    near_dup = int(leakage.get("near_duplicate_leakage", 0))
+    if near_dup > 0:
+        msg = f"near-duplicate split leakage detected ({near_dup})"
+        if profile in {"stability", "journal", "research_default", "diagnostic_strict"}:
+            gate_results = {
+                "status": "FAIL",
+                "profile": profile,
+                "failures": [msg],
+                "warnings": [],
+                "metrics": {"near_duplicate_leakage": near_dup},
+            }
+            raise QualityGateError(gate_results, msg)
+        warnings.append(msg)
         
     quality = reports.get("quality", {})
     q_data = quality.__dict__ if hasattr(quality, "__dict__") else quality

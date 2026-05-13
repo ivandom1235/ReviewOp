@@ -6,6 +6,20 @@ from typing import Iterable
 from ..schemas.benchmark_row import BenchmarkRow
 
 
+def _derive_query_text(row: BenchmarkRow) -> str:
+    # Priority: exact evidence span -> sentence/phrase evidence -> matched-term window fallback -> full review
+    for interp in row.gold_interpretations or []:
+        evidence_text = str(getattr(interp, "evidence_text", "") or "").strip()
+        evidence_scope = str(getattr(interp, "evidence_scope", "") or "").strip()
+        if evidence_text and len(evidence_text.split()) >= 3 and evidence_scope in {"exact_phrase", "token_span", "phrase_window"}:
+            return evidence_text
+    for interp in row.gold_interpretations or []:
+        evidence_text = str(getattr(interp, "evidence_text", "") or "").strip()
+        if evidence_text and len(evidence_text.split()) >= 3:
+            return evidence_text
+    return str(row.review_text or "")
+
+
 def _gold_values(row: BenchmarkRow, field: str) -> list[str]:
     values: list[str] = []
     for interp in row.gold_interpretations or []:
@@ -65,9 +79,11 @@ def derive_row_mapping_sources(gold_interpretations: Iterable[object]) -> tuple[
 
 
 def derive_row_metadata(row: BenchmarkRow) -> BenchmarkRow:
+    query_text = _derive_query_text(row)
     if bool(getattr(row, "abstain_acceptable", False)) and not tuple(row.gold_interpretations or ()):
         return replace(
             row,
+            query_text=query_text,
             source_type="abstain",
             mapping_source="abstain",
             mapping_scope="abstain",
@@ -81,6 +97,7 @@ def derive_row_metadata(row: BenchmarkRow) -> BenchmarkRow:
     mapping_source = "|".join(mapping_sources) if mapping_sources else "unknown"
     return replace(
         row,
+        query_text=query_text,
         source_type=source_type,
         mapping_source=mapping_source,
         mapping_scope=mapping_scope,

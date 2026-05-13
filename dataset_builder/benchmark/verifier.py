@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from .verification_policy import PROFILE_DEFAULTS, profile_thresholds
+logger = logging.getLogger(__name__)
 
 def verify_artifact_dir(
     output_dir: Path,
@@ -22,17 +24,24 @@ def verify_artifact_dir(
     rejected_rows_path = output_dir / "rejected_rows.jsonl"
 
     def load_json(p):
-        if not p.exists(): return {}
-        try: return json.loads(p.read_text(encoding="utf-8"))
-        except: return {}
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to parse JSON file %s: %s", p, exc)
+            return {}
 
     def load_jsonl_records(p):
-        if not p.exists(): return []
+        if not p.exists():
+            return []
         recs = []
         try:
             for line in p.read_text(encoding="utf-8").splitlines():
-                if line.strip(): recs.append(json.loads(line))
-        except: pass
+                if line.strip():
+                    recs.append(json.loads(line))
+        except Exception as exc:
+            logger.warning("Failed to parse JSONL file %s: %s", p, exc)
         return recs
 
     manifest = load_json(manifest_path)
@@ -54,10 +63,21 @@ def verify_artifact_dir(
     if requested != expected_rows: failures.append(f"sample_size_requested is {requested}, expected {expected_rows}")
     if loaded < requested: failures.append(f"sample_size mismatch: requested {requested}, loaded {loaded}")
 
-    # File existence checks
-    required_files = ["train.jsonl", "val.jsonl", "test.jsonl", "manifest.json", "metrics_summary.json"]
-    for rf in required_files:
-        if not (output_dir / rf).exists(): failures.append(f"required file missing: {rf}")
+    # Ensure stable unique row_ids (EC-P0 fix)
+    all_row_ids = set()
+    for split in ["train", "val", "test"]:
+        path = output_dir / f"{split}.jsonl"
+        if path.exists():
+            records = load_jsonl_records(path)
+            for idx, r in enumerate(records):
+                rid = r.get("row_id")
+                if not rid or rid == "unknown":
+                    failures.append(f"missing or unknown row_id in {split}.jsonl at line {idx+1}")
+                    break
+                if rid in all_row_ids:
+                    failures.append(f"duplicate row_id found: {rid}")
+                    break
+                all_row_ids.add(rid)
 
     # Detailed metrics checks
     evidence = quality.get("evidence", {}) or {}

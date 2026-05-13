@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from dataset_builder.benchmark.verification_policy import PROFILE_DEFAULTS, profile_thresholds
+logger = logging.getLogger(__name__)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -16,7 +18,8 @@ def _load_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         return payload if isinstance(payload, dict) else {}
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to parse JSON file %s: %s", path, exc)
         return {}
 
 
@@ -31,7 +34,8 @@ def _load_jsonl_records(path: Path) -> list[dict[str, Any]]:
             payload = json.loads(line)
             if isinstance(payload, dict):
                 records.append(payload)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to parse JSONL file %s: %s", path, exc)
         return []
     return records
 
@@ -136,6 +140,15 @@ def verify(
     domain_holdout = metrics.get("domain_holdout", {}) if isinstance(metrics.get("domain_holdout", {}), dict) else {}
     cf_payload = metrics.get("counterfactual_pairs", {}) if isinstance(metrics.get("counterfactual_pairs", {}), dict) else {}
     cf_stats = cf_payload.get("stats", {}) if isinstance(cf_payload.get("stats", {}), dict) else {}
+    leakage = metrics.get("leakage", {}) if isinstance(metrics.get("leakage", {}), dict) else {}
+    near_duplicate_leakage = int(leakage.get("near_duplicate_leakage", 0) or 0)
+
+    if near_duplicate_leakage > 0:
+        msg = f"near_duplicate_leakage is {near_duplicate_leakage}, expected 0"
+        if profile in {"stability", "journal", "diagnostic_strict"}:
+            failures.append(msg)
+        else:
+            warnings.append(msg)
 
     total_exported = int(quality.get("total_exported", 0) or 0)
     full_review_rate = float(evidence.get("full_review_evidence_rate", 1.0) or 1.0)

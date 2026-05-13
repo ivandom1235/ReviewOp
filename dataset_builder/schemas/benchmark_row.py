@@ -13,6 +13,8 @@ class BenchmarkRow:
     domain: str
     domain_family: str
     review_text: str
+    row_id: str | None = None
+    query_text: str = ""
     explicit_interpretations: list[Interpretation] = field(default_factory=list)
     implicit_interpretations: list[Interpretation] = field(default_factory=list)
     gold_interpretations: list[Interpretation] = field(default_factory=list)

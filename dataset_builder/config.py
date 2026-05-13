@@ -132,6 +132,7 @@ def load_config(path: str | Path | None = None) -> BuilderConfig:
         domain_holdout_domain=payload.get("domain_holdout_domain"),
         max_workers=max_workers,
         input_adapter=str(payload.get("input_adapter", "canonical")),
+        profile=str(payload.get("profile", "development")),
     )
 
 
@@ -189,4 +190,5 @@ def to_jsonable(cfg: BuilderConfig) -> dict[str, Any]:
         "domain_holdout_domain": cfg.domain_holdout_domain,
         "max_workers": cfg.max_workers,
         "input_adapter": cfg.input_adapter,
+        "profile": cfg.profile,
     }

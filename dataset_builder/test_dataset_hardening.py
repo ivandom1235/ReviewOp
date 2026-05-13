@@ -29,7 +29,7 @@ from dataset_builder.scripts.build_benchmark import build_arg_parser, build_conf
 from dataset_builder.schemas.benchmark_row import BenchmarkRow
 from dataset_builder.schemas.interpretation import Interpretation
 from dataset_builder.split.domain_split import choose_domain_holdout_domain, domain_holdout_split
-from protonet.code.selective_decisions import combine_routing_score
+
 from unittest.mock import patch
 
 
@@ -1541,14 +1541,14 @@ class VerifyArtifactTests(unittest.TestCase):
                     "hardness_distribution": {"H1": 270, "H2": 70, "H3": 20},
                 },
                 "aspect_memory": {"review_queue_count": 3, "unknown_candidate_count": 0, "broad_noun_candidate_rate": 0.1},
-                "domain_holdout": {"counts": {"val": 20}},
+                "domain_holdout": {"counts": {"val": 30}},
                 "counterfactual_pairs": {
-                    "total": 50,
+                    "total": 70,
                     "stats": {
-                        "attempted": 80,
-                        "generated": 50,
-                        "exported": 50,
-                        "validated": 50,
+                        "attempted": 100,
+                        "generated": 70,
+                        "exported": 70,
+                        "validated": 70,
                         "rejected_unnatural": 10,
                         "rejected_no_expected_change": 20,
                         "type_counts": {"aspect_swap": 40, "sentiment_flip": 10},
@@ -1577,10 +1577,10 @@ class VerifyArtifactTests(unittest.TestCase):
                 path.write_text("{}", encoding="utf-8")
             (root / "counterfactual" / "counterfactual_quality_report.json").write_text(
                 json.dumps({
-                    "attempted": 80,
-                    "generated": 50,
-                    "exported": 50,
-                    "validated": 50,
+                    "attempted": 100,
+                    "generated": 70,
+                    "exported": 70,
+                    "validated": 70,
                     "rejected_unnatural": 10,
                     "rejected_no_expected_change": 20,
                     "type_counts": {"aspect_swap": 40, "sentiment_flip": 10},
@@ -1621,14 +1621,14 @@ class VerifyArtifactTests(unittest.TestCase):
                     "hardness_distribution": {"H1": 270, "H2": 70, "H3": 20},
                 },
                 "aspect_memory": {"review_queue_count": 3, "unknown_candidate_count": 0, "broad_noun_candidate_rate": 0.1},
-                "domain_holdout": {"counts": {"val": 20}},
+                "domain_holdout": {"counts": {"val": 30}},
                 "counterfactual_pairs": {
-                    "total": 50,
+                    "total": 70,
                     "stats": {
-                        "attempted": 80,
-                        "generated": 50,
-                        "exported": 50,
-                        "validated": 50,
+                        "attempted": 100,
+                        "generated": 70,
+                        "exported": 70,
+                        "validated": 70,
                         "rejected_unnatural": 10,
                         "rejected_no_expected_change": 20,
                         "type_counts": {"aspect_swap": 1, "sentiment_flip": 49},
@@ -1658,10 +1658,10 @@ class VerifyArtifactTests(unittest.TestCase):
             (root / "counterfactual").mkdir(parents=True, exist_ok=True)
             (root / "counterfactual" / "counterfactual_quality_report.json").write_text(
                 json.dumps({
-                    "attempted": 80,
-                    "generated": 50,
-                    "exported": 50,
-                    "validated": 50,
+                    "attempted": 100,
+                    "generated": 70,
+                    "exported": 70,
+                    "validated": 70,
                     "rejected_unnatural": 10,
                     "rejected_no_expected_change": 20,
                     "type_counts": {"aspect_swap": 1, "sentiment_flip": 49},
@@ -1705,14 +1705,14 @@ class VerifyArtifactTests(unittest.TestCase):
                     "hardness_distribution": {"H1": 280, "H2": 50, "H3": 30},
                 },
                 "aspect_memory": {"review_queue_count": 3, "unknown_candidate_count": 0, "broad_noun_candidate_rate": 0.1},
-                "domain_holdout": {"counts": {"val": 20}},
+                "domain_holdout": {"counts": {"val": 30}},
                 "counterfactual_pairs": {
-                    "total": 50,
+                    "total": 70,
                     "stats": {
-                        "attempted": 80,
-                        "generated": 50,
-                        "exported": 50,
-                        "validated": 50,
+                        "attempted": 100,
+                        "generated": 70,
+                        "exported": 70,
+                        "validated": 70,
                         "rejected_unnatural": 10,
                         "rejected_no_expected_change": 20,
                         "type_counts": {"aspect_swap": 40, "sentiment_flip": 10},
@@ -1742,10 +1742,10 @@ class VerifyArtifactTests(unittest.TestCase):
             (root / "counterfactual").mkdir(parents=True, exist_ok=True)
             (root / "counterfactual" / "counterfactual_quality_report.json").write_text(
                 json.dumps({
-                    "attempted": 80,
-                    "generated": 50,
-                    "exported": 50,
-                    "validated": 50,
+                    "attempted": 100,
+                    "generated": 70,
+                    "exported": 70,
+                    "validated": 70,
                     "rejected_unnatural": 10,
                     "rejected_no_expected_change": 20,
                     "type_counts": {"aspect_swap": 40, "sentiment_flip": 10},
@@ -1798,17 +1798,17 @@ class VerifyArtifactTests(unittest.TestCase):
                     "hardness_distribution": {"H1": 280, "H2": 50, "H3": 30},
                 },
                 "aspect_memory": {"review_queue_count": 3, "unknown_candidate_count": 0, "broad_noun_candidate_rate": 0.1},
-                "domain_holdout": {"counts": {"val": 20}},
+                "domain_holdout": {"counts": {"val": 30}},
                 "counterfactual_pairs": {
-                    "total": 50,
+                    "total": 70,
                     "stats": {
-                        "attempted": 80,
-                        "generated": 50,
-                        "exported": 50,
-                        "validated": 50,
+                        "attempted": 100,
+                        "generated": 70,
+                        "exported": 70,
+                        "validated": 70,
                         "rejected_unnatural": 10,
                         "rejected_no_expected_change": 20,
-                        "type_counts": {"aspect_swap": 40, "sentiment_flip": 10},
+                        "type_counts": {"aspect_swap": 50, "sentiment_flip": 20},
                     },
                 },
             }
@@ -1835,10 +1835,10 @@ class VerifyArtifactTests(unittest.TestCase):
             (root / "counterfactual").mkdir(parents=True, exist_ok=True)
             (root / "counterfactual" / "counterfactual_quality_report.json").write_text(
                 json.dumps({
-                    "attempted": 80,
-                    "generated": 50,
-                    "exported": 50,
-                    "validated": 50,
+                    "attempted": 100,
+                    "generated": 70,
+                    "exported": 70,
+                    "validated": 70,
                     "rejected_unnatural": 10,
                     "rejected_no_expected_change": 20,
                     "type_counts": {"aspect_swap": 40, "sentiment_flip": 10},
@@ -1892,20 +1892,20 @@ class VerifyArtifactTests(unittest.TestCase):
                     "bootstrap_review_queue_count": 0,
                     "organic_review_queue_count": 3,
                 },
-                "domain_holdout": {"counts": {"val": 20}},
+                "domain_holdout": {"counts": {"val": 30}},
                 "counterfactual_pairs": {
-                    "total": 50,
+                    "total": 70,
                     "stats": {
-                        "attempted": 80,
-                        "generated": 50,
-                        "exported": 50,
-                        "validated": 50,
+                        "attempted": 100,
+                        "generated": 70,
+                        "exported": 70,
+                        "validated": 70,
                         "rejected_unnatural": 10,
                         "rejected_no_expected_change": 20,
-                        "type_counts": {"aspect_swap": 10, "sentiment_flip": 40},
-                        "source_counts": {"natural_match": 45, "synthetic_seed": 5, "template_seed": 0},
-                        "natural_aspect_swap_count": 6,
-                        "synthetic_aspect_swap_count": 4,
+                        "type_counts": {"aspect_swap": 30, "sentiment_flip": 40},
+                        "source_counts": {"natural_match": 60, "synthetic_seed": 10, "template_seed": 0},
+                        "natural_aspect_swap_count": 20,
+                        "synthetic_aspect_swap_count": 10,
                     },
                 },
             }
