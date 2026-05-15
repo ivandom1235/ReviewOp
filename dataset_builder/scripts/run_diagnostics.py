@@ -190,8 +190,8 @@ class DiagnosticRunner:
             stats = {
                 "input_rows": len(raw_reviews),
                 "exported_rows": results["counts"].get("total", 0),
-                "rejected_rows": 0, # TODO: Get from pipeline if available
-                "discarded_rows": 0 # TODO: Get from pipeline if available
+                "rejected_rows": int(getattr(results.get("quality"), "rejected_rows", 0) or 0),
+                "discarded_rows": int(getattr(results.get("quality"), "discarded_rows", 0) or 0),
             }
             v_acc = self.validator.validate_accounting(stats)
             if not v_acc.is_valid:

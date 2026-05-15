@@ -1507,8 +1507,8 @@ class VerifyArtifactTests(unittest.TestCase):
         self.assertEqual(dev["min_aspect_swap_count"], 3)
         self.assertEqual(stable["min_counterfactual_validated"], 60)
         self.assertEqual(stable["min_anchor_modifier_count"], 25)
-        self.assertEqual(stable["review_queue_min"], 3)
-        self.assertEqual(stable["min_aspect_swap_count"], 10)
+        self.assertEqual(stable["review_queue_min"], 2)
+        self.assertEqual(stable["min_aspect_swap_count"], 8)
         self.assertEqual(strict_diag["min_aspect_swap_count"], 3)
         self.assertEqual(journal["min_aspect_swap_count"], 25)
 

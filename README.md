@@ -78,7 +78,7 @@ Run the commands in this section from the repository root.
 ### Build Dataset Artifacts
 
 ```powershell
-python dataset_builder\code\build_dataset.py --input-dir dataset_builder\input --output-dir dataset_builder\output --run-profile research --sample-size 50 --no-enable-llm-fallback
+python dataset_builder\scripts\build_benchmark.py dataset_builder\input --output-dir dataset_builder\output --sample-size 50 --llm none --overwrite
 ```
 
 Expected benchmark outputs:
@@ -93,9 +93,7 @@ For LLM-backed experiments, prefer the experiment runner documented in `dataset_
 ### Train and Export ProtoNet
 
 ```powershell
-python protonet\code\cli.py train --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded --output-dir protonet\output
-python protonet\code\cli.py eval --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded --checkpoint protonet\output\checkpoints\best.pt --split test
-python protonet\code\cli.py export --input-type benchmark --input-dir dataset_builder\output\benchmark\ambiguity_grounded --checkpoint protonet\output\checkpoints\best.pt
+python -m protonet.cli compare --artifact-dir dataset_builder\output --output-dir protonet\output --split test
 ```
 
 The backend expects the exported bundle at `protonet/metadata/model_bundle.pt` unless configured otherwise.
@@ -137,6 +135,6 @@ Admin APIs are protected by backend authentication dependencies. User portal rou
 - `backend/README.md`
 - `frontend/README.md`
 - `dataset_builder/README.md`
-- `protonet/README.md`
+- `protonet/`
 
 Read the folder-level README before changing that subsystem.
