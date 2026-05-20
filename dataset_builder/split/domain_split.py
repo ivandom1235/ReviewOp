@@ -33,6 +33,8 @@ def domain_holdout_split(rows: list[Any], holdout_domain: str | None = None) -> 
     n = len(train_like)
     if n >= 50:
         val_target = max(10, round(n * 0.10))
+        if n >= 300:
+            val_target = max(val_target, 50)
     elif n >= 10:
         val_target = max(5, round(n * 0.20))
     else:

@@ -61,8 +61,11 @@ def assert_verified_artifact(artifact_dir: str | Path, config: ECProtoNetV2Confi
     artifact_status = str(verification.get("artifact_status", "unknown"))
     ready = bool(verification.get("ready_for_protonet", False))
     failed_checks = list(verification.get("failed_checks", []) or [])
+    memory_consistency = verify_memory_consistency(artifact_dir)
+    if not memory_consistency.get("ok", False):
+        failed_checks.append(memory_consistency.get("error", "memory consistency failed"))
 
-    if config.require_artifact_pass and (artifact_status != "pass" or ready is not True):
+    if config.require_artifact_pass and (artifact_status != "pass" or ready is not True or bool(failed_checks)):
         raise ArtifactGuardError(
             "Artifact is not ready for EC-ProtoNet V2.\n"
             f"artifact_dir={artifact_dir}\n"
@@ -83,7 +86,10 @@ def assert_verified_artifact(artifact_dir: str | Path, config: ECProtoNetV2Confi
         expected_raw = contract.get("active_dataset_artifact")
         if not expected_raw:
             raise ArtifactGuardError("CURRENT_ACTIVE_ARTIFACT.json has no active_dataset_artifact.")
-        expected = Path(expected_raw).resolve()
+        expected_path = Path(expected_raw)
+        if not expected_path.is_absolute():
+            expected_path = (contract_path.parent / expected_path).resolve()
+        expected = expected_path
         if expected != artifact_dir:
             raise ArtifactGuardError(
                 "Stale artifact path used.\n"
@@ -104,3 +110,34 @@ def assert_verified_artifact(artifact_dir: str | Path, config: ECProtoNetV2Confi
         active_contract_status=active_status,
         raw_verification=verification,
     )
+
+
+def verify_memory_consistency(artifact_dir: Path) -> dict[str, Any]:
+    summary = read_json(artifact_dir / "aspect_memory_summary.json", default={}) or {}
+    promoted = read_json(artifact_dir / "aspect_memory_promoted.json", default={}) or {}
+
+    if isinstance(promoted, dict):
+        if isinstance(promoted.get("items"), list):
+            promoted_items = promoted.get("items", [])
+        elif isinstance(promoted.get("data"), list):
+            promoted_items = promoted.get("data", [])
+        else:
+            promoted_items = []
+    elif isinstance(promoted, list):
+        promoted_items = promoted
+    else:
+        promoted_items = []
+
+    promoted_count_file = len(promoted_items)
+    promoted_count_summary = int(summary.get("promoted_count", summary.get("promoted_entries_total", 0)) or 0)
+
+    if promoted_count_file != promoted_count_summary:
+        return {
+            "ok": False,
+            "promoted_count": promoted_count_file,
+            "error": (
+                f"Memory inconsistency: summary promoted_count={promoted_count_summary}, "
+                f"promoted file contains {promoted_count_file} items"
+            ),
+        }
+    return {"ok": True, "promoted_count": promoted_count_file}

@@ -10,7 +10,7 @@ def read_json(path: str | Path, default: Any = None) -> Any:
     path = Path(path)
     if not path.exists():
         return default
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 
@@ -54,4 +54,22 @@ def sha256_tree(path: str | Path, suffixes: tuple[str, ...] = (".json", ".jsonl"
         if p.is_file() and p.suffix.lower() in suffixes:
             h.update(str(p.relative_to(path)).encode("utf-8"))
             h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def source_code_hash(path: str | Path) -> str:
+    base = Path(path)
+    include = {".py", ".json", ".yaml", ".yml", ".toml"}
+    skip_parts = {"output", "outputs", "runs", "__pycache__", ".pytest_cache"}
+    h = hashlib.sha256()
+    for p in sorted(base.rglob("*")):
+        if not p.is_file():
+            continue
+        if any(part in skip_parts for part in p.parts):
+            continue
+        if p.suffix.lower() not in include:
+            continue
+        rel = p.relative_to(base).as_posix()
+        h.update(rel.encode("utf-8"))
+        h.update(p.read_bytes())
     return h.hexdigest()

@@ -101,7 +101,11 @@ def _calculate_checksums(output_dir: Path) -> dict[str, str]:
         "rejected_rows.jsonl",
         "counterfactual_pairs.json",
         "counterfactual_pairs.jsonl",
-        "aspect_memory_summary.json"
+        "aspect_memory_summary.json",
+        "aspect_memory_promoted.json",
+        "aspect_memory_review_queue.json",
+        "label_equivalence.json",
+        "source_artifact_consistency.json",
     ]
     checksums = {}
     for rel_path in files:
@@ -137,7 +141,18 @@ def _build_label_equivalence(rows: list[BenchmarkRow]) -> dict[str, list[str]]:
                 a = str(alias or "").strip().lower().replace(" ", "_")
                 if a:
                     eq[c].add(a)
-    return {k: sorted(v) for k, v in sorted(eq.items())}
+    # Enforce single-owner aliases to avoid canonical conflicts (e.g. cost -> price/value).
+    owner: dict[str, str] = {}
+    out: dict[str, list[str]] = {}
+    for canonical in sorted(eq.keys()):
+        clean_aliases: list[str] = []
+        for alias in sorted(eq[canonical]):
+            if alias in owner and owner[alias] != canonical:
+                continue
+            owner[alias] = canonical
+            clean_aliases.append(alias)
+        out[canonical] = clean_aliases
+    return out
 
 
 def _build_promoted_memory_sidecar(memory_path: str | None) -> dict[str, object]:
@@ -291,6 +306,9 @@ def run_builder_pipeline(
         pre_dedup_count = len(rows)
         rows = _remove_near_duplicates(rows, threshold=0.95)
         dedup_dropped = pre_dedup_count - len(rows)
+        discarded_rows = dedup_dropped
+        processed_rows = len(rows)
+        rejected_rows = max(0, loaded_rows - processed_rows - discarded_rows)
         if dedup_dropped > 0:
             import logging
             logging.getLogger("dataset_builder").info(f"Dropped {dedup_dropped} near-duplicate reviews to ensure zero leakage.")
@@ -465,7 +483,7 @@ def run_builder_pipeline(
 
         metrics["gate_results"] = gate_results
         
-        # Mandatory export of metrics_summary.json
+        # Mandatory export of metrics_summary.json (initial write; final consistency write happens after sidecars)
         if not cfg.dry_run:
             with open(output_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
                 def d_ser(obj):
@@ -550,12 +568,67 @@ def run_builder_pipeline(
 
         write_sidecar(output_dir / "label_equivalence.json", _build_label_equivalence(all_rows))
         write_sidecar(output_dir / "aspect_memory_promoted.json", _build_promoted_memory_sidecar(cfg.aspect_memory_path))
+        # Ensure lifecycle sidecars are disjoint: promoted entries must not remain in review_queue.
+        queue_path = output_dir / "aspect_memory_review_queue.json"
+        promoted_path = output_dir / "aspect_memory_promoted.json"
+        queue_sidecar = _load_json_dict(queue_path)
+        promoted_sidecar = _load_json_dict(promoted_path)
+        queue_items = queue_sidecar.get("items", []) if isinstance(queue_sidecar, dict) else []
+        promoted_items = promoted_sidecar.get("items", []) if isinstance(promoted_sidecar, dict) else []
+        if isinstance(queue_items, list) and isinstance(promoted_items, list):
+            promoted_ids = {
+                str(item.get("cluster_id"))
+                for item in promoted_items
+                if isinstance(item, dict) and item.get("cluster_id")
+            }
+            filtered_queue = [
+                item
+                for item in queue_items
+                if not (isinstance(item, dict) and str(item.get("cluster_id")) in promoted_ids)
+            ]
+            if len(filtered_queue) != len(queue_items):
+                queue_sidecar["items"] = filtered_queue
+                queue_sidecar["total"] = len(filtered_queue)
+                write_sidecar(queue_path, queue_sidecar)
+                queue_items = filtered_queue
+
+        # Normalize memory summary counts from sidecars to avoid stale lifecycle accounting.
+        summary_path = output_dir / "aspect_memory_summary.json"
+        summary_sidecar = _load_json_dict(summary_path)
+        if summary_sidecar:
+            promoted_total_sidecar = len(promoted_items) if isinstance(promoted_items, list) else int(promoted_sidecar.get("total", 0) or 0)
+            queue_total_sidecar = len(queue_items) if isinstance(queue_items, list) else int(queue_sidecar.get("total", 0) or 0)
+            summary_sidecar["promoted_count"] = int(promoted_total_sidecar)
+            summary_sidecar["promoted_entries_total"] = int(promoted_total_sidecar)
+            summary_sidecar["review_queue_count"] = int(queue_total_sidecar)
+            write_sidecar(summary_path, summary_sidecar)
 
         # Write consistency sidecar
         write_sidecar(output_dir / "source_artifact_consistency.json", source_consistency)
 
         # Write quality report before manifest so it can be checksummed
         write_sidecar(output_dir / "quality_report.json", quality)
+        # Finalize memory metrics from written sidecars to keep artifact invariants consistent.
+        summary_sidecar = _load_json_dict(output_dir / "aspect_memory_summary.json")
+        promoted_sidecar = _load_json_dict(output_dir / "aspect_memory_promoted.json")
+        promoted_items = promoted_sidecar.get("items", []) if isinstance(promoted_sidecar, dict) else []
+        promoted_total = len(promoted_items) if isinstance(promoted_items, list) else 0
+        aspect_mem = metrics.get("aspect_memory", {}) or {}
+        if isinstance(aspect_mem, dict):
+            if summary_sidecar:
+                aspect_mem.update(summary_sidecar)
+            aspect_mem["promoted_entries_total"] = int(summary_sidecar.get("promoted_entries_total", summary_sidecar.get("promoted_count", promoted_total)) or 0)
+            aspect_mem["promoted_count"] = int(summary_sidecar.get("promoted_count", promoted_total) or 0)
+            aspect_mem["promoted_sidecar_total"] = int(promoted_total)
+            metrics["aspect_memory"] = aspect_mem
+
+        # Rewrite metrics summary after sidecars to avoid stale memory counters.
+        with open(output_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
+            def d_ser(obj):
+                if hasattr(obj, "to_dict"): return obj.to_dict()
+                if hasattr(obj, "__dict__"): return {k: v for k, v in obj.__dict__.items() if not k.startswith("_")}
+                return str(obj)
+            json.dump(metrics, f, indent=2, default=d_ser)
         progress.update(t2, advance=1)
 
         # Calculate checksums for core files
@@ -609,6 +682,11 @@ def run_builder_pipeline(
         # Always write detailed verification report to artifact dir
         with open(output_dir / "artifact_verification.json", "w", encoding="utf-8") as vf:
             json.dump(v_report, vf, indent=2)
+
+        if v_report.get("artifact_status") == "pass" and v_report.get("ready_for_protonet") is True:
+            from ..scripts.write_active_artifact_contract import write_active_contract
+            repo_contract_path = output_dir.resolve().parents[1] / "CURRENT_ACTIVE_ARTIFACT.json"
+            write_active_contract(output_dir, repo_contract_path)
 
         # Override gate status based on strict verification
         if v_report["artifact_status"] == "fail":

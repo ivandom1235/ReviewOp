@@ -21,20 +21,30 @@ def write_active_contract(artifact_dir: str | Path, output: str | Path = "CURREN
             f"ready_for_protonet={verification.get('ready_for_protonet')}\n"
             f"failed_checks={verification.get('failed_checks')}"
         )
+    blocked = [
+        "dataset_builder/output/run_stability_candidate",
+        "dataset_builder/output/run_stability_candidate_seed1",
+        "dataset_builder/output/run_800_final",
+        "dataset_builder/output/run_400_stability",
+        "dataset_builder/output/_tmp_400_row_fix",
+    ]
+    do_not_use = [p for p in blocked if Path(p).resolve() != artifact_dir]
+
+    output_path = Path(output).resolve()
+    repo_root = output_path.parent
+    try:
+        rel_artifact = artifact_dir.relative_to(repo_root)
+        artifact_path_str = str(rel_artifact).replace("\\", "/")
+    except ValueError:
+        artifact_path_str = str(artifact_dir)
+
     contract = {
-        "active_dataset_artifact": str(artifact_dir),
+        "active_dataset_artifact": artifact_path_str,
         "artifact_status": "pass",
         "ready_for_protonet": True,
         "metrics_schema_version": "dataset_builder_v1",
         "source_of_truth": "artifact_verification.json",
-        "do_not_use": [
-            "dataset_builder/output",
-            "dataset_builder/output/run_stability_candidate",
-            "dataset_builder/output/run_stability_candidate_seed1",
-            "dataset_builder/output/run_800_final",
-            "dataset_builder/output/run_400_stability",
-            "dataset_builder/output/_tmp_400_row_fix",
-        ],
+        "do_not_use": do_not_use,
     }
     output = Path(output)
     output.write_text(json.dumps(contract, indent=2), encoding="utf-8")

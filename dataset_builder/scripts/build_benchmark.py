@@ -24,6 +24,7 @@ from dataset_builder.schemas.raw_review import RawReview
 from dataset_builder.schemas.benchmark_row import BenchmarkRow
 from dataset_builder.schemas.interpretation import Interpretation
 from dataset_builder.orchestrator.pipeline import run_builder_pipeline
+from dataset_builder.reproducibility import seed_everything
 from dataset_builder.split.grouped_split import grouped_train_val_test_split
 from dataset_builder.verify.llm_verifier import LLMVerifier
 from rich.progress import track, Progress
@@ -160,6 +161,7 @@ def load_reviews(paths: Sequence[Path]) -> list[RawReview]:
 def main() -> None:
     from dataset_builder.profile.dataset_profiler import profile_dataset
     args = build_arg_parser().parse_args()
+    seed_everything(args.seed)
     paths = resolve_input_paths(args.input)
     all_rows = load_reviews(paths)
     original_count = len(all_rows)

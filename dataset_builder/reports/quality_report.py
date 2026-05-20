@@ -44,6 +44,7 @@ def build_quality_report(
     unknown_canonicals = 0
     evidence_scope_dist = Counter()
     abstain_reason_dist = Counter()
+    canonical_label_counts = Counter()
     total_gold = 0
     max_gold = 0
     for rows in splits.values():
@@ -89,6 +90,9 @@ def build_quality_report(
                     mapping_layers[str(layer)] += 1
                 if str(_get_val(interp, "aspect_canonical", "") or "") == "unknown":
                     unknown_canonicals += 1
+                canonical_label = str(_get_val(interp, "aspect_canonical", "") or "").strip().lower()
+                if canonical_label and canonical_label != "unknown":
+                    canonical_label_counts[canonical_label] += 1
                 span = list(_get_val(interp, "evidence_span", []) or [])
                 evidence_text = str(_get_val(interp, "evidence_text", "") or "")
                 if len(span) == 2:
@@ -126,6 +130,10 @@ def build_quality_report(
         row_reason_counts = {str(key): int(val) for key, val in runtime_reason_counts.items()}
     elif rejected_rows > 0:
         row_reason_counts["empty_gold_after_canonicalization"] = int(rejected_rows)
+
+    unique_labels = len(canonical_label_counts)
+    singleton_labels = sum(1 for _, n in canonical_label_counts.items() if n == 1)
+    singleton_rate = singleton_labels / max(1, unique_labels)
 
     return QualityReport(
         total_exported=total_exported, 
@@ -165,6 +173,10 @@ def build_quality_report(
             "generic_parent_fill_rate": generic_parent_filled / max(1, total_gold),
             "abstain_acceptable_count": abstain_acceptable_count,
             "memory_precision_audit": None,
+            "label_space_unique_labels": unique_labels,
+            "label_space_singleton_labels": singleton_labels,
+            "label_space_singleton_rate": singleton_rate,
+            "label_space_gate_status": "pass" if singleton_rate <= 0.30 else "warning",
         },
         gold_stats={
             "avg_gold_per_row": total_gold / max(1, total_exported),

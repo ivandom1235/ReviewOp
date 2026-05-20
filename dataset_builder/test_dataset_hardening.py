@@ -1024,7 +1024,9 @@ class DiagnosticsAndMemoryTddTests(unittest.TestCase):
 
         payload = json.loads((out / "metrics_summary.json").read_text(encoding="utf-8"))
         aspect_memory = payload["aspect_memory"]
-        self.assertEqual(aspect_memory["review_queue_count"], 2)
+        # Lifecycle normalization now derives queue/promotion counts from sidecars,
+        # not raw summary payload values, to keep states disjoint and consistent.
+        self.assertEqual(aspect_memory["review_queue_count"], 0)
         self.assertEqual(aspect_memory["unknown_candidate_count"], 0)
         self.assertEqual(aspect_memory["broad_noun_candidate_rate"], 0.0)
         self.assertEqual(aspect_memory["evidence_pattern_candidate_rate"], 0.75)
@@ -1948,6 +1950,25 @@ class VerifyArtifactTests(unittest.TestCase):
             self.assertEqual(out, 0)
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+class ArtifactCompletenessTests(unittest.TestCase):
+    def test_artifact_zip_contains_required_sidecars(self) -> None:
+        artifact_zip = Path("dataset_builder/output/artifact.zip")
+        self.assertTrue(artifact_zip.exists(), "Expected dataset_builder/output/artifact.zip to exist")
+
+        required = {
+            "label_equivalence.json",
+            "aspect_memory_promoted.json",
+            "aspect_memory_review_queue.json",
+            "domain_holdout/test.jsonl",
+            "grouped/test.jsonl",
+        }
+
+        with zipfile.ZipFile(artifact_zip) as zf:
+            names = set(zf.namelist())
+        missing = required - names
+        self.assertFalse(missing, f"Missing required artifact sidecars: {sorted(missing)}")
 
 
 if __name__ == "__main__":

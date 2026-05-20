@@ -72,6 +72,31 @@ class ReviewExample:
 
 
 @dataclass(frozen=True)
+class RuntimeExample:
+    row_id: str
+    review_id: str
+    text: str
+    domain: str
+    split: str
+    source_type: str
+    group_id: str | None = None
+    parent_review_id: str | None = None
+
+
+def to_runtime_example(ex: ReviewExample) -> RuntimeExample:
+    return RuntimeExample(
+        row_id=ex.row_id,
+        review_id=ex.review_id,
+        text=ex.text,
+        domain=ex.domain,
+        split=ex.split,
+        source_type=ex.source_type,
+        group_id=ex.group_id,
+        parent_review_id=ex.parent_review_id,
+    )
+
+
+@dataclass(frozen=True)
 class CandidateScore:
     aspect: str
     proto_score: float
@@ -87,13 +112,18 @@ class CandidateScore:
     support_count: int = 0
     prototype_source: str = "train_evidence"
     candidate_type: str = "known"  # known | open_world
+    candidate_source: str = "prototype"  # prototype | classifier | memory | hybrid
     source_aspect: str = ""
     known_confidence: float = 0.0
     lexical_evidence_support: float = 0.0
     semantic_evidence_support: float = 0.0
     open_world_evidence_quality: float = 0.0
+    residual_score: float = 0.0
+    energy_score: float = 0.0
+    unknown_score: float = 0.0
     decision: str = "unrouted"
     decision_reason: str = "not_routed"
+    reranker_score: float = 0.0
 
     def with_decision(self, decision: str, reason: str) -> "CandidateScore":
         return CandidateScore(
@@ -102,6 +132,7 @@ class CandidateScore:
             final_score=self.final_score,
             rank=self.rank,
             evidence_support=self.evidence_support,
+            description_support=self.description_support,
             memory_support=self.memory_support,
             margin_to_next=self.margin_to_next,
             novelty_risk=self.novelty_risk,
@@ -110,13 +141,18 @@ class CandidateScore:
             support_count=self.support_count,
             prototype_source=self.prototype_source,
             candidate_type=self.candidate_type,
+            candidate_source=self.candidate_source,
             source_aspect=self.source_aspect,
             known_confidence=self.known_confidence,
             lexical_evidence_support=self.lexical_evidence_support,
             semantic_evidence_support=self.semantic_evidence_support,
             open_world_evidence_quality=self.open_world_evidence_quality,
+            residual_score=self.residual_score,
+            energy_score=self.energy_score,
+            unknown_score=self.unknown_score,
             decision=decision,
             decision_reason=reason,
+            reranker_score=self.reranker_score,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -154,7 +190,10 @@ class PredictionRecord:
 
     @property
     def has_open_world(self) -> bool:
-        return bool(self.candidates and self.candidates[0].decision == "open_world_candidate")
+        return bool(
+            self.candidates
+            and self.candidates[0].decision in {"open_world_candidate", "named_open_world_candidate"}
+        )
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

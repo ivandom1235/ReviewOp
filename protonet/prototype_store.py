@@ -34,6 +34,61 @@ class PrototypeStore:
         return score_sorted.astype(np.float32), idx_sorted.astype(int)
 
 
+def augment_with_memory_prototypes(
+    store: PrototypeStore,
+    memory_index: Any,
+    config: ECProtoNetV2Config,
+) -> PrototypeStore:
+    if memory_index is None or getattr(memory_index, "trigger_matrix", np.zeros((0, 0), dtype=np.float32)).size == 0:
+        return store
+
+    aspects = list(store.aspects)
+    matrix_rows = [row.copy() for row in store.matrix] if store.matrix.size else []
+    support_counts = dict(store.support_counts)
+    support_examples = dict(store.support_examples)
+    idx_by_aspect = {a: i for i, a in enumerate(aspects)}
+
+    by_aspect: dict[str, list[int]] = {}
+    for i, aspect in enumerate(getattr(memory_index, "trigger_aspects", [])):
+        by_aspect.setdefault(str(aspect), []).append(i)
+
+    for aspect, indices in by_aspect.items():
+        if len(indices) < int(getattr(config, "memory_prototype_min_support", 1)):
+            continue
+        mat = memory_index.trigger_matrix[indices]
+        w = memory_index.trigger_weights[indices]
+        mem_proto = np.average(mat, axis=0, weights=w)
+        norm = np.linalg.norm(mem_proto)
+        if norm > 0:
+            mem_proto = mem_proto / norm
+
+        if aspect in idx_by_aspect:
+            j = idx_by_aspect[aspect]
+            alpha = float(getattr(config, "memory_prototype_blend_existing", 0.20))
+            merged = (1.0 - alpha) * matrix_rows[j] + alpha * mem_proto
+            mnorm = np.linalg.norm(merged)
+            if mnorm > 0:
+                merged = merged / mnorm
+            matrix_rows[j] = merged.astype(np.float32)
+            support_counts[aspect] = int(support_counts.get(aspect, 0)) + len(indices)
+        else:
+            idx_by_aspect[aspect] = len(aspects)
+            aspects.append(aspect)
+            matrix_rows.append(mem_proto.astype(np.float32))
+            support_counts[aspect] = len(indices)
+            support_examples.setdefault(aspect, [])
+
+    matrix = np.vstack(matrix_rows).astype(np.float32) if matrix_rows else np.zeros((0, 0), dtype=np.float32)
+    return PrototypeStore(
+        aspects=aspects,
+        matrix=matrix,
+        support_counts=support_counts,
+        support_examples=support_examples,
+        label_descriptions=store.label_descriptions,
+        prototype_source=f"{store.prototype_source}+promoted_memory",
+    )
+
+
 def _support_text(example: ReviewExample, aspect: str, evidence_text: str, config: ECProtoNetV2Config) -> str:
     if config.include_aspect_name_in_support_text:
         return f"aspect: {aspect.replace('_', ' ')} evidence: {evidence_text or example.text}"
@@ -96,12 +151,17 @@ def build_prototype_store(
         all_aspects.update(label_equivalence.keys())
     
     aspects = sorted(
-        a for a in all_aspects 
+        a
+        for a in all_aspects
         if (
-            len(support_by_aspect.get(a, [])) >= config.min_support_per_aspect 
+            len(support_by_aspect.get(a, [])) >= config.min_support_per_aspect
             or (
-                config.allow_singleton_equivalence_prototypes 
-                and label_equivalence 
+                config.allow_singleton_equivalence_prototypes and label_equivalence and a in label_equivalence
+            )
+            or (
+                bool(getattr(config, "include_description_only_prototypes", False))
+                and bool(getattr(config, "allow_description_only_prototypes", False))
+                and label_equivalence
                 and a in label_equivalence
             )
         )
@@ -196,6 +256,59 @@ def _is_valid_known_prototype_label(
     if not aspect or aspect == "unknown":
         return False
 
+    allowlist = tuple(getattr(config, "known_label_allowlist", ()) or ())
+
+    stable_canonicals = {
+        "battery_life",
+        "display",
+        "keyboard",
+        "performance",
+        "usability",
+        "portability",
+        "trackpad",
+        "audio",
+        "connectivity",
+        "customer_support",
+        "delivery",
+        "design",
+        "aesthetics",
+        "availability",
+        "power",
+        "software",
+        "storage",
+        "trackpad",
+        "price",
+        "value",
+        "food_quality",
+        "ambience",
+        "service_quality",
+        "service_speed",
+        "cleanliness",
+        "comfort",
+        "reliability",
+        "quality",
+    }
+    bad_tokens = {
+        "good", "great", "excellent", "amazing", "perfect", "nice", "bad",
+        "thing", "things", "item", "product", "place", "spot", "time",
+        "one", "it", "this", "that",
+    }
+
+    toks = [t for t in aspect.lower().split("_") if t]
+    support_n = len(items or [])
+
+    if aspect in stable_canonicals:
+        return True
+
+    if allowlist and aspect not in set(allowlist):
+        return False
+
+    if support_n < config.min_support_per_aspect:
+        return False
+
+    if any(t in bad_tokens for t in toks):
+        return False
+
     bad_exact = {
         "general",
         "thing",
@@ -222,6 +335,14 @@ def _is_valid_known_prototype_label(
     # Punctuation artifacts check (walmart.com, etc)
     if any(ch in aspect for ch in ".:/?!@#$%^&*()"):
         return False
+
+    # Drop obvious phrase-fragment singletons from known prototype inventory.
+    if support_n <= 1:
+        promo_words = {"great", "excellent", "amazing", "perfect", "best", "cool", "wonderful"}
+        if len(toks) >= 3 and any(t in promo_words for t in toks):
+            return False
+        if any(t in {"place", "spot", "meal", "deal", "restaurant"} for t in toks) and len(toks) >= 2:
+            return False
 
     months = {
         "january", "february", "march", "april", "may", "june",

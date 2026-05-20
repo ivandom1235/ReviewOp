@@ -197,7 +197,7 @@ class CounterfactualGenerator:
 def generate_counterfactual_pairs(
     rows: list[Any],
     *,
-    max_pairs: int = 60,
+    max_pairs: int = 90,
     min_aspect_swaps: int = 10,
     enable_simple_swaps: bool = False
 ) -> dict[str, Any]:

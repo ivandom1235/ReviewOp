@@ -11,6 +11,7 @@ from .config import ECProtoNetV2Config
 from .dataset import load_dataset_bundle
 from .io_utils import write_json
 from .pipeline import run_compare
+from .reproducibility import seed_everything
 
 
 def build_config(args: argparse.Namespace) -> ECProtoNetV2Config:
@@ -59,6 +60,7 @@ def cmd_compare(args: argparse.Namespace) -> None:
         output_dir=args.output_dir,
         config=cfg,
         split=args.split,
+        protocol=args.protocol,
         allow_failed_artifact=args.allow_failed_artifact,
     )
     print(json.dumps(result["metrics"], indent=2))
@@ -84,6 +86,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     def common(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--config", type=str, default=None)
+        sp.add_argument("--seed", type=int, default=42)
         sp.add_argument("--encoder", type=str, default=None, choices=["hashing", "sentence-transformers"])
         sp.add_argument("--model-name", type=str, default=None)
         sp.add_argument("--top-k", type=int, default=None)
@@ -109,6 +112,7 @@ def make_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("compare")
     sp.add_argument("--artifact-dir", required=True)
     sp.add_argument("--output-dir", required=True)
+    sp.add_argument("--protocol", default="grouped", choices=["grouped", "domain_holdout"])
     sp.add_argument("--split", default="test", choices=["train", "val", "test"])
     common(sp)
     sp.set_defaults(func=cmd_compare)
@@ -125,6 +129,7 @@ def make_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = make_parser()
     args = parser.parse_args()
+    seed_everything(getattr(args, "seed", 42))
     args.func(args)
 
 

@@ -83,6 +83,29 @@ class ClusterValidator:
         if aspect_raw in self.BROAD_NOUNS and behavior_cue_rate < 0.6:
             return False
 
+        behavioral_repeated = (
+            support >= self.min_support
+            and reviews >= self.min_reviews
+            and unique_surface_form_count >= self.min_surface_forms
+            and behavior_cue_rate >= 0.66
+            and ev_quality >= adj_min_ev_quality
+            and contradiction <= self.max_contradiction
+        )
+        if behavioral_repeated:
+            return True
+
+        same_aspect_repeated = (
+            aspect_raw not in {"", "unknown", "none", "null", "general", "misc"}
+            and support >= self.min_support
+            and reviews >= self.min_reviews
+            and unique_surface_form_count >= self.min_surface_forms
+            and behavior_cue_rate >= 0.50
+            and ev_quality >= adj_min_ev_quality
+            and contradiction <= self.max_contradiction
+        )
+        if same_aspect_repeated:
+            return True
+
         return (
             support >= self.min_support
             and reviews >= self.min_reviews

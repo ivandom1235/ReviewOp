@@ -84,6 +84,12 @@ class AspectMemory:
     HARD_REJECTS = {"unknown", "none", "null", "general", "misc", "something", "everything", "thing", "item"}
     SENTIMENT_CUES = {"good", "bad", "great", "poor", "nice", "awful", "excellent", "terrible", "best", "worst", "love", "hate", "amazing", "horrible", "friendly"}
     BEHAVIOR_CUES = {"broke", "broken", "fraying", "loose", "dropped", "dropping", "crashed", "waited", "waiting", "slow", "fast", "cold", "hot", "tiny", "small", "expensive", "cheap", "stale", "late", "delayed", "disconnected", "logged", "logging", "logout", "noisy", "buffering", "weak", "soggy", "undercooked", "responsive", "frayed", "opened", "fray", "frays", "cut", "cutting", "died"}
+    DEFECT_CUE_GROUPS = (
+        {"soggy", "undercooked", "cold", "stale", "burnt", "overcooked"},
+        {"dropped", "dropping", "disconnected", "weak"},
+        {"loose", "fraying", "frayed", "fray", "frays"},
+        {"buffering", "slow", "lagging"},
+    )
     GENERIC_EVIDENCE_PHRASES = {"great evening", "good evening", "great experience", "overall experience", "the restaurant", "the place", "the product", "the item", "the thing"}
 
     def __init__(
@@ -105,9 +111,17 @@ class AspectMemory:
         
         self.load()
 
-    def find_cluster_for_trigger(self, trigger: str) -> Optional[MemoryEntry]:
+    def find_cluster_for_trigger(
+        self,
+        trigger: str,
+        *,
+        aspect_raw: str = "",
+        domain: str = "",
+    ) -> Optional[MemoryEntry]:
         """Finds an existing cluster that matches the given trigger pattern."""
         trigger_norm = self._normalize_pattern(trigger)
+        aspect_norm = str(aspect_raw or "").lower().strip()
+        domain_norm = str(domain or "").lower().strip()
         if not self.entries or not trigger_norm:
             return None
             
@@ -115,8 +129,34 @@ class AspectMemory:
         for entry in self.entries.values():
             if trigger_norm in [self._normalize_pattern(p) for p in entry.trigger_patterns]:
                 return entry
-                
-        # 2. Semantic match using clusterer
+
+        # 2. Structured behavioral matching before generic semantic clustering.
+        for entry in self.entries.values():
+            same_aspect = bool(aspect_norm) and entry.aspect_raw.lower().strip() == aspect_norm
+            same_domain = (not domain_norm) or (domain_norm in {d.lower().strip() for d in entry.domains})
+            if not same_aspect or not same_domain:
+                continue
+            reps = entry.trigger_patterns or [entry.representative_trigger or entry.aspect_raw]
+            has_behavior = self._contains_behavior_cue(trigger_norm)
+            for pat in reps:
+                pat_has_behavior = self._contains_behavior_cue(pat)
+                same_defect_family = self._cue_group_overlap(trigger_norm, pat) >= 1.0
+                content_overlap = self._content_overlap(trigger_norm, pat)
+                if (
+                    has_behavior
+                    and pat_has_behavior
+                    and (
+                        (
+                            self._behavior_overlap(trigger_norm, pat) >= 0.50
+                            and content_overlap >= 0.30
+                        )
+                        or same_defect_family
+                        or content_overlap >= 0.15
+                    )
+                ):
+                    return entry
+
+        # 3. Semantic match using clusterer
         clusters_list = [
             {
                 "cluster_id": e.cluster_id,
@@ -172,7 +212,7 @@ class AspectMemory:
             return "rejected_noise"
         
         # Step 2: Find or Create Cluster
-        entry = self.find_cluster_for_trigger(trigger)
+        entry = self.find_cluster_for_trigger(trigger, aspect_raw=aspect_raw, domain=domain)
         if not entry:
             cluster_id = f"mem_{hashlib.sha1(trigger.encode('utf-8')).hexdigest()[:8]}"
             entry = MemoryEntry(cluster_id=cluster_id, aspect_raw=aspect_raw)
@@ -507,6 +547,34 @@ class AspectMemory:
     @staticmethod
     def _surface_form(text: str) -> str:
         return " ".join(re.findall(r"\b\w+\b", str(text or "").lower()))
+
+    def _token_set(self, text: str) -> set[str]:
+        return set(re.findall(r"\b\w+\b", self._normalize_pattern(text)))
+
+    def _behavior_overlap(self, a: str, b: str) -> float:
+        ta = self._token_set(a)
+        tb = self._token_set(b)
+        ba = ta & self.BEHAVIOR_CUES
+        bb = tb & self.BEHAVIOR_CUES
+        if not ba or not bb:
+            return 0.0
+        return len(ba & bb) / max(1, len(ba | bb))
+
+    def _content_overlap(self, a: str, b: str) -> float:
+        stop = {"the", "a", "an", "my", "your", "our", "this", "that", "with", "during", "after", "before", "again"}
+        ta = self._token_set(a) - stop
+        tb = self._token_set(b) - stop
+        if not ta or not tb:
+            return 0.0
+        return len(ta & tb) / max(1, len(ta | tb))
+
+    def _cue_group_overlap(self, a: str, b: str) -> float:
+        ta = self._token_set(a)
+        tb = self._token_set(b)
+        for group in self.DEFECT_CUE_GROUPS:
+            if ta & group and tb & group:
+                return 1.0
+        return 0.0
 
     @staticmethod
     def _split_clauses(text: str) -> list[str]:
