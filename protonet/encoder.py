@@ -27,6 +27,7 @@ class HashingTextEncoder(TextEncoder):
     def __init__(self, dim: int = 2048, normalize: bool = True):
         self.dim = int(dim)
         self.normalize = bool(normalize)
+        self._cache = {}
 
     def _token_hash(self, token: str) -> tuple[int, float]:
         digest = hashlib.md5(token.encode("utf-8")).hexdigest()
@@ -54,7 +55,12 @@ class HashingTextEncoder(TextEncoder):
     def encode(self, texts: list[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
-        return np.vstack([self._encode_one(t) for t in texts]).astype(np.float32)
+        key = tuple(texts)
+        if key in self._cache:
+            return self._cache[key]
+        res = np.vstack([self._encode_one(t) for t in texts]).astype(np.float32)
+        self._cache[key] = res
+        return res
 
 
 class SentenceTransformersEncoder(TextEncoder):
@@ -65,10 +71,14 @@ class SentenceTransformersEncoder(TextEncoder):
         self.model = SentenceTransformer(model_name)
         self.normalize = normalize
         self.batch_size = batch_size
+        self._cache = {}
 
     def encode(self, texts: list[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, 0), dtype=np.float32)
+        key = tuple(texts)
+        if key in self._cache:
+            return self._cache[key]
         arr = self.model.encode(
             texts,
             batch_size=self.batch_size,
@@ -76,7 +86,9 @@ class SentenceTransformersEncoder(TextEncoder):
             convert_to_numpy=True,
             show_progress_bar=False,
         )
-        return arr.astype(np.float32)
+        res = arr.astype(np.float32)
+        self._cache[key] = res
+        return res
 
 
 def build_encoder(kind: str, model_name: str, normalize: bool, hashing_dim: int, batch_size: int) -> TextEncoder:

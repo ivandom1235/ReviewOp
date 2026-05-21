@@ -45,7 +45,7 @@ STABLE_ALLOWLIST = (
 )
 
 
-def _score(metrics: dict, protocol: str, mode: str = "joint") -> float:
+def _score(metrics: dict, protocol: str, mode: str = "known") -> float:
     strict = float(metrics.get("known_inventory", {}).get("strict", {}).get("f1", metrics.get("final_strict_f1", 0.0)))
     coverage = float(metrics.get("coverage", 0.0))
     known = float(metrics.get("known_inventory", {}).get("strict", {}).get("f1", metrics.get("known_class_strict", {}).get("f1", 0.0)))
@@ -60,9 +60,15 @@ def _score(metrics: dict, protocol: str, mode: str = "joint") -> float:
         unseen_f1 = float(metrics.get("unseen_detection", {}).get("f1", 0.0))
         auroc = float(metrics.get("unknown_auroc") or 0.0)
         auprc = float(metrics.get("unknown_auprc") or 0.0)
-        return (0.40 * unseen_f1) + (0.30 * auroc) + (0.30 * auprc) + (0.25 * parent_label_f1) + (0.25 * hierarchical_f1)
+        return (0.40 * unseen_f1) + (0.30 * auroc) + (0.30 * auprc)
+    if mode == "conservative":
+        precision = float(metrics.get("known_inventory", {}).get("strict", {}).get("precision", metrics.get("precision", 0.0)))
+        accepted_accuracy = float(metrics.get("accepted_accuracy_strict", 0.0))
+        return (0.50 * precision) + (0.50 * accepted_accuracy)
     if mode == "known":
-        return (strict if protocol == "grouped" else known) + (0.25 * parent_label_f1) + (0.25 * hierarchical_f1)
+        return strict if protocol == "grouped" else known
+    
+    # joint/fallback
     if protocol == "grouped":
         return (1.10 * strict) + (0.25 * unknown_auprc) + (0.20 * topk_recall) - (0.50 * coverage_penalty) + (0.25 * parent_label_f1) + (0.25 * hierarchical_f1)
     return (1.00 * known) + (0.25 * unknown_auprc) + (0.20 * topk_recall) - (0.50 * coverage_penalty) + (0.25 * parent_label_f1) + (0.25 * hierarchical_f1)
@@ -80,7 +86,7 @@ def _sort_key(row: dict, protocol: str) -> tuple[float, float, float, float]:
     return (objective, coverage, topk_recall, strict)
 
 
-def tune_protocol(bundle, protocol: str, base: ECProtoNetV2Config, *, mode: str = "joint", max_trials: int | None = None, seed: int = 13) -> dict:
+def tune_protocol(bundle, protocol: str, base: ECProtoNetV2Config, *, mode: str = "known", max_trials: int | None = None, seed: int = 13) -> dict:
     val = bundle.val if protocol == "grouped" else bundle.domain_holdout["val"]
     if not val:
         return {"best": None, "trials": 0, "top10": []}
@@ -109,6 +115,8 @@ def tune_protocol(bundle, protocol: str, base: ECProtoNetV2Config, *, mode: str 
         ow_qual_grid = [0.30, 0.40, 0.50, 0.60]
         ow_ceil_grid = [0.30, 0.35, 0.40, 0.45, 0.50]
 
+    ow_top1_proto_ceil_grid = [0.20, 0.30, 0.40]
+    ow_margin_ceil_grid = [0.05, 0.15, 0.25]
     classifier_grid = [False, True]
     max_label_grid = [50, 100, 200]
     allowlist_grid = ["stable", "none"]
@@ -124,6 +132,8 @@ def tune_protocol(bundle, protocol: str, base: ECProtoNetV2Config, *, mode: str 
             unknown_grid,
             ow_qual_grid,
             ow_ceil_grid,
+            ow_top1_proto_ceil_grid,
+            ow_margin_ceil_grid,
             classifier_grid,
             max_label_grid,
             allowlist_grid,
@@ -138,7 +148,7 @@ def tune_protocol(bundle, protocol: str, base: ECProtoNetV2Config, *, mode: str 
         combos = rng.sample(combos, trial_cap)
 
     rows = []
-    for a, ab, ev, pf, bm, ut, oq, oc, use_clf, max_labels, allowlist_mode, min_support in combos:
+    for a, ab, ev, pf, bm, ut, oq, oc, ow_top1_ceil, ow_margin_ceil, use_clf, max_labels, allowlist_mode, min_support in combos:
         if ab >= a:
             continue
         chosen_allowlist = () if allowlist_mode == "none" else STABLE_ALLOWLIST
@@ -161,6 +171,8 @@ def tune_protocol(bundle, protocol: str, base: ECProtoNetV2Config, *, mode: str 
             open_world_unknown_threshold=ut,
             open_world_evidence_quality_floor=oq,
             open_world_known_confidence_ceiling=oc,
+            open_world_top1_proto_ceiling=ow_top1_ceil,
+            open_world_margin_ceiling=ow_margin_ceil,
             require_artifact_pass=False,
             require_active_contract=False,
         )
@@ -181,7 +193,7 @@ def main() -> None:
     p.add_argument("--output-dir", required=True)
     p.add_argument("--max-trials", type=int, default=0, help="Optional cap to subsample grid-search trials per protocol.")
     p.add_argument("--seed", type=int, default=13)
-    p.add_argument("--mode", choices=["joint", "known", "open_world"], default="joint")
+    p.add_argument("--mode", choices=["known", "open_world", "conservative", "joint"], default="known")
     args = p.parse_args()
 
     out = Path(args.output_dir)

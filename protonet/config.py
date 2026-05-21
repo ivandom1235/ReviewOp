@@ -99,6 +99,19 @@ class ECProtoNetV2Config:
     use_sibling_confusion_suppression: bool = False
     generic_aspects_penalty_multiplier: float = 0.80
 
+    # Aspect Relation Graph & Profiles configuration
+    use_aspect_graph: bool = True
+    graph_sibling_suppression_threshold: float = 0.45
+    aspect_graph_theta: float = 0.45
+    aspect_graph_alpha: float = 0.50
+    aspect_graph_beta: float = 0.50
+    aspect_graph_gamma: float = 0.00
+    aspect_graph_lambda1: float = 0.50
+    aspect_graph_lambda2: float = 0.30
+    aspect_graph_lambda3: float = 0.20
+    distill_profiles_top_k: int = 5
+    distill_profiles_eta: float = 1.00
+
     # Inventory cleanup
     allow_singleton_equivalence_prototypes: bool = False
     exclude_open_world_mapping_from_known_prototypes: bool = True

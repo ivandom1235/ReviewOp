@@ -120,19 +120,7 @@ def _support_weight(example: ReviewExample, evidence_scope: str, source_type: st
     return max(0.05, float(weight))
 
 
-DOMAIN_LABEL_FALLBACKS = {
-    "storage": ["storage", "hard drive", "ssd", "disk space", "capacity", "gigabytes", "tb"],
-    "keyboard": ["keyboard", "keys", "typing", "buttons", "layout", "backlight"],
-    "display": ["display", "screen", "resolution", "brightness", "panel", "ips", "oled", "pixel"],
-    "battery_life": ["battery life", "battery", "charge", "runtime", "hours", "power", "charger"],
-    "performance": ["performance", "speed", "fast", "slow", "lag", "cpu", "processor", "ram"],
-    "software": ["software", "os", "app", "application", "windows", "macos", "bugs", "firmware"],
-    "usability": ["usability", "user experience", "easy to use", "intuitive", "navigation", "interface"],
-    "connectivity": ["connectivity", "wifi", "bluetooth", "ports", "hdmi", "usb", "wireless", "network"],
-    "call_reliability": ["call reliability", "signal", "reception", "drop calls", "cellular", "antenna"],
-    "portability": ["portability", "lightweight", "heavy", "thin", "carry", "weight", "compact"],
-    "trackpad": ["trackpad", "touchpad", "mouse", "clicking", "gestures", "scrolling"],
-}
+from .evidence_distilled_profiles import DistilledAspectProfile
 
 
 def build_prototype_store(
@@ -140,6 +128,7 @@ def build_prototype_store(
     encoder: TextEncoder,
     config: ECProtoNetV2Config,
     label_equivalence: dict[str, list[str]] | None = None,
+    distilled_profiles: dict[str, DistilledAspectProfile] | None = None,
 ) -> PrototypeStore:
     # support_by_aspect: list[tuple[text, weight, mapping_scope, label_type]]
     support_by_aspect: dict[str, list[tuple[str, float, str, str]]] = {}
@@ -160,11 +149,12 @@ def build_prototype_store(
             support_by_aspect.setdefault(g.aspect, []).append((text, weight, mapping_scope, label_type))
             raw_support_examples.setdefault(g.aspect, []).append(evidence_text or ex.text)
 
-    # Union of aspects from training data, equivalence map, and domain label fallbacks
+    # Union of aspects from training data, equivalence map, and distilled profiles
     all_aspects = set(support_by_aspect.keys())
     if label_equivalence:
         all_aspects.update(label_equivalence.keys())
-    all_aspects.update(DOMAIN_LABEL_FALLBACKS.keys())
+    if distilled_profiles:
+        all_aspects.update(distilled_profiles.keys())
     
     aspects = sorted(
         a
@@ -180,7 +170,9 @@ def build_prototype_store(
                 and label_equivalence
                 and a in label_equivalence
             )
-            or a in DOMAIN_LABEL_FALLBACKS
+            or (
+                distilled_profiles and a in distilled_profiles
+            )
         )
     )
 
@@ -193,6 +185,20 @@ def build_prototype_store(
     proto_vectors: list[np.ndarray] = []
     kept_aspects: list[str] = []
     support_counts: dict[str, int] = {}
+
+    # Populate label_descriptions
+    desc_dict = {}
+    if label_equivalence:
+        for k, v in label_equivalence.items():
+            desc_dict[k] = list(v)
+    if distilled_profiles:
+        for k, profile in distilled_profiles.items():
+            existing = desc_dict.get(k, [])
+            union_list = list(existing)
+            for t in profile.top_terms:
+                if t not in union_list:
+                    union_list.append(t)
+            desc_dict[k] = union_list
 
     for aspect in aspects:
         # 1. Evidence centroid (if any)
@@ -224,14 +230,17 @@ def build_prototype_store(
 
         # 2. Description centroid (if any)
         desc_proto = None
-        aliases = []
-        if label_equivalence and aspect in label_equivalence:
-            aliases = label_equivalence[aspect]
-        elif aspect in DOMAIN_LABEL_FALLBACKS:
-            aliases = DOMAIN_LABEL_FALLBACKS[aspect]
+        aliases = desc_dict.get(aspect, [])
 
         if aliases:
             desc_text = f"aspect: {aspect.replace('_', ' ')} aliases: {', '.join(aliases)}"
+            desc_proto = encoder.encode([desc_text])[0]
+            norm = np.linalg.norm(desc_proto)
+            if norm > 0:
+                desc_proto = desc_proto / norm
+        else:
+            # Fallback purely to aspect name itself
+            desc_text = f"aspect: {aspect.replace('_', ' ')}"
             desc_proto = encoder.encode([desc_text])[0]
             norm = np.linalg.norm(desc_proto)
             if norm > 0:
@@ -264,7 +273,7 @@ def build_prototype_store(
         matrix=matrix,
         support_counts=support_counts,
         support_examples={a: raw_support_examples.get(a, []) for a in kept_aspects},
-        label_descriptions=label_equivalence or {},
+        label_descriptions=desc_dict,
         prototype_source="hybrid_description_evidence",
     )
 

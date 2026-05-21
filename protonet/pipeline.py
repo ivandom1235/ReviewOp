@@ -42,7 +42,20 @@ def build_context(
 ) -> ScoringContext:
     train_rows = train_rows if train_rows is not None else bundle.train
     encoder = build_encoder(config.encoder, config.model_name, config.normalize_embeddings, config.hashing_dim, config.batch_size)
-    prototypes = build_prototype_store(train_rows, encoder, config, label_equivalence=bundle.label_equivalence)
+    from .evidence_distilled_profiles import distill_aspect_profiles
+    from .aspect_graph import build_aspect_graph
+    from .import schema
+
+    distilled_profiles = distill_aspect_profiles(train_rows, config)
+    prototypes = build_prototype_store(
+        train_rows,
+        encoder,
+        config,
+        label_equivalence=bundle.label_equivalence,
+        distilled_profiles=distilled_profiles,
+    )
+    aspect_graph = build_aspect_graph(train_rows, encoder, config)
+    schema.ACTIVE_ASPECT_GRAPH = aspect_graph
     memory_items = []
     seen_clusters = set()
     memory_mode = str(getattr(config, "memory_source_mode", "promoted") or "promoted").lower()
@@ -125,7 +138,10 @@ def predict_records(examples: list[ReviewExample], context: ScoringContext) -> l
                         source_type=getattr(runtime_ex, "source_type", "implicit"),
                         top1_aspect=top1_aspect,
                         other_aspects=other_aspects,
-                        sibling_confusion_matrix=getattr(context, "sibling_confusion", None)
+                        sibling_confusion_matrix=getattr(context, "sibling_confusion", None),
+                        other_candidates=cands,
+                        label_descriptions=context.prototypes.label_descriptions,
+                        review_text=runtime_ex.text
                     )
                 ) 
                 for c in cands
@@ -183,6 +199,12 @@ def run_compare(
         sibling_confusion = build_sibling_confusion_matrix(val_scores, calibration_examples)
         context.sibling_confusion = sibling_confusion
         
+        # Rebuild aspect graph incorporating validation confusion and update schema
+        from .aspect_graph import build_aspect_graph
+        from .import schema
+        aspect_graph = build_aspect_graph(train_rows, context.encoder, config, validation_confusion=sibling_confusion)
+        schema.ACTIVE_ASPECT_GRAPH = aspect_graph
+        
         rows_data = []
         labels_data = []
         for val_ex, val_run_ex in zip(calibration_examples, calibration_runtime):
@@ -191,11 +213,16 @@ def run_compare(
             other_aspects = {c.aspect for c in candidates}
             gold_set = set(val_ex.gold_labels)
             for c in candidates:
-                rows_data.append((c, getattr(val_run_ex, "source_type", "implicit"), top1_aspect, other_aspects))
+                rows_data.append((c, getattr(val_run_ex, "source_type", "implicit"), top1_aspect, other_aspects, candidates, val_run_ex.text))
                 labels_data.append(1 if c.aspect in gold_set else 0)
         
         if len(labels_data) > 0 and len(set(labels_data)) > 1:
-            reranker = train_candidate_reranker(rows_data, labels_data, sibling_confusion_matrix=sibling_confusion)
+            reranker = train_candidate_reranker(
+                rows_data, 
+                labels_data, 
+                sibling_confusion_matrix=sibling_confusion,
+                label_descriptions=context.prototypes.label_descriptions
+            )
             context.candidate_reranker = reranker
         else:
             context.candidate_reranker = None

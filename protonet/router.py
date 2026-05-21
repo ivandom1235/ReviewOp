@@ -6,17 +6,6 @@ from .config import ECProtoNetV2Config
 from .schema import CandidateScore, RuntimeExample
 from .text_features import looks_vague
 
-SIBLING_EXCLUSIONS = {
-    "quality": "food_quality",
-    "food_quality": "quality",
-    "service_speed": "service_quality",
-    "service_quality": "service_speed",
-    "performance": "storage",
-    "storage": "performance",
-    "usability": "software",
-    "software": "usability",
-}
-
 def suppress_confused_siblings(
     candidates: list[CandidateScore],
     config: ECProtoNetV2Config,
@@ -24,10 +13,12 @@ def suppress_confused_siblings(
 ) -> list[CandidateScore]:
     if not getattr(config, "use_sibling_confusion_suppression", False):
         return candidates
-    from .schema import parent_of
+    from .import schema
     accepted_aspects = {c.aspect for c in candidates if c.decision == "accept_known" and c.aspect}
+    aspect_to_cand = {c.aspect: c for c in candidates if c.aspect}
     suppressed = []
     direct_floor = getattr(config, "sibling_direct_evidence_floor", 0.45)
+    graph_thresh = getattr(config, "graph_sibling_suppression_threshold", 0.45)
     for cand in candidates:
         if cand.decision == "accept_known" and cand.aspect:
             should_suppress = False
@@ -43,12 +34,22 @@ def suppress_confused_siblings(
                             triggering_sibling = sibling
                             break
 
-            # 2. Hardcoded fallback
-            if not should_suppress and cand.aspect in SIBLING_EXCLUSIONS:
-                sibling = SIBLING_EXCLUSIONS[cand.aspect]
-                if sibling in accepted_aspects:
-                    should_suppress = True
-                    triggering_sibling = sibling
+            # 2. Graph-derived sibling suppression
+            if not should_suppress and schema.ACTIVE_ASPECT_GRAPH is not None:
+                for sibling in accepted_aspects:
+                    if sibling != cand.aspect:
+                        w_rel = schema.ACTIVE_ASPECT_GRAPH.get_relation_weight(cand.aspect, sibling)
+                        if w_rel >= graph_thresh:
+                            sib_cand = aspect_to_cand.get(sibling)
+                            if sib_cand is not None:
+                                cand_lex = getattr(cand, "lexical_evidence_support", 0.0) or 0.0
+                                sib_lex = getattr(sib_cand, "lexical_evidence_support", 0.0) or 0.0
+                                cand_rank = getattr(cand, "rank", 1) or 1
+                                sib_rank = getattr(sib_cand, "rank", 1) or 1
+                                if cand_lex < sib_lex and cand_rank >= sib_rank:
+                                    should_suppress = True
+                                    triggering_sibling = sibling
+                                    break
 
             if should_suppress:
                 lex = getattr(cand, "lexical_evidence_support", 0.0) or 0.0
