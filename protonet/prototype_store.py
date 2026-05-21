@@ -120,6 +120,21 @@ def _support_weight(example: ReviewExample, evidence_scope: str, source_type: st
     return max(0.05, float(weight))
 
 
+DOMAIN_LABEL_FALLBACKS = {
+    "storage": ["storage", "hard drive", "ssd", "disk space", "capacity", "gigabytes", "tb"],
+    "keyboard": ["keyboard", "keys", "typing", "buttons", "layout", "backlight"],
+    "display": ["display", "screen", "resolution", "brightness", "panel", "ips", "oled", "pixel"],
+    "battery_life": ["battery life", "battery", "charge", "runtime", "hours", "power", "charger"],
+    "performance": ["performance", "speed", "fast", "slow", "lag", "cpu", "processor", "ram"],
+    "software": ["software", "os", "app", "application", "windows", "macos", "bugs", "firmware"],
+    "usability": ["usability", "user experience", "easy to use", "intuitive", "navigation", "interface"],
+    "connectivity": ["connectivity", "wifi", "bluetooth", "ports", "hdmi", "usb", "wireless", "network"],
+    "call_reliability": ["call reliability", "signal", "reception", "drop calls", "cellular", "antenna"],
+    "portability": ["portability", "lightweight", "heavy", "thin", "carry", "weight", "compact"],
+    "trackpad": ["trackpad", "touchpad", "mouse", "clicking", "gestures", "scrolling"],
+}
+
+
 def build_prototype_store(
     examples: list[ReviewExample],
     encoder: TextEncoder,
@@ -145,10 +160,11 @@ def build_prototype_store(
             support_by_aspect.setdefault(g.aspect, []).append((text, weight, mapping_scope, label_type))
             raw_support_examples.setdefault(g.aspect, []).append(evidence_text or ex.text)
 
-    # Union of aspects from training data and equivalence map
+    # Union of aspects from training data, equivalence map, and domain label fallbacks
     all_aspects = set(support_by_aspect.keys())
     if label_equivalence:
         all_aspects.update(label_equivalence.keys())
+    all_aspects.update(DOMAIN_LABEL_FALLBACKS.keys())
     
     aspects = sorted(
         a
@@ -164,6 +180,7 @@ def build_prototype_store(
                 and label_equivalence
                 and a in label_equivalence
             )
+            or a in DOMAIN_LABEL_FALLBACKS
         )
     )
 
@@ -207,8 +224,13 @@ def build_prototype_store(
 
         # 2. Description centroid (if any)
         desc_proto = None
+        aliases = []
         if label_equivalence and aspect in label_equivalence:
             aliases = label_equivalence[aspect]
+        elif aspect in DOMAIN_LABEL_FALLBACKS:
+            aliases = DOMAIN_LABEL_FALLBACKS[aspect]
+
+        if aliases:
             desc_text = f"aspect: {aspect.replace('_', ' ')} aliases: {', '.join(aliases)}"
             desc_proto = encoder.encode([desc_text])[0]
             norm = np.linalg.norm(desc_proto)

@@ -110,12 +110,26 @@ def build_context(
 def predict_records(examples: list[ReviewExample], context: ScoringContext) -> list[PredictionRecord]:
     runtime_examples = [to_runtime_example(ex) for ex in examples]
     raw_scores = score_examples(runtime_examples, context, top_k=context.config.top_k)
-    router = SelectiveRouterV2(context.config)
+    router = SelectiveRouterV2(context.config, sibling_confusion=getattr(context, "sibling_confusion", None))
     records: list[PredictionRecord] = []
     for ex, runtime_ex in zip(examples, runtime_examples):
         cands = raw_scores.get(ex.row_id, [])
         if getattr(context.config, "use_candidate_reranker", False) and context.candidate_reranker is not None:
-            cands = [replace(c, reranker_score=context.candidate_reranker.score(c, source_type=getattr(runtime_ex, "source_type", "implicit"))) for c in cands]
+            top1_aspect = cands[0].aspect if cands else ""
+            other_aspects = {c.aspect for c in cands}
+            cands = [
+                replace(
+                    c, 
+                    reranker_score=context.candidate_reranker.score(
+                        c, 
+                        source_type=getattr(runtime_ex, "source_type", "implicit"),
+                        top1_aspect=top1_aspect,
+                        other_aspects=other_aspects,
+                        sibling_confusion_matrix=getattr(context, "sibling_confusion", None)
+                    )
+                ) 
+                for c in cands
+            ]
         routed = router.route_candidates(runtime_ex, cands)
         records.append(
             PredictionRecord(
@@ -164,19 +178,24 @@ def run_compare(
     context.energy_stats = compute_energy_stats(calibration_runtime, context)
 
     if getattr(config, "use_candidate_reranker", False):
-        from .candidate_reranker import train_candidate_reranker
+        from .candidate_reranker import train_candidate_reranker, build_sibling_confusion_matrix
         val_scores = score_examples(calibration_runtime, context, top_k=config.top_k)
+        sibling_confusion = build_sibling_confusion_matrix(val_scores, calibration_examples)
+        context.sibling_confusion = sibling_confusion
+        
         rows_data = []
         labels_data = []
         for val_ex, val_run_ex in zip(calibration_examples, calibration_runtime):
             candidates = val_scores.get(val_ex.row_id, [])
+            top1_aspect = candidates[0].aspect if candidates else ""
+            other_aspects = {c.aspect for c in candidates}
             gold_set = set(val_ex.gold_labels)
             for c in candidates:
-                rows_data.append((c, getattr(val_run_ex, "source_type", "implicit")))
+                rows_data.append((c, getattr(val_run_ex, "source_type", "implicit"), top1_aspect, other_aspects))
                 labels_data.append(1 if c.aspect in gold_set else 0)
         
         if len(labels_data) > 0 and len(set(labels_data)) > 1:
-            reranker = train_candidate_reranker(rows_data, labels_data)
+            reranker = train_candidate_reranker(rows_data, labels_data, sibling_confusion_matrix=sibling_confusion)
             context.candidate_reranker = reranker
         else:
             context.candidate_reranker = None

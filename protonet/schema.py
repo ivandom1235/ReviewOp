@@ -277,3 +277,35 @@ def example_from_raw(row: dict[str, Any], split: str | None = None) -> ReviewExa
         metadata=row.get("metadata", {}),
         raw=row,
     )
+
+
+ASPECT_PARENT = {
+    "food_quality": "quality",
+    "service_quality": "service",
+    "service_speed": "service",
+    "customer_support": "service",
+    "delivery": "service",
+    "storage": "hardware",
+    "keyboard": "hardware",
+    "display": "hardware",
+    "battery_life": "hardware",
+    "power": "hardware",
+    "portability": "hardware",
+    "trackpad": "hardware",
+    "performance": "system_experience",
+    "software": "system_experience",
+    "usability": "system_experience",
+    "connectivity": "system_experience",
+    "call_reliability": "system_experience",
+    "price": "value",
+    "value": "value",
+    "ambience": "experience",
+    "aesthetics": "experience",
+}
+
+
+def parent_of(aspect: str) -> str:
+    if not aspect:
+        return "unknown"
+    return ASPECT_PARENT.get(aspect, aspect)
+

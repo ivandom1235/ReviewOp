@@ -228,6 +228,47 @@ def fixed_coverage_utility(
     return out
 
 
+def parent_label_micro(records: list[PredictionRecord], normalizer: LabelNormalizer, config: ECProtoNetV2Config) -> dict[str, float]:
+    from .schema import parent_of
+    tp = fp = fn = 0
+    for r in records:
+        pred = normalizer.normalize_set(_record_pred_labels(r, config, mode="final"))
+        gold = normalizer.normalize_set(r.gold_labels)
+        
+        pred_parents = {parent_of(p) for p in pred}
+        gold_parents = {parent_of(g) for g in gold}
+        
+        inter = pred_parents & gold_parents
+        tp += len(inter)
+        fp += max(0, len(pred_parents) - len(inter))
+        fn += max(0, len(gold_parents) - len(inter))
+    return _f1(tp, fp, fn)
+
+
+def hierarchical_micro(records: list[PredictionRecord], normalizer: LabelNormalizer, config: ECProtoNetV2Config) -> dict[str, float]:
+    from .schema import parent_of
+    tp = fp = fn = 0
+    for r in records:
+        pred = normalizer.normalize_set(_record_pred_labels(r, config, mode="final"))
+        gold = normalizer.normalize_set(r.gold_labels)
+        
+        pred_hierarchy = set()
+        for p in pred:
+            pred_hierarchy.add(p)
+            pred_hierarchy.add(parent_of(p))
+            
+        gold_hierarchy = set()
+        for g in gold:
+            gold_hierarchy.add(g)
+            gold_hierarchy.add(parent_of(g))
+            
+        inter = gold_hierarchy & pred_hierarchy
+        tp += len(inter)
+        fp += max(0, len(pred_hierarchy) - len(inter))
+        fn += max(0, len(gold_hierarchy) - len(inter))
+    return _f1(tp, fp, fn)
+
+
 def evaluate_predictions(records: list[PredictionRecord], normalizer: LabelNormalizer, config: ECProtoNetV2Config) -> dict:
     strict = multilabel_micro(records, normalizer, relaxed=False, config=config, mode="final")
     relaxed = multilabel_micro(records, normalizer, relaxed=True, config=config, mode="final")
@@ -421,6 +462,10 @@ def evaluate_predictions(records: list[PredictionRecord], normalizer: LabelNorma
         "boundary": boundary,
     }
 
+    # Calculate parent and hierarchical F1 components
+    parent_metrics = parent_label_micro(records, normalizer, config)
+    hier_metrics = hierarchical_micro(records, normalizer, config)
+
     return {
         "count": len(records),
         "strict": strict,
@@ -475,6 +520,12 @@ def evaluate_predictions(records: list[PredictionRecord], normalizer: LabelNorma
         },
         "error_buckets": error_buckets,
         "open_world_block_reasons": open_world_block_reasons,
+        "parent_label_f1": float(parent_metrics["f1"]),
+        "parent_label_precision": float(parent_metrics["precision"]),
+        "parent_label_recall": float(parent_metrics["recall"]),
+        "hierarchical_f1": float(hier_metrics["f1"]),
+        "hierarchical_precision": float(hier_metrics["precision"]),
+        "hierarchical_recall": float(hier_metrics["recall"]),
     }
 
 
@@ -492,10 +543,15 @@ def objective(metrics: dict) -> float:
     abstain_f1 = metrics["abstention"]["f1"]
     boundary_f1 = metrics["boundary"]["f1"]
 
+    parent_label_f1 = metrics.get("parent_label_f1", 0.0)
+    hierarchical_f1 = metrics.get("hierarchical_f1", 0.0)
+
     return (
         1.00 * known_f1
         + 0.50 * unseen_f1
         + 0.25 * abstain_f1
         + 0.25 * boundary_f1
+        + 0.25 * parent_label_f1
+        + 0.25 * hierarchical_f1
         - 0.50 * coverage_penalty
     )

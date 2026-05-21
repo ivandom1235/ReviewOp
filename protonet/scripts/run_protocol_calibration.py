@@ -52,16 +52,20 @@ def _score(metrics: dict, protocol: str, mode: str = "joint") -> float:
     unknown_auprc = float(metrics.get("unknown_auprc") or 0.0)
     topk_recall = float(metrics.get("topk_recall") or 0.0)
     coverage_penalty = max(0.0, 0.50 - coverage)
+    
+    parent_label_f1 = float(metrics.get("parent_label_f1", 0.0))
+    hierarchical_f1 = float(metrics.get("hierarchical_f1", 0.0))
+
     if mode == "open_world":
         unseen_f1 = float(metrics.get("unseen_detection", {}).get("f1", 0.0))
         auroc = float(metrics.get("unknown_auroc") or 0.0)
         auprc = float(metrics.get("unknown_auprc") or 0.0)
-        return (0.40 * unseen_f1) + (0.30 * auroc) + (0.30 * auprc)
+        return (0.40 * unseen_f1) + (0.30 * auroc) + (0.30 * auprc) + (0.25 * parent_label_f1) + (0.25 * hierarchical_f1)
     if mode == "known":
-        return strict if protocol == "grouped" else known
+        return (strict if protocol == "grouped" else known) + (0.25 * parent_label_f1) + (0.25 * hierarchical_f1)
     if protocol == "grouped":
-        return (1.10 * strict) + (0.25 * unknown_auprc) + (0.20 * topk_recall) - (0.50 * coverage_penalty)
-    return (1.00 * known) + (0.25 * unknown_auprc) + (0.20 * topk_recall) - (0.50 * coverage_penalty)
+        return (1.10 * strict) + (0.25 * unknown_auprc) + (0.20 * topk_recall) - (0.50 * coverage_penalty) + (0.25 * parent_label_f1) + (0.25 * hierarchical_f1)
+    return (1.00 * known) + (0.25 * unknown_auprc) + (0.20 * topk_recall) - (0.50 * coverage_penalty) + (0.25 * parent_label_f1) + (0.25 * hierarchical_f1)
 
 
 def _sort_key(row: dict, protocol: str) -> tuple[float, float, float, float]:

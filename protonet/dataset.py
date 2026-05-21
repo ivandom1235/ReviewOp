@@ -80,16 +80,44 @@ def _load_split_dir(base: Path, normalizer: LabelNormalizer) -> dict[str, list[R
     return out
 
 
+def _load_protocol_splits(
+    artifact_dir: Path,
+    protocol_name: str,
+    normalizer: LabelNormalizer,
+) -> dict[str, list[ReviewExample]]:
+    nested = artifact_dir / protocol_name
+    if nested.exists() and nested.is_dir():
+        return _load_split_dir(nested, normalizer)
+
+    # Fallback for flattened or older artifact layout:
+    out = {"train": [], "val": [], "test": []}
+    for split in out:
+        path = artifact_dir / f"{protocol_name}_{split}.jsonl"
+        if not path.exists():
+            continue
+        for idx, row in enumerate(read_jsonl(path)):
+            ex = example_from_raw(row, split=split)
+            if not ex.row_id or ex.row_id == "unknown":
+                from dataclasses import replace
+                ex = replace(ex, row_id=f"{protocol_name}_{split}_{idx:06d}")
+
+            norm_gold = []
+            for g in ex.gold_aspects:
+                norm_gold.append(
+                    g.__class__(**{**g.to_dict(), "aspect": normalizer.normalize(g.aspect)})
+                )
+            out[split].append(ex.__class__(**{**ex.to_dict(), "gold_aspects": norm_gold}))
+    return out
+
+
 def load_dataset_bundle(artifact_dir: str | Path) -> DatasetBundle:
     artifact_dir = Path(artifact_dir)
     normalizer = LabelNormalizer.from_artifact(artifact_dir)
     bundle = DatasetBundle(artifact_dir=artifact_dir, normalizer=normalizer)
     bundle.splits = _load_split_dir(artifact_dir, normalizer)
 
-    if (artifact_dir / "domain_holdout").exists():
-        bundle.domain_holdout = _load_split_dir(artifact_dir / "domain_holdout", normalizer)
-    if (artifact_dir / "grouped").exists():
-        bundle.grouped = _load_split_dir(artifact_dir / "grouped", normalizer)
+    bundle.domain_holdout = _load_protocol_splits(artifact_dir, "domain_holdout", normalizer)
+    bundle.grouped = _load_protocol_splits(artifact_dir, "grouped", normalizer)
 
     bundle.manifest = read_json(artifact_dir / "manifest.json", default={}) or {}
     bundle.metrics_summary = read_json(artifact_dir / "metrics_summary.json", default={}) or {}

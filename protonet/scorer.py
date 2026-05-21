@@ -23,6 +23,8 @@ class ScoringContext:
     energy_stats: "EnergyStats | None" = None
     label_aliases: dict[str, list[str]] | None = None
     candidate_reranker: Any = None
+    sibling_confusion: dict[str, dict[str, float]] | None = None
+
 
 
 @dataclass(frozen=True)

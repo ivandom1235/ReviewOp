@@ -19,20 +19,41 @@ SIBLING_EXCLUSIONS = {
 
 def suppress_confused_siblings(
     candidates: list[CandidateScore],
-    config: ECProtoNetV2Config
+    config: ECProtoNetV2Config,
+    sibling_confusion: dict[str, dict[str, float]] | None = None
 ) -> list[CandidateScore]:
     if not getattr(config, "use_sibling_confusion_suppression", False):
         return candidates
+    from .schema import parent_of
     accepted_aspects = {c.aspect for c in candidates if c.decision == "accept_known" and c.aspect}
     suppressed = []
     direct_floor = getattr(config, "sibling_direct_evidence_floor", 0.45)
     for cand in candidates:
-        if cand.decision == "accept_known" and cand.aspect in SIBLING_EXCLUSIONS:
-            sibling = SIBLING_EXCLUSIONS[cand.aspect]
-            if sibling in accepted_aspects:
+        if cand.decision == "accept_known" and cand.aspect:
+            should_suppress = False
+            triggering_sibling = ""
+
+            # 1. Check validation-estimated sibling confusion
+            if sibling_confusion and cand.aspect in sibling_confusion:
+                cand_conf = sibling_confusion[cand.aspect]
+                for sibling in accepted_aspects:
+                    if sibling != cand.aspect and sibling in cand_conf:
+                        if cand_conf[sibling] >= 0.60:
+                            should_suppress = True
+                            triggering_sibling = sibling
+                            break
+
+            # 2. Hardcoded fallback
+            if not should_suppress and cand.aspect in SIBLING_EXCLUSIONS:
+                sibling = SIBLING_EXCLUSIONS[cand.aspect]
+                if sibling in accepted_aspects:
+                    should_suppress = True
+                    triggering_sibling = sibling
+
+            if should_suppress:
                 lex = getattr(cand, "lexical_evidence_support", 0.0) or 0.0
                 if lex < direct_floor:
-                    suppressed.append(cand.with_decision("needs_review", f"sibling_confusion_suppressed_by_{sibling}"))
+                    suppressed.append(cand.with_decision("needs_review", f"sibling_confusion_suppressed_by_{triggering_sibling}"))
                     continue
         suppressed.append(cand)
     return suppressed
@@ -124,8 +145,9 @@ def route_candidate(candidate: CandidateScore, config: ECProtoNetV2Config) -> Ca
 
 
 class SelectiveRouterV2:
-    def __init__(self, config: ECProtoNetV2Config):
+    def __init__(self, config: ECProtoNetV2Config, sibling_confusion: dict | None = None):
         self.config = config
+        self.sibling_confusion = sibling_confusion
 
     def _is_implicit_source(self, ex: RuntimeExample) -> bool:
         s = str(getattr(ex, "source_type", "") or "").lower()
@@ -336,7 +358,7 @@ class SelectiveRouterV2:
         routed = apply_candidate_reranker_gating(routed, self.config)
 
         # Apply sibling suppression if enabled
-        routed = suppress_confused_siblings(routed, self.config)
+        routed = suppress_confused_siblings(routed, self.config, self.sibling_confusion)
 
         # Limit recall-rescue accepts before the total accepts cap
         routed = limit_recall_rescue_accepts(routed, self.config)
