@@ -16,6 +16,7 @@ export REVIEWOP_ENV=test
 python -m compileall -q protonet dataset_builder backend
 python -m pytest -q protonet/tests
 python -m pytest -q dataset_builder/test_dataset_hardening.py dataset_builder/test_spacy_pipeline_offline.py dataset_builder/test_label_equivalence_conflicts_tdd.py dataset_builder/test_memory_sidecar_consistency_tdd.py
+python -m pytest -q backend
 
 python -m protonet.cli verify-artifact --artifact-dir dataset_builder/output
 python -m protonet.cli compare --artifact-dir dataset_builder/output --output-dir protonet/output/repro_strict_grouped --protocol grouped --split test

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,23 @@ def _find_verification_file(artifact_dir: Path) -> Path | None:
     return None
 
 
-def assert_verified_artifact(artifact_dir: str | Path, config: ECProtoNetV2Config) -> ArtifactGuardReport:
+def _current_dataset_builder_code_hash() -> str:
+    h = hashlib.sha256()
+    package_dir = Path(__file__).resolve().parents[1] / "dataset_builder"
+    for p in sorted(package_dir.rglob("*.py")):
+        if "__pycache__" in str(p) or "venv" in str(p) or ".venv" in str(p):
+            continue
+        with open(p, "rb") as f:
+            h.update(f.read())
+    return h.hexdigest()[:12]
+
+
+def assert_verified_artifact(
+    artifact_dir: str | Path,
+    config: ECProtoNetV2Config,
+    *,
+    allow_stale_source_artifact: bool = False,
+) -> ArtifactGuardReport:
     artifact_dir = Path(artifact_dir).resolve()
     if not artifact_dir.exists():
         raise ArtifactGuardError(f"Artifact directory does not exist: {artifact_dir}")
@@ -64,6 +81,18 @@ def assert_verified_artifact(artifact_dir: str | Path, config: ECProtoNetV2Confi
     memory_consistency = verify_memory_consistency(artifact_dir)
     if not memory_consistency.get("ok", False):
         failed_checks.append(memory_consistency.get("error", "memory consistency failed"))
+    source_consistency = read_json(artifact_dir / "source_artifact_consistency.json", default={}) or {}
+    artifact_code_hash = str(source_consistency.get("code_hash", "") or "")
+    current_code_hash = str(_current_dataset_builder_code_hash() or "")
+    if not artifact_code_hash:
+        failed_checks.append("source artifact consistency missing code_hash")
+    elif artifact_code_hash != current_code_hash:
+        failed_checks.append(
+            "source artifact hash mismatch "
+            f"(artifact={artifact_code_hash}, current={current_code_hash})"
+        )
+    if allow_stale_source_artifact:
+        failed_checks = [msg for msg in failed_checks if "source artifact hash mismatch" not in str(msg)]
 
     if config.require_artifact_pass and (artifact_status != "pass" or ready is not True or bool(failed_checks)):
         raise ArtifactGuardError(

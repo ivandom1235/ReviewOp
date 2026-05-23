@@ -55,6 +55,7 @@ def main() -> None:
     p.add_argument("--proto-domain-preds", required=True)
     p.add_argument("--output-dir", required=True)
     p.add_argument("--encoder", default="hashing", choices=["hashing", "sentence-transformers"])
+    p.add_argument("--model-name", default="sentence-transformers/all-MiniLM-L6-v2")
     p.add_argument("--threshold", type=float, default=0.5)
     p.add_argument("--centroid-threshold", type=float, default=0.30)
     args = p.parse_args()
@@ -69,6 +70,7 @@ def main() -> None:
         bundle.test,
         train_rows=bundle.splits["train"],
         encoder_kind=args.encoder,
+        model_name=args.model_name,
         threshold=args.threshold,
     )
     base_domain = run_logreg_baseline(
@@ -76,6 +78,7 @@ def main() -> None:
         bundle.domain_holdout["test"],
         train_rows=bundle.domain_holdout["train"],
         encoder_kind=args.encoder,
+        model_name=args.model_name,
         threshold=args.threshold,
     )
     centroid_grouped = run_centroid_baseline(
@@ -83,6 +86,7 @@ def main() -> None:
         bundle.test,
         train_rows=bundle.splits["train"],
         encoder_kind=args.encoder,
+        model_name=args.model_name,
         accept_threshold=args.centroid_threshold,
     )
     centroid_domain = run_centroid_baseline(
@@ -90,6 +94,7 @@ def main() -> None:
         bundle.domain_holdout["test"],
         train_rows=bundle.domain_holdout["train"],
         encoder_kind=args.encoder,
+        model_name=args.model_name,
         accept_threshold=args.centroid_threshold,
     )
 
@@ -164,6 +169,7 @@ def main() -> None:
     report = {
         "artifact_dir": str(Path(args.artifact_dir).resolve()),
         "encoder": args.encoder,
+        "model_name": args.model_name,
         "threshold": args.threshold,
         "grouped_test": grouped,
         "domain_holdout_test": domain,

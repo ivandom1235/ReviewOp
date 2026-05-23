@@ -191,6 +191,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Tune grouped/domain-holdout thresholds independently.")
     p.add_argument("--artifact-dir", required=True)
     p.add_argument("--output-dir", required=True)
+    p.add_argument("--encoder", default="hashing", choices=["hashing", "sentence-transformers"])
+    p.add_argument("--model-name", default="sentence-transformers/all-MiniLM-L6-v2")
     p.add_argument("--max-trials", type=int, default=0, help="Optional cap to subsample grid-search trials per protocol.")
     p.add_argument("--seed", type=int, default=13)
     p.add_argument("--mode", choices=["known", "open_world", "conservative", "joint"], default="known")
@@ -200,7 +202,12 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     bundle = load_dataset_bundle(args.artifact_dir)
-    base = ECProtoNetV2Config(require_artifact_pass=False, require_active_contract=False)
+    base = ECProtoNetV2Config(
+        encoder=args.encoder,
+        model_name=args.model_name,
+        require_artifact_pass=False,
+        require_active_contract=False,
+    )
 
     max_trials = args.max_trials if args.max_trials and args.max_trials > 0 else None
     grouped = tune_protocol(bundle, "grouped", base, mode=args.mode, max_trials=max_trials, seed=args.seed)

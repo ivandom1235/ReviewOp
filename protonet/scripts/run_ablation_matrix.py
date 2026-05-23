@@ -58,7 +58,7 @@ def _memory_effect_report(no_mem_dir: Path, promoted_dir: Path) -> dict:
                 }
             )
     promoted_metrics = {}
-    metrics_path = promoted_dir / "metrics_summary.json"
+    metrics_path = promoted_dir / "metrics.json"
     if metrics_path.exists():
         try:
             promoted_metrics = read_json(metrics_path, default={}) or {}
@@ -92,6 +92,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Run ablation matrix for grouped/domain-holdout protocols.")
     p.add_argument("--artifact-dir", required=True)
     p.add_argument("--output-dir", required=True)
+    p.add_argument("--encoder", default="hashing", choices=["hashing", "sentence-transformers"])
+    p.add_argument("--model-name", default="sentence-transformers/all-MiniLM-L6-v2")
     p.add_argument("--grouped-config", default=None, help="Optional JSON config path for grouped baseline profile.")
     p.add_argument("--domain-config", default=None, help="Optional JSON config path for domain-holdout baseline profile.")
     args = p.parse_args()
@@ -103,7 +105,12 @@ def main() -> None:
     grouped_base = (
         ECProtoNetV2Config.from_json(Path(args.grouped_config))
         if args.grouped_config
-        else ECProtoNetV2Config(require_artifact_pass=False, require_active_contract=False)
+        else ECProtoNetV2Config(
+            encoder=args.encoder,
+            model_name=args.model_name,
+            require_artifact_pass=False,
+            require_active_contract=False,
+        )
     )
     domain_base = (
         ECProtoNetV2Config.from_json(Path(args.domain_config))
@@ -168,6 +175,10 @@ def main() -> None:
         },
         "evidence_low": {"w_evidence": 0.10},
         "evidence_high": {"w_evidence": 0.35},
+        "no_aspect_graph": {"use_aspect_graph": False},
+        "no_distilled_profiles": {"use_evidence_distilled_profiles": False},
+        "no_graph_reranker_features": {"use_graph_reranker_features": False},
+        "no_aspect_graph_no_profiles": {"use_aspect_graph": False, "use_evidence_distilled_profiles": False},
     }
 
     results: dict[str, dict] = {}

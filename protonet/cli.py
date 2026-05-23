@@ -44,7 +44,11 @@ def build_config(args: argparse.Namespace) -> ECProtoNetV2Config:
 
 def cmd_verify(args: argparse.Namespace) -> None:
     cfg = build_config(args)
-    report = assert_verified_artifact(args.artifact_dir, cfg)
+    report = assert_verified_artifact(
+        args.artifact_dir,
+        cfg,
+        allow_stale_source_artifact=getattr(args, "allow_stale_source_artifact", False),
+    )
     print(json.dumps(report.to_dict(), indent=2))
 
 
@@ -62,6 +66,7 @@ def cmd_compare(args: argparse.Namespace) -> None:
         split=args.split,
         protocol=args.protocol,
         allow_failed_artifact=args.allow_failed_artifact,
+        allow_stale_source_artifact=getattr(args, "allow_stale_source_artifact", False),
     )
     print(json.dumps(result["metrics"], indent=2))
 
@@ -69,7 +74,11 @@ def cmd_compare(args: argparse.Namespace) -> None:
 def cmd_calibrate(args: argparse.Namespace) -> None:
     cfg = build_config(args)
     # Calibration can inspect val before active artifact contract exists, but artifact must still pass unless override supplied.
-    assert_verified_artifact(args.artifact_dir, cfg)
+    assert_verified_artifact(
+        args.artifact_dir,
+        cfg,
+        allow_stale_source_artifact=getattr(args, "allow_stale_source_artifact", False),
+    )
     bundle = load_dataset_bundle(args.artifact_dir)
     result = grid_search_router(bundle, replace(cfg, require_active_contract=False))
     out = Path(args.output_dir)
@@ -97,6 +106,7 @@ def make_parser() -> argparse.ArgumentParser:
         sp.add_argument("--evidence-abstain-threshold", type=float, default=None)
         sp.add_argument("--allow-missing-active-contract", action="store_true")
         sp.add_argument("--allow-failed-artifact", action="store_true")
+        sp.add_argument("--allow-stale-source-artifact", action="store_true")
         sp.add_argument("--use-memory", dest="use_memory", action="store_true", default=None)
         sp.add_argument("--disable-memory", dest="use_memory", action="store_false")
 

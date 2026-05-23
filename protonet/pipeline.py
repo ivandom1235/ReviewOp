@@ -47,14 +47,15 @@ def build_context(
     from .import schema
 
     distilled_profiles = distill_aspect_profiles(train_rows, config)
+    aspect_graph = build_aspect_graph(train_rows, encoder, config) if getattr(config, "use_aspect_graph", True) else None
     prototypes = build_prototype_store(
         train_rows,
         encoder,
         config,
         label_equivalence=bundle.label_equivalence,
         distilled_profiles=distilled_profiles,
+        aspect_graph=aspect_graph,
     )
-    aspect_graph = build_aspect_graph(train_rows, encoder, config)
     schema.ACTIVE_ASPECT_GRAPH = aspect_graph
     memory_items = []
     seen_clusters = set()
@@ -117,6 +118,7 @@ def build_context(
         config=new_config,
         known_classifier=known_classifier,
         label_aliases=bundle.label_equivalence,
+        distilled_profiles=distilled_profiles,
     )
 
 
@@ -141,7 +143,8 @@ def predict_records(examples: list[ReviewExample], context: ScoringContext) -> l
                         sibling_confusion_matrix=getattr(context, "sibling_confusion", None),
                         other_candidates=cands,
                         label_descriptions=context.prototypes.label_descriptions,
-                        review_text=runtime_ex.text
+                        review_text=runtime_ex.text,
+                        config=context.config,
                     )
                 ) 
                 for c in cands
@@ -182,10 +185,15 @@ def run_compare(
     split: str = "test",
     protocol: str = "grouped",
     allow_failed_artifact: bool = False,
+    allow_stale_source_artifact: bool = False,
 ) -> dict[str, Any]:
     if allow_failed_artifact:
         config = replace(config, require_artifact_pass=False, require_active_contract=False)
-    guard = assert_verified_artifact(artifact_dir, config)
+    guard = assert_verified_artifact(
+        artifact_dir,
+        config,
+        allow_stale_source_artifact=allow_stale_source_artifact,
+    )
     bundle = load_dataset_bundle(artifact_dir)
     train_rows = protocol_train_rows(bundle, protocol)
     context = build_context(bundle, config, train_rows=train_rows)
@@ -202,8 +210,22 @@ def run_compare(
         # Rebuild aspect graph incorporating validation confusion and update schema
         from .aspect_graph import build_aspect_graph
         from .import schema
-        aspect_graph = build_aspect_graph(train_rows, context.encoder, config, validation_confusion=sibling_confusion)
+        if getattr(config, "use_aspect_graph", True):
+            aspect_graph = build_aspect_graph(train_rows, context.encoder, config, validation_confusion=sibling_confusion)
+        else:
+            aspect_graph = None
         schema.ACTIVE_ASPECT_GRAPH = aspect_graph
+        
+        # If smoothed prototypes are enabled, rebuild the prototype store with the updated aspect graph
+        if getattr(config, "use_graph_smoothed_prototypes", False):
+            context.prototypes = build_prototype_store(
+                train_rows,
+                context.encoder,
+                config,
+                label_equivalence=bundle.label_equivalence,
+                distilled_profiles=context.distilled_profiles,
+                aspect_graph=aspect_graph,
+            )
         
         rows_data = []
         labels_data = []
@@ -221,7 +243,8 @@ def run_compare(
                 rows_data, 
                 labels_data, 
                 sibling_confusion_matrix=sibling_confusion,
-                label_descriptions=context.prototypes.label_descriptions
+                label_descriptions=context.prototypes.label_descriptions,
+                config=config,
             )
             context.candidate_reranker = reranker
         else:

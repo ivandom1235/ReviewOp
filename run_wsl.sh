@@ -16,9 +16,10 @@ export REVIEWOP_ENV=test
 python -m compileall -q protonet dataset_builder backend
 python -m pytest -q protonet/tests
 python -m pytest -q dataset_builder/test_dataset_hardening.py
+python -m pytest -q backend
 python -m protonet.cli --help
 python -m protonet.scripts.run_research_program --help
-python -m protonet.cli verify-artifact --artifact-dir dataset_builder/output --allow-missing-active-contract
+python -m protonet.cli verify-artifact --artifact-dir dataset_builder/output --allow-missing-active-contract --allow-stale-source-artifact
 python -m protonet.cli compare --artifact-dir dataset_builder/output --output-dir protonet/output/repro_grouped --protocol grouped --split test --allow-missing-active-contract --allow-failed-artifact
 python -m protonet.cli compare --artifact-dir dataset_builder/output --output-dir protonet/output/repro_domain --protocol domain_holdout --split test --allow-missing-active-contract --allow-failed-artifact
 python -m protonet.scripts.verify_run_contract protonet/output/repro_grouped
