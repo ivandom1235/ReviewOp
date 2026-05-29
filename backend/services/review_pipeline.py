@@ -20,6 +20,7 @@ _GRAPH_REFRESH_THREADS: dict[str, threading.Thread] = {}
 _GRAPH_REFRESH_LOCK = threading.Lock()
 _VAGUE = {"something", "anything", "everything", "nothing", "every", "means", "general", "unknown"}
 _ALIASES = {"my cam": "camera", "cam": "camera", "built in mic": "microphone", "built-in mic": "microphone"}
+_CONTRADICTION_RISK_THRESHOLD = 0.45
 
 
 def _safe_extract_aspects(text: str, max_aspects: int = 8) -> list[str]:
@@ -189,6 +190,16 @@ def split_selective_states(predictions: list[dict]) -> dict:
     seen_novel: set[str] = set()
     for row in predictions or []:
         routing = str(row.get("routing") or "known").lower()
+        contradiction_score = float(row.get("contradiction_score") or 0.0)
+        contradiction_types = list(row.get("contradiction_types") or [])
+        quarantine_status = str(row.get("quarantine_status") or "").strip().lower()
+        row_is_novel = routing == "novel"
+        contradiction_risk = (
+            contradiction_score >= _CONTRADICTION_RISK_THRESHOLD
+            or quarantine_status in {"watch", "quarantined"}
+            or bool(contradiction_types)
+        )
+        graph_support_score = max(0.0, 1.0 - contradiction_score)
         for abstained_row in row.get("abstained_predictions") or []:
             if not isinstance(abstained_row, dict):
                 continue
@@ -197,22 +208,57 @@ def split_selective_states(predictions: list[dict]) -> dict:
                 continue
             seen_abstained.add(abstained_key)
             abstained.append(abstained_row)
-        if bool(row.get("abstain")) or str(row.get("decision") or "").lower() == "abstain" or routing == "boundary":
+        if bool(row.get("abstain")) or str(row.get("decision") or "").lower() == "abstain" or routing == "boundary" or (contradiction_risk and not row_is_novel):
+            if contradiction_risk and not row.get("abstain_reason"):
+                row = dict(row)
+                row["abstain_reason"] = "contradiction_risk"
+                row["quarantine_status"] = row.get("quarantine_status") or "watch"
+            if "graph_support_score" not in row:
+                row = dict(row)
+                row["graph_support_score"] = graph_support_score
             abstained_key = stable_key(row)
             if abstained_key not in seen_abstained:
                 seen_abstained.add(abstained_key)
                 abstained.append(row)
             continue
         if routing == "known":
+            if contradiction_risk:
+                row = dict(row)
+                row["abstain_reason"] = row.get("abstain_reason") or "contradiction_risk"
+                row["quarantine_status"] = row.get("quarantine_status") or "watch"
+                row["graph_support_score"] = graph_support_score
+                abstained_key = stable_key(row)
+                if abstained_key not in seen_abstained:
+                    seen_abstained.add(abstained_key)
+                    abstained.append(row)
+                continue
+            if "graph_support_score" not in row:
+                row = dict(row)
+                row["graph_support_score"] = graph_support_score
             accepted.append(row)
-        elif routing == "novel" and not row.get("novel_candidates"):
+        elif row_is_novel and not row.get("novel_candidates"):
             novel_key = stable_key(row)
             if novel_key not in seen_novel:
                 seen_novel.add(novel_key)
+                if contradiction_risk:
+                    row = dict(row)
+                    row["quarantine_status"] = row.get("quarantine_status") or "quarantined"
+                    row["contradiction_score"] = float(row.get("contradiction_score") or contradiction_score)
+                    row["contradiction_types"] = list(row.get("contradiction_types") or contradiction_types)
+                    row["graph_support_score"] = max(0.0, 1.0 - float(row.get("contradiction_score") or contradiction_score))
+                elif "graph_support_score" not in row:
+                    row = dict(row)
+                    row["graph_support_score"] = graph_support_score
                 novel.append(row)
         for candidate in row.get("novel_candidates") or []:
             if not isinstance(candidate, dict):
                 continue
+            if contradiction_risk and not candidate.get("quarantine_status"):
+                candidate = dict(candidate)
+                candidate["quarantine_status"] = "quarantined"
+                candidate["contradiction_types"] = list(candidate.get("contradiction_types") or contradiction_types)
+                candidate["contradiction_score"] = candidate.get("contradiction_score", contradiction_score)
+                candidate["graph_support_score"] = max(0.0, 1.0 - float(candidate.get("contradiction_score") or contradiction_score))
             novel_key = stable_key(candidate)
             if novel_key in seen_novel:
                 continue

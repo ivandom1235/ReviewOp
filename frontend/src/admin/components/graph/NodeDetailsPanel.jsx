@@ -40,6 +40,8 @@ export default function NodeDetailsPanel({ node, scope = "batch", isDark = false
             : metricLabel("Dominant", node.dominant_sentiment)}
           {scope === "batch" ? metricLabel("Explicit Count", node.explicit_count) : null}
           {scope === "batch" ? metricLabel("Implicit Count", node.implicit_count) : null}
+          {metricLabel("Quarantine", node.quarantine_status)}
+          {metricLabel("Contradiction", Number.isFinite(Number(node.contradiction_score)) ? Number(node.contradiction_score).toFixed(2) : "-")}
         </div>
       ) : (
         <p className={`mt-4 text-sm ${isDark ? "text-slate-400" : "text-slate-500"}`}>

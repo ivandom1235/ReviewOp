@@ -42,12 +42,20 @@ class SelectivePredictionSchema(BaseModel):
     novelty_score: Optional[float] = None
     novel_cluster_id: Optional[str] = None
     novel_alias: Optional[str] = None
+    contradiction_score: Optional[float] = None
+    contradiction_types: list[str] = Field(default_factory=list)
+    quarantine_status: Optional[str] = None
+    graph_support_score: Optional[float] = None
 
 
 class AbstainedPredictionSchema(BaseModel):
     reason: str
     confidence: float
     ambiguity_score: float
+    contradiction_score: Optional[float] = None
+    contradiction_types: list[str] = Field(default_factory=list)
+    quarantine_status: Optional[str] = None
+    graph_support_score: Optional[float] = None
 
 
 class NovelCandidateSchema(BaseModel):
@@ -57,6 +65,24 @@ class NovelCandidateSchema(BaseModel):
     novel_cluster_id: Optional[str] = None
     novel_alias: Optional[str] = None
     evidence_text: Optional[str] = None
+    contradiction_score: Optional[float] = None
+    contradiction_types: list[str] = Field(default_factory=list)
+    quarantine_status: Optional[str] = None
+    graph_support_score: Optional[float] = None
+
+
+class GraphContradictionCaseSchema(BaseModel):
+    id: int
+    review_id: int
+    prediction_id: Optional[int] = None
+    aspect_canonical: str
+    sentiment: Optional[str] = None
+    evidence_text: Optional[str] = None
+    contradiction_score: float
+    contradiction_types: list[str] = Field(default_factory=list)
+    graph_neighbor_evidence: list[str] = Field(default_factory=list)
+    action_taken: Optional[str] = None
+    status: Optional[str] = None
 
 
 class ImplicitPredictResponse(BaseModel):

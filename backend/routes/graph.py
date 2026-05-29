@@ -31,6 +31,9 @@ def batch_graph(
     dt_to: str | None = Query(default=None, alias="to"),
     min_edge_weight: int = 1,
     graph_mode: str = Query(default="accepted", pattern="^(accepted|novel_side)$"),
+    contradiction_type: str | None = None,
+    quarantine_status: str | None = None,
+    graph_support_score: float | None = None,
     _: None = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -42,4 +45,7 @@ def batch_graph(
         dt_to=dt_to,
         min_edge_weight=min_edge_weight,
         graph_mode=graph_mode,
+        contradiction_type=contradiction_type,
+        quarantine_status=quarantine_status,
+        graph_support_score=graph_support_score,
     )

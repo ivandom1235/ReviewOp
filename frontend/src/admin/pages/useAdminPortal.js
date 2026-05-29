@@ -36,6 +36,9 @@ const initialGraphFilters = {
   to: "",
   min_edge_weight: 1,
   graph_mode: "accepted",
+  contradiction_type: "",
+  quarantine_status: "",
+  graph_support_score: "",
 };
 
 export function useAdminPortal() {

@@ -4,8 +4,8 @@ from pathlib import Path
 
 # Load environment variables for the subprocess
 env = os.environ.copy()
-env["GOOGLE_CLOUD_PROJECT"] = "reviewops-493717"
-env["GOOGLE_CLOUD_LOCATION"] = "global"
+if "GOOGLE_CLOUD_LOCATION" not in env:
+    env["GOOGLE_CLOUD_LOCATION"] = "global"
 env["GEMINI_MODEL"] = "gemini-3.1-flash-lite-preview"
 env["REVIEWOP_DEFAULT_LLM_PROVIDER"] = "gemini"
 

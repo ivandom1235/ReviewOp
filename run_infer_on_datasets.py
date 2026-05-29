@@ -42,7 +42,9 @@ def resolve_config(args: argparse.Namespace) -> dict:
     env = _load_env(ENV_PATH)
     api_base = env.get("VITE_PROXY_TARGET", "http://127.0.0.1:8000")
     username = os.getenv("REVIEWOP_ADMIN_USERNAME") or env.get("REVIEWOP_ADMIN_USERNAME", "admin")
-    password = os.getenv("REVIEWOP_ADMIN_PASSWORD") or env.get("REVIEWOP_ADMIN_PASSWORD", "admin123")
+    password = os.getenv("REVIEWOP_ADMIN_PASSWORD") or env.get("REVIEWOP_ADMIN_PASSWORD")
+    if not password:
+        raise RuntimeError("Set REVIEWOP_ADMIN_PASSWORD; no default admin password is allowed.")
     return {
         "api_base": api_base,
         "username": username,

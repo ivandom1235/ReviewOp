@@ -9,6 +9,16 @@ ACTION_START_VERBS = {
 PRONOUN_STARTS = {"this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its"}
 CONTEXT_NOUNS = {"occasion", "beginning", "time", "day", "night", "moment", "thing", "stuff", "way", "part", "kind", "type", "lot"}
 SENTIMENT_PREFIXES = {"great", "excellent", "amazing", "terrible", "awful", "bad", "good", "poor", "delicious", "tasty", "slow", "fast"}
+NOISY_SENTIMENT_LABELS = {
+    "good_luck",
+    "great_smile",
+    "great_evening",
+    "good_laugh",
+    "dam_good",
+    "good_choice",
+    "good_product",
+    "excellent_proprietary_software",
+}
 
 @dataclass(frozen=True)
 class CandidateDecision:
@@ -73,7 +83,15 @@ def mark_provisional_canonical(candidate: str) -> str:
     raw = str(candidate or "").strip()
     if not raw or is_noisy_label(raw):
         return ""
-    return raw.lower().replace(" ", "_")
+    normalized = raw.lower().replace(" ", "_")
+    if normalized in NOISY_SENTIMENT_LABELS:
+        return ""
+    tokens = raw.lower().split()
+    if tokens and tokens[0] in SENTIMENT_PREFIXES and len(tokens) <= 3:
+        stripped = strip_sentiment_modifiers(raw)
+        if stripped in CONTEXT_NOUNS or stripped in {"product", "software", "choice", "evening", "smile", "laugh", "luck"}:
+            return ""
+    return normalized
 
 
 def classify_unmapped_candidate(
@@ -88,11 +106,11 @@ def classify_unmapped_candidate(
         return CandidateDecision("dropped_noise", 0.0, ("noise",))
     score, reasons = _score_unmapped_candidate(candidate, evidence_text, support_count=support_count)
     if provisional_policy == "memory_only":
-        return CandidateDecision("memory_candidate", score, reasons)
+        return CandidateDecision("open_world_candidate", score, reasons)
     if score >= 0.75:
         return CandidateDecision("open_world", score, reasons)
     if score >= 0.50:
         return CandidateDecision("provisional", score, reasons)
     if score >= 0.35:
-        return CandidateDecision("memory_candidate", score, reasons)
+        return CandidateDecision("open_world_candidate", score, reasons)
     return CandidateDecision("dropped_noise", score, reasons)

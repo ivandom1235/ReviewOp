@@ -68,7 +68,14 @@ export default function ReviewQueue({ needsReviewRows = [], novelCandidateRows =
                   <p className="text-sm font-semibold">Novel Candidate: {row.aspect || "Unknown aspect"}</p>
                   <p className="mt-1 text-sm">Novelty Score: {Number(row.novelty_score || 0).toFixed(2)}</p>
                   <p className="text-sm">Evidence: {row.evidence || "No evidence recorded"}</p>
-                  <p className="mt-1 text-sm">Suggested Mapping: delivery / packaging</p>
+                  <p className="mt-1 text-sm">Suggested Mapping: {row.novel_alias || row.novel_cluster_id || "pending review"}</p>
+                  <p className="text-sm">Quarantine: {row.quarantine_status || "none"}</p>
+                  {Number.isFinite(Number(row.contradiction_score)) ? (
+                    <p className="text-sm">Contradiction: {Number(row.contradiction_score).toFixed(2)}</p>
+                  ) : null}
+                  {Array.isArray(row.contradiction_types) && row.contradiction_types.length ? (
+                    <p className="text-sm">Signals: {row.contradiction_types.join(", ")}</p>
+                  ) : null}
                   <p className={`mt-2 text-xs ${isDark ? "text-slate-400" : "text-slate-500"}`}>Review: {row.review_text || "-"}</p>
                 </>
               ) : (
@@ -76,6 +83,13 @@ export default function ReviewQueue({ needsReviewRows = [], novelCandidateRows =
                   <p className="text-sm font-semibold">Reason: {row.reason || "review_required"}</p>
                   <p className="mt-1 text-sm">Confidence: {(Number(row.confidence || 0) * 100).toFixed(1)}%</p>
                   <p className="text-sm">Evidence: {row.evidence || Number(row.ambiguity_score || 0).toFixed(2)}</p>
+                  <p className="text-sm">Quarantine: {row.quarantine_status || "none"}</p>
+                  {Number.isFinite(Number(row.contradiction_score)) ? (
+                    <p className="text-sm">Contradiction: {Number(row.contradiction_score).toFixed(2)}</p>
+                  ) : null}
+                  {Array.isArray(row.contradiction_types) && row.contradiction_types.length ? (
+                    <p className="text-sm">Signals: {row.contradiction_types.join(", ")}</p>
+                  ) : null}
                   <p className={`mt-2 text-xs ${isDark ? "text-slate-400" : "text-slate-500"}`}>Review: {row.review_text || "-"}</p>
                 </>
               )}

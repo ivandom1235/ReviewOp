@@ -20,8 +20,12 @@ def stable_review_id(row: dict[str, Any]) -> str:
 
 
 def stable_group_id(row: dict[str, Any]) -> str:
+    # Use domain to disambiguate identical IDs from different sources
+    domain = str(row.get("domain") or "").strip().lower()
     for key in ("group_id", "product_id", "business_id", "entity_id"):
         value = str(row.get(key) or "").strip()
         if value:
+            if domain and domain != "unknown":
+                return f"{domain}:{value}"
             return value
     raise ValueError("cannot create stable group_id without group_id/product_id/business_id/entity_id")

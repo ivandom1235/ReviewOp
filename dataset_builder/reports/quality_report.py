@@ -1,7 +1,12 @@
-from __future__ import annotations
-
 from collections import Counter
+from typing import Any
 from ..schemas.reports import QualityReport
+
+
+def _get_val(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
 
 
 def build_quality_report(
@@ -12,6 +17,8 @@ def build_quality_report(
     rejected_rows: int = 0,
     discarded_rows: int = 0,
     runtime_reason_counts: dict[str, int] | None = None,
+    original_sample_size: int = 0,
+    source_consistency: dict[str, Any] | None = None,
 ) -> QualityReport:
     counts = {split: len(rows) for split, rows in splits.items()}
     rejected_interps = 0
@@ -23,6 +30,7 @@ def build_quality_report(
     mapping_scopes = Counter()
     mapping_layers = Counter()
     novelty = Counter()
+    ambiguity_level = Counter()
     hardness = Counter()
     evidence_total = 0
     evidence_exact = 0
@@ -30,32 +38,63 @@ def build_quality_report(
     matched_term_total = 0
     matched_term_hit = 0
     anchor_modifier_count = 0
+    row_metadata_unknown_count = 0
+    abstain_acceptable_count = 0
+    generic_parent_filled = 0
     unknown_canonicals = 0
+    evidence_scope_dist = Counter()
+    abstain_reason_dist = Counter()
+    canonical_label_counts = Counter()
     total_gold = 0
     max_gold = 0
     for rows in splits.values():
         for row in rows:
-            novelty[str(getattr(row, "novelty_status", "known") or "known")] += 1
-            hardness[str(getattr(row, "hardness_tier", "H0") or "H0")] += 1
-            review_text = str(getattr(row, "review_text", "") or "")
-            gold = list(getattr(row, "gold_interpretations", []) or []) if hasattr(row, "gold_interpretations") else []
+            novelty[str(_get_val(row, "novelty_status", "known") or "known")] += 1
+            ambiguity_level[str(_get_val(row, "ambiguity_level", "low") or "low")] += 1
+            hardness[str(_get_val(row, "hardness_tier", "H0") or "H0")] += 1
+            
+            # Abstention tracking
+            for reason in tuple(_get_val(row, "abstain_reason_gold", ()) or ()):
+                abstain_reason_dist[str(reason)] += 1
+            
+            row_source_type = str(_get_val(row, "row_source_type", "unknown") or "unknown")
+            row_mapping_scope = str(_get_val(row, "row_mapping_scope", "unknown") or "unknown")
+            row_mapping_sources = tuple(_get_val(row, "row_mapping_sources", ()) or ())
+            if (
+                row_source_type == "unknown"
+                or row_mapping_scope == "unknown"
+                or not row_mapping_sources
+            ):
+                row_metadata_unknown_count += 1
+            if bool(_get_val(row, "abstain_acceptable", False)):
+                abstain_acceptable_count += 1
+            review_text = str(_get_val(row, "review_text", "") or "")
+            gold = list(_get_val(row, "gold_interpretations", []) or [])
             total_gold += len(gold)
             max_gold = max(max_gold, len(gold))
-            if not hasattr(row, "gold_interpretations"):
-                continue
-            for interp in getattr(row, "gold_interpretations", []):
-                source_types[str(getattr(interp, "source_type", "unknown") or "unknown")] += 1
-                label_types[str(getattr(interp, "label_type", "unknown") or "unknown")] += 1
-                mapping_sources[str(getattr(interp, "mapping_source", "none") or "none")] += 1
-                if str(getattr(interp, "mapping_source", "") or "") == "anchor_modifier":
+            for interp in gold:
+                source_types[str(_get_val(interp, "source_type", "unknown") or "unknown")] += 1
+                label_types[str(_get_val(interp, "label_type", "unknown") or "unknown")] += 1
+                mapping_sources[str(_get_val(interp, "mapping_source", "none") or "none")] += 1
+                if str(_get_val(interp, "mapping_source", "") or "") == "anchor_modifier":
                     anchor_modifier_count += 1
-                mapping_scopes[str(getattr(interp, "mapping_scope", "unknown") or "unknown")] += 1
-                for layer in tuple(getattr(interp, "mapping_layers", ()) or ()):
+                mapping_scopes[str(_get_val(interp, "mapping_scope", "unknown") or "unknown")] += 1
+                
+                # Evidence Scope tracking
+                scope = str(_get_val(interp, "evidence_scope", "unknown") or "unknown")
+                evidence_scope_dist[scope] += 1
+                
+                if str(_get_val(interp, "generic_parent", "") or ""):
+                    generic_parent_filled += 1
+                for layer in tuple(_get_val(interp, "mapping_layers", ()) or ()):
                     mapping_layers[str(layer)] += 1
-                if str(getattr(interp, "aspect_canonical", "") or "") == "unknown":
+                if str(_get_val(interp, "aspect_canonical", "") or "") == "unknown":
                     unknown_canonicals += 1
-                span = list(getattr(interp, "evidence_span", []) or [])
-                evidence_text = str(getattr(interp, "evidence_text", "") or "")
+                canonical_label = str(_get_val(interp, "aspect_canonical", "") or "").strip().lower()
+                if canonical_label and canonical_label != "unknown":
+                    canonical_label_counts[canonical_label] += 1
+                span = list(_get_val(interp, "evidence_span", []) or [])
+                evidence_text = str(_get_val(interp, "evidence_text", "") or "")
                 if len(span) == 2:
                     evidence_total += 1
                     try:
@@ -66,18 +105,19 @@ def build_quality_report(
                             full_review_evidence += 1
                     except (TypeError, ValueError):
                         pass
-                terms = tuple(getattr(interp, "matched_terms", ()) or ())
+                terms = tuple(_get_val(interp, "matched_terms", ()) or ())
                 if terms:
                     matched_term_total += 1
                     ev_low = evidence_text.lower()
                     if any(str(t).lower() in ev_low for t in terms if str(t).strip()):
                         matched_term_hit += 1
-                if interp and hasattr(interp, "quality_flags"):
-                    for flag in interp.quality_flags:
-                        if flag in ("llm_drop", "repair_failed", "low_quality"):
-                            rejected_interps += 1
-                            reason_counts[flag] += 1
-                            dropped_reason_counts[flag] += 1
+                
+                quality_flags = _get_val(interp, "quality_flags", []) or []
+                for flag in quality_flags:
+                    if flag in ("llm_drop", "repair_failed", "low_quality"):
+                        rejected_interps += 1
+                        reason_counts[flag] += 1
+                        dropped_reason_counts[flag] += 1
                             
     total_exported = sum(counts.values())
     if runtime_reason_counts:
@@ -86,8 +126,14 @@ def build_quality_report(
             dropped_reason_counts[str(key)] += int(val)
 
     row_reason_counts = {}
-    if rejected_rows > 0:
+    if runtime_reason_counts:
+        row_reason_counts = {str(key): int(val) for key, val in runtime_reason_counts.items()}
+    elif rejected_rows > 0:
         row_reason_counts["empty_gold_after_canonicalization"] = int(rejected_rows)
+
+    unique_labels = len(canonical_label_counts)
+    singleton_labels = sum(1 for _, n in canonical_label_counts.items() if n == 1)
+    singleton_rate = singleton_labels / max(1, unique_labels)
 
     return QualityReport(
         total_exported=total_exported, 
@@ -100,6 +146,9 @@ def build_quality_report(
         mapping_source_distribution=dict(mapping_sources),
         mapping_scope_distribution=dict(mapping_scopes),
         mapping_layer_distribution=dict(mapping_layers),
+        evidence_scope_distribution=dict(evidence_scope_dist),
+        abstain_reason_distribution=dict(abstain_reason_dist),
+        original_sample_size=original_sample_size,
         rejected_interpretations=rejected_interps,
         reason_counts=dict(reason_counts),
         row_rejection_reason_counts=row_reason_counts,
@@ -107,6 +156,7 @@ def build_quality_report(
         source_type_distribution=dict(source_types),
         label_type_distribution=dict(label_types),
         novelty_distribution=dict(novelty),
+        ambiguity_level_distribution=dict(ambiguity_level),
         hardness_distribution=dict(hardness),
         evidence={
             "exact_match_rate": evidence_exact / max(1, evidence_total),
@@ -119,10 +169,19 @@ def build_quality_report(
             "mapping_scope_unknown_count": mapping_scopes.get("unknown", 0),
             "provisional_rate": mapping_sources.get("provisional", 0) / max(1, total_gold),
             "anchor_modifier_count": anchor_modifier_count,
+            "row_metadata_unknown_count": row_metadata_unknown_count,
+            "generic_parent_fill_rate": generic_parent_filled / max(1, total_gold),
+            "abstain_acceptable_count": abstain_acceptable_count,
+            "memory_precision_audit": None,
+            "label_space_unique_labels": unique_labels,
+            "label_space_singleton_labels": singleton_labels,
+            "label_space_singleton_rate": singleton_rate,
+            "label_space_gate_status": "pass" if singleton_rate <= 0.30 else "warning",
         },
         gold_stats={
             "avg_gold_per_row": total_gold / max(1, total_exported),
             "max_gold_per_row": float(max_gold),
         },
         accounting_valid=(loaded_rows == total_exported + rejected_rows + discarded_rows),
+        source_artifact_consistency=source_consistency,
     )

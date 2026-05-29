@@ -121,6 +121,9 @@ class ImplicitClient:
                     "novel_alias": row.get("novel_alias"),
                     "novel_candidates": row.get("novel_candidates") or [],
                     "abstained_predictions": row.get("abstained_predictions") or [],
+                    "contradiction_score": row.get("contradiction_score"),
+                    "contradiction_types": row.get("contradiction_types") or [],
+                    "quarantine_status": row.get("quarantine_status"),
                 }
             )
 

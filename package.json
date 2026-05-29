@@ -1,8 +1,7 @@
 {
   "scripts": {},
   "dependencies": {
-    "eslint": "^10.0.2",
-    "uvicorn": "^0.0.1-security"
+    "eslint": "^10.0.2"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

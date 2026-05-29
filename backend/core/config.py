@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import ClassVar, Optional
 
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import URL, make_url
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     mysql_user: str = ""
     mysql_password: str = ""
     mysql_db: str = ""
+    database_url: str = Field(
+        default="sqlite:///./reviewops.db",
+        validation_alias=AliasChoices("DATABASE_URL", "REVIEWOP_DATABASE_URL"),
+    )
 
     # Seq2Seq
     seq2seq_model_name: str = Field(
@@ -118,6 +122,13 @@ class Settings(BaseSettings):
 
     @property
     def mysql_url(self) -> str:
+        if self.database_url:
+            try:
+                parsed = make_url(self.database_url)
+                if parsed.drivername.startswith("mysql"):
+                    return self.database_url
+            except Exception:
+                pass
         if not all([self.mysql_user, self.mysql_password, self.mysql_host, self.mysql_db]):
             raise RuntimeError("MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, and MYSQL_DB must be set")
         url = URL.create(

@@ -3,6 +3,7 @@ import os
 import time
 import threading
 from collections import deque
+import google.auth
 from google import genai
 from .base_client import BaseLLMClient
 from ..config import BuilderConfig
@@ -42,11 +43,20 @@ class GeminiClient(BaseLLMClient):
 
     def __init__(self, cfg: BuilderConfig):
         super().__init__(cfg)
+        _, adc_project = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        project = os.environ.get("GOOGLE_CLOUD_PROJECT") or adc_project
+        location = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+        if not project:
+            raise RuntimeError(
+                "No Google Cloud project found. Configure ADC or set GOOGLE_CLOUD_PROJECT."
+            )
         # Use Vertex AI as verified in tests
         self.client = genai.Client(
             vertexai=True,
-            project=os.environ.get("GOOGLE_CLOUD_PROJECT", "reviewops-493717"),
-            location=os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+            project=project,
+            location=location,
         )
 
     def _generate_inner(self, prompt: str, system_prompt: str | None = None, **kwargs) -> str:

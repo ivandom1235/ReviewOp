@@ -13,7 +13,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from core.db import Base
-from models.tables import AbstainedPrediction, Prediction, RejectedAspectCandidate
+from models.tables import AbstainedPrediction, GraphContradictionCase, Prediction, RejectedAspectCandidate
 from services.hybrid_pipeline import run_single_review_hybrid_pipeline
 from services.responses import ContractMapper
 from services.review_pipeline import run_single_review_pipeline
@@ -146,6 +146,82 @@ class ExplicitRuntimePersistenceTests(unittest.TestCase):
 
         abstained = db.query(AbstainedPrediction).filter(AbstainedPrediction.review_id == review.id).all()
         self.assertTrue(any(row.reason == "domain_mismatch" for row in abstained))
+
+    def test_contract_mapper_preserves_reliability_metadata(self) -> None:
+        db = self.make_db()
+        review = run_single_review_pipeline(
+            db,
+            engine=_FakeEngine(),
+            text="Battery life is fine.",
+            domain="electronics",
+            product_id="p3",
+        )
+        final_predictions = [
+            {
+                "aspect_raw": "battery life",
+                "aspect_cluster": "battery_life",
+                "sentiment": "positive",
+                "confidence": 0.88,
+                "evidence_spans": [{"start_char": 0, "end_char": 12, "snippet": "Battery life"}],
+                "source": "implicit",
+                "contradiction_score": 0.31,
+                "contradiction_types": ["evidence_mismatch"],
+                "quarantine_status": "watch",
+            }
+        ]
+        implicit_predictions = [
+            {
+                "aspect": "hinge_sparks",
+                "sentiment": "negative",
+                "confidence": 0.72,
+                "routing": "novel",
+                "novelty_score": 0.93,
+                "novel_cluster_id": "hinge_sparks",
+                "novel_alias": "hinge sparks",
+                "evidence_spans": [{"start_char": 12, "end_char": 24, "snippet": "hinge sparks"}],
+                "contradiction_score": 0.64,
+                "contradiction_types": ["prototype_instability"],
+                "quarantine_status": "quarantined",
+            }
+        ]
+
+        response = ContractMapper().to_infer_review_out(review, final_predictions, implicit_predictions)
+        self.assertEqual(response.predictions[0].contradiction_score, 0.31)
+        self.assertEqual(response.predictions[0].quarantine_status, "watch")
+        self.assertEqual(response.novel_candidates[0].quarantine_status, "quarantined")
+        self.assertEqual(response.novel_candidates[0].novel_alias, "hinge sparks")
+        self.assertEqual(response.novel_candidates[0].contradiction_types, ["prototype_instability"])
+
+    def test_hybrid_pipeline_persists_graph_contradiction_cases(self) -> None:
+        db = self.make_db()
+        implicit_rows = [
+            {
+                "aspect_raw": "battery_life",
+                "aspect_cluster": "battery_life",
+                "sentiment": "positive",
+                "confidence": 0.72,
+                "routing": "known",
+                "source": "implicit",
+                "evidence_spans": [{"start_char": 0, "end_char": 27, "snippet": "It lasted through the flight"}],
+                "contradiction_score": 0.61,
+                "contradiction_types": ["sentiment_conflict"],
+                "quarantine_status": "watch",
+            }
+        ]
+        with patch("services.review_pipeline.extract_open_aspects", return_value=[]):
+            review, _, _, _ = run_single_review_hybrid_pipeline(
+                db,
+                explicit_engine=_FakeEngine(),
+                implicit_client=_FakeImplicitClient(implicit_rows),
+                text="It lasted through the flight.",
+                domain="laptop",
+                product_id="p4",
+            )
+
+        cases = db.query(GraphContradictionCase).filter(GraphContradictionCase.review_id == review.id).all()
+        self.assertGreaterEqual(len(cases), 1)
+        self.assertEqual(cases[0].contradiction_score, 0.61)
+        self.assertEqual(cases[0].status, "watch")
 
 
 if __name__ == "__main__":

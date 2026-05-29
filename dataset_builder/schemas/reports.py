@@ -16,6 +16,8 @@ class QualityReport:
     mapping_source_distribution: dict[str, int] = field(default_factory=dict)
     mapping_scope_distribution: dict[str, int] = field(default_factory=dict)
     mapping_layer_distribution: dict[str, int] = field(default_factory=dict)
+    evidence_scope_distribution: dict[str, int] = field(default_factory=dict)
+    abstain_reason_distribution: dict[str, int] = field(default_factory=dict)
     original_sample_size: int = 0
     total_discarded: int = 0
     rejected_interpretations: int = 0
@@ -25,11 +27,13 @@ class QualityReport:
     source_type_distribution: dict[str, int] = field(default_factory=dict)
     label_type_distribution: dict[str, int] = field(default_factory=dict)
     novelty_distribution: dict[str, int] = field(default_factory=dict)
+    ambiguity_level_distribution: dict[str, int] = field(default_factory=dict)
     hardness_distribution: dict[str, int] = field(default_factory=dict)
     evidence: dict[str, float] = field(default_factory=dict)
     canonicalization: dict[str, float] = field(default_factory=dict)
     gold_stats: dict[str, float] = field(default_factory=dict)
     accounting_valid: bool = True
+    source_artifact_consistency: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

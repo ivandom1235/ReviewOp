@@ -1,14 +1,6 @@
 from __future__ import annotations
 from ..config import BuilderConfig
 from .base_client import BaseLLMClient
-from .openai_client import OpenAIClient
-from .anthropic_client import AnthropicClient
-from .groq_client import GroqClient
-from .openrouter_client import OpenRouterClient
-from .huggingface_client import HuggingFaceClient
-from .ollama_client import OllamaClient
-from .lightning_client import LightningClient
-from .gemini_client import GeminiClient
 
 def get_llm_client(cfg: BuilderConfig, wrap_fallback: bool = True) -> BaseLLMClient:
     """Factory method to get the appropriate LLM client."""
@@ -16,20 +8,28 @@ def get_llm_client(cfg: BuilderConfig, wrap_fallback: bool = True) -> BaseLLMCli
     client = None
     
     if provider == "openai":
+        from .openai_client import OpenAIClient
         client = OpenAIClient(cfg)
     elif provider in ("anthropic", "claude"):
+        from .anthropic_client import AnthropicClient
         client = AnthropicClient(cfg)
     elif provider == "gemini":
+        from .gemini_client import GeminiClient
         client = GeminiClient(cfg)
     elif provider == "groq":
+        from .groq_client import GroqClient
         client = GroqClient(cfg)
     elif provider == "openrouter":
+        from .openrouter_client import OpenRouterClient
         client = OpenRouterClient(cfg)
     elif provider == "huggingface":
+        from .huggingface_client import HuggingFaceClient
         client = HuggingFaceClient(cfg)
     elif provider == "ollama":
+        from .ollama_client import OllamaClient
         client = OllamaClient(cfg)
     elif provider == "lightning":
+        from .lightning_client import LightningClient
         client = LightningClient(cfg)
     elif provider == "none":
         raise ValueError("LLM provider is set to 'none'")

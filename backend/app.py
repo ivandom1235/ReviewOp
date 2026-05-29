@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import logging
 import os
+import uuid
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +29,7 @@ from routes.analytics import router as analytics_router
 from routes.graph import router as graph_router
 from routes.jobs import router as jobs_router
 from routes.infer import router as infer_router
+from routes.implicit import router as implicit_router
 from routes.user_portal import router as user_portal_router, seed_default_accounts, require_admin
 
 try:
@@ -89,14 +91,17 @@ logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-        "http://127.0.0.1:4173",
-        "http://localhost:4173",
+        origin.strip()
+        for origin in os.getenv(
+            "REVIEWOP_FRONTEND_ORIGINS",
+            "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173",
+        ).split(",")
+        if origin.strip()
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
 )
 
 @app.exception_handler(AppError)
@@ -118,8 +123,17 @@ async def sqlalchemy_error_handler(_: Request, exc: SQLAlchemyError):
 
 
 @app.exception_handler(Exception)
-async def unhandled_error_handler(_: Request, exc: Exception):
-    logger.exception("Unhandled server error", exc_info=exc)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    logger.exception(
+        "Unhandled server error",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+        },
+        exc_info=exc,
+    )
     return JSONResponse(
         status_code=500,
         content={
@@ -127,8 +141,10 @@ async def unhandled_error_handler(_: Request, exc: Exception):
             "error": {
                 "code": "internal_error",
                 "message": "An unexpected error occurred.",
+                "request_id": request_id,
             },
         },
+        headers={"X-Request-ID": request_id},
     )
 
 
@@ -194,4 +210,5 @@ app.include_router(infer_router)
 app.include_router(jobs_router)
 app.include_router(analytics_router)
 app.include_router(graph_router)
+app.include_router(implicit_router)
 app.include_router(user_portal_router)

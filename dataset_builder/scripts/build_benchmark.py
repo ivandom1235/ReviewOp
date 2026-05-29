@@ -24,6 +24,7 @@ from dataset_builder.schemas.raw_review import RawReview
 from dataset_builder.schemas.benchmark_row import BenchmarkRow
 from dataset_builder.schemas.interpretation import Interpretation
 from dataset_builder.orchestrator.pipeline import run_builder_pipeline
+from dataset_builder.reproducibility import seed_everything
 from dataset_builder.split.grouped_split import grouped_train_val_test_split
 from dataset_builder.verify.llm_verifier import LLMVerifier
 from rich.progress import track, Progress
@@ -52,10 +53,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--symptom-store", type=Path, default=None, help="Path to learned symptom patterns JSON")
     parser.add_argument("--aspect-memory", type=Path, default=None, help="Path to aspect memory JSON")
+    parser.add_argument("--domain-holdout-domain", default=None, help="Optional domain to hold out for the released domain-holdout split")
     parser.add_argument("--provisional-policy", choices=["loose", "strict", "memory_only"], default="strict")
     parser.add_argument("--evidence-window-tokens", type=int, default=8)
     parser.add_argument("--aspect-memory-auto-promote", action="store_true")
+    parser.add_argument("--aspect-memory-bootstrap", action="store_true")
     parser.add_argument("--max-workers", type=int, default=20, help="Concurrency for LLM stages")
+    parser.add_argument(
+        "--input-adapter",
+        choices=["canonical", "amazon", "yelp", "generic_csv"],
+        default="canonical",
+        help="Input format adapter for source data",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=["smoke", "development", "stability", "journal", "diagnostic_strict"],
+        default="development",
+        help="Target release profile for quality gates",
+    )
     return parser
 
 
@@ -106,18 +121,30 @@ def build_config_from_args(args: argparse.Namespace, resolved_input_paths: list[
         provisional_policy=args.provisional_policy,
         evidence_window_tokens=args.evidence_window_tokens,
         aspect_memory_auto_promote=args.aspect_memory_auto_promote,
+        aspect_memory_bootstrap=args.aspect_memory_bootstrap,
         aspect_memory_path=str(args.aspect_memory) if args.aspect_memory else None,
+        domain_holdout_domain=str(args.domain_holdout_domain).strip() if args.domain_holdout_domain else None,
         max_workers=args.max_workers,
+        input_adapter=args.input_adapter,
+        profile=args.profile,
     )
     validate_config(cfg)
     return cfg
 
 
 def select_working_reviews(rows: Sequence[RawReview], cfg: BuilderConfig) -> list[RawReview]:
-    ordered = list(rows)
-    random.Random(cfg.random_seed).shuffle(ordered)
+    fixture_rows = [row for row in rows if str(row.metadata.get("fixture_priority", "")).strip().lower() == "must_include"]
+    regular_rows = [row for row in rows if row not in fixture_rows]
+    rng = random.Random(cfg.random_seed)
+    rng.shuffle(fixture_rows)
+    rng.shuffle(regular_rows)
+
     if cfg.sample_size is not None:
-        ordered = ordered[: cfg.sample_size]
+        reserved = fixture_rows[: cfg.sample_size]
+        remaining_slots = max(0, cfg.sample_size - len(reserved))
+        ordered = reserved + regular_rows[:remaining_slots]
+    else:
+        ordered = fixture_rows + regular_rows
     if cfg.chunk_size is not None:
         start = cfg.chunk_offset
         ordered = ordered[start : start + cfg.chunk_size]
@@ -134,13 +161,15 @@ def load_reviews(paths: Sequence[Path]) -> list[RawReview]:
 def main() -> None:
     from dataset_builder.profile.dataset_profiler import profile_dataset
     args = build_arg_parser().parse_args()
+    seed_everything(args.seed)
     paths = resolve_input_paths(args.input)
-    rows = load_reviews(paths)
+    all_rows = load_reviews(paths)
+    original_count = len(all_rows)
     cfg = build_config_from_args(args, paths)
-    rows = select_working_reviews(rows, cfg)
+    rows = select_working_reviews(all_rows, cfg)
     
     profile = profile_dataset(rows)
-    run_builder_pipeline(cfg, raw_reviews=rows, profile_summary=profile)
+    run_builder_pipeline(cfg, raw_reviews=rows, profile_summary=profile, original_sample_size=original_count)
 
 
 if __name__ == "__main__":

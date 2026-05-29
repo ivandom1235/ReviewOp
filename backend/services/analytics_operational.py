@@ -23,6 +23,9 @@ def needs_review_queue(db: Session, *, limit: int = 100) -> list[dict]:
             "reason": item.reason,
             "confidence": float(item.confidence),
             "ambiguity_score": float(item.ambiguity_score),
+            "contradiction_score": getattr(item, "contradiction_score", None),
+            "contradiction_types": list(getattr(item, "contradiction_types", []) or []),
+            "quarantine_status": getattr(item, "quarantine_status", None),
             "created_at": item.created_at.isoformat() if item.created_at else None,
         }
         for item, review in rows
@@ -50,6 +53,9 @@ def novel_candidates_queue(db: Session, *, limit: int = 100) -> list[dict]:
             "evidence": item.evidence,
             "evidence_start": item.evidence_start,
             "evidence_end": item.evidence_end,
+            "contradiction_score": getattr(item, "contradiction_score", None),
+            "contradiction_types": list(getattr(item, "contradiction_types", []) or []),
+            "quarantine_status": getattr(item, "quarantine_status", None),
             "created_at": item.created_at.isoformat() if item.created_at else None,
         }
         for item, review in rows

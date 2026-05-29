@@ -41,10 +41,16 @@ def _domain_from_source(source_name: str) -> str:
 def _raw_review_from_mapping(row: dict[str, Any], source_name: str) -> RawReview:
     text_field = infer_text_field(row)
     text = normalize_text(str(row[text_field]))
+    
+    domain = normalize_domain(row.get("domain"))
+    if domain == "unknown" and _is_absa_row(row):
+        domain = _domain_from_source(source_name)
+    
     normalized = {
         **row,
         "text": text,
         "source_name": source_name,
+        "domain": domain,
     }
     if _is_absa_row(row):
         normalized.setdefault("group_id", str(row.get("id") or "").strip())
@@ -55,9 +61,6 @@ def _raw_review_from_mapping(row: dict[str, Any], source_name: str) -> RawReview
                 for part in (source_name, row.get("id"), row.get("aspect"), row.get("from"), row.get("to"))
             ),
         )
-    domain = normalize_domain(row.get("domain"))
-    if domain == "unknown" and _is_absa_row(row):
-        domain = _domain_from_source(source_name)
     return RawReview(
         review_id=stable_review_id(normalized),
         group_id=stable_group_id(normalized),
@@ -70,14 +73,28 @@ def _raw_review_from_mapping(row: dict[str, Any], source_name: str) -> RawReview
     )
 
 
-def load_csv_reviews(path: str | Path) -> list[RawReview]:
+def _get_adapter(name: str | None):
+    if not name or name == "canonical":
+        return lambda x: x
+    if name == "amazon":
+        from ..input_adapters.amazon_reviews import adapt_amazon_row
+        return adapt_amazon_row
+    if name == "yelp":
+        from ..input_adapters.yelp_reviews import adapt_yelp_row
+        return adapt_yelp_row
+    raise ValueError(f"Unknown adapter: {name}")
+
+
+def load_csv_reviews(path: str | Path, adapter: str | None = None) -> list[RawReview]:
     path = Path(path)
+    adapt = _get_adapter(adapter)
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        return [_raw_review_from_mapping(row, path.name) for row in csv.DictReader(handle)]
+        return [_raw_review_from_mapping(adapt(row), path.name) for row in csv.DictReader(handle)]
 
 
-def load_jsonl_reviews(path: str | Path) -> list[RawReview]:
+def load_jsonl_reviews(path: str | Path, adapter: str | None = None) -> list[RawReview]:
     path = Path(path)
+    adapt = _get_adapter(adapter)
     rows: list[RawReview] = []
     with path.open("r", encoding="utf-8-sig") as handle:
         for line_no, line in enumerate(handle, start=1):
@@ -86,9 +103,12 @@ def load_jsonl_reviews(path: str | Path) -> list[RawReview]:
             payload = json.loads(line)
             if not isinstance(payload, dict):
                 raise ValueError(f"line {line_no} in {path} is not an object")
-            for flat_row in _flatten_nested_aspects(payload):
+            
+            adapted = adapt(payload)
+            for flat_row in _flatten_nested_aspects(adapted):
                 rows.append(_raw_review_from_mapping(flat_row, path.name))
     return rows
+
 
 
 def load_hf_dataset(*_args: Any, **_kwargs: Any) -> list[RawReview]:

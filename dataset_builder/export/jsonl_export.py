@@ -30,3 +30,12 @@ def write_split_jsonl(output_dir: str | Path, splits: dict[str, list[Any]]) -> d
                 handle.write(json.dumps(to_payload(row), ensure_ascii=False, sort_keys=True) + "\n")
     counts["total"] = sum(counts.values())
     return counts
+
+
+def write_jsonl_rows(path: str | Path, rows: list[Any]) -> int:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(to_payload(row), ensure_ascii=False, sort_keys=True) + "\n")
+    return len(rows)

@@ -73,11 +73,15 @@ class BuilderConfig:
     provisional_policy: str = "strict"
     evidence_window_tokens: int = 8
     aspect_memory_auto_promote: bool = False
-    aspect_memory_review_queue_min_support: int = 5
+    aspect_memory_bootstrap: bool = False
+    aspect_memory_review_queue_min_support: int = 3
     aspect_memory_review_queue_min_reviews: int = 3
     aspect_memory_review_queue_min_surface_forms: int = 2
     aspect_memory_path: Optional[str] = None
+    domain_holdout_domain: Optional[str] = None
     max_workers: int = 20
+    input_adapter: str = "canonical"
+    profile: str = "development"
 
 
 def load_config(path: str | Path | None = None) -> BuilderConfig:
@@ -89,6 +93,13 @@ def load_config(path: str | Path | None = None) -> BuilderConfig:
     # Prioritize: 1. JSON config file, 2. Env vars, 3. Defaults
     llm_provider = str(payload.get("llm_provider", get_default_llm_provider())).strip()
     llm_model = str(payload.get("llm_model", get_env_model(llm_provider))).strip()
+
+    # Tune max_workers based on provider to avoid rate limits
+    max_workers = int(payload.get("max_workers", 20))
+    if llm_provider == "groq" and "max_workers" not in payload:
+        max_workers = 4 # Conservative for Groq 6000 TPM limit
+    elif llm_provider == "gemini" and "max_workers" not in payload:
+        max_workers = 10 # Conservative for Gemini free tier
 
     return BuilderConfig(
         input_dir=Path(payload.get("input_dir", DEFAULT_INPUT_DIR)),
@@ -113,11 +124,15 @@ def load_config(path: str | Path | None = None) -> BuilderConfig:
         provisional_policy=str(payload.get("provisional_policy", "strict")),
         evidence_window_tokens=int(payload.get("evidence_window_tokens", 8)),
         aspect_memory_auto_promote=bool(payload.get("aspect_memory_auto_promote", False)),
-        aspect_memory_review_queue_min_support=int(payload.get("aspect_memory_review_queue_min_support", 5)),
+        aspect_memory_bootstrap=bool(payload.get("aspect_memory_bootstrap", False)),
+        aspect_memory_review_queue_min_support=int(payload.get("aspect_memory_review_queue_min_support", 3)),
         aspect_memory_review_queue_min_reviews=int(payload.get("aspect_memory_review_queue_min_reviews", 3)),
         aspect_memory_review_queue_min_surface_forms=int(payload.get("aspect_memory_review_queue_min_surface_forms", 2)),
         aspect_memory_path=payload.get("aspect_memory_path"),
-        max_workers=int(payload.get("max_workers", 20)),
+        domain_holdout_domain=payload.get("domain_holdout_domain"),
+        max_workers=max_workers,
+        input_adapter=str(payload.get("input_adapter", "canonical")),
+        profile=str(payload.get("profile", "development")),
     )
 
 
@@ -139,6 +154,8 @@ def validate_config(cfg: BuilderConfig) -> None:
         raise ValueError(f"unsupported domain_mode: {cfg.domain_mode}")
     if cfg.provisional_policy not in {"loose", "strict", "memory_only"}:
         raise ValueError(f"unsupported provisional_policy: {cfg.provisional_policy}")
+    if cfg.input_adapter not in {"canonical", "amazon", "yelp", "generic_csv"}:
+        raise ValueError(f"unsupported input_adapter: {cfg.input_adapter}")
 
 
 def to_jsonable(cfg: BuilderConfig) -> dict[str, Any]:
@@ -165,9 +182,13 @@ def to_jsonable(cfg: BuilderConfig) -> dict[str, Any]:
         "provisional_policy": cfg.provisional_policy,
         "evidence_window_tokens": cfg.evidence_window_tokens,
         "aspect_memory_auto_promote": cfg.aspect_memory_auto_promote,
+        "aspect_memory_bootstrap": cfg.aspect_memory_bootstrap,
         "aspect_memory_review_queue_min_support": cfg.aspect_memory_review_queue_min_support,
         "aspect_memory_review_queue_min_reviews": cfg.aspect_memory_review_queue_min_reviews,
         "aspect_memory_review_queue_min_surface_forms": cfg.aspect_memory_review_queue_min_surface_forms,
         "aspect_memory_path": cfg.aspect_memory_path,
+        "domain_holdout_domain": cfg.domain_holdout_domain,
         "max_workers": cfg.max_workers,
+        "input_adapter": cfg.input_adapter,
+        "profile": cfg.profile,
     }

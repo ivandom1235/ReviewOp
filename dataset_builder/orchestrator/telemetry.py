@@ -15,7 +15,13 @@ class PipelineStats:
     current_stage_total: int = 0
     current_stage_processed: int = 0
     
+    row_rejection_reason_counts: dict[str, int] = field(default_factory=dict)
+    
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def record_row_rejection(self, reason: str):
+        with self._lock:
+            self.row_rejection_reason_counts[reason] = self.row_rejection_reason_counts.get(reason, 0) + 1
 
     def record_llm_call(self, cached: bool = False, failed: bool = False, fallback: bool = False):
         with self._lock:

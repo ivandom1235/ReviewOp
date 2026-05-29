@@ -9,6 +9,7 @@ export default function NovelCandidatesPage({ rows = [], isDark }) {
               <th className="px-3 py-2">Aspect</th>
               <th className="px-3 py-2">Novelty</th>
               <th className="px-3 py-2">Evidence</th>
+              <th className="px-3 py-2">Signals</th>
               <th className="px-3 py-2">Review</th>
             </tr>
           </thead>
@@ -18,12 +19,16 @@ export default function NovelCandidatesPage({ rows = [], isDark }) {
                 <td className="px-3 py-2 font-semibold">{row.aspect}</td>
                 <td className="px-3 py-2">{Number(row.novelty_score || 0).toFixed(2)}</td>
                 <td className="px-3 py-2">{row.evidence || "No evidence recorded"}</td>
+                <td className="px-3 py-2">
+                  <div>{row.quarantine_status || "none"}</div>
+                  {Number.isFinite(Number(row.contradiction_score)) ? <div>Contradiction: {Number(row.contradiction_score).toFixed(2)}</div> : null}
+                </td>
                 <td className="px-3 py-2">{row.review_text}</td>
               </tr>
             ))}
             {!rows.length ? (
               <tr>
-                <td className="px-3 py-6 text-center text-slate-500" colSpan={4}>No novel candidates.</td>
+                <td className="px-3 py-6 text-center text-slate-500" colSpan={5}>No novel candidates.</td>
               </tr>
             ) : null}
           </tbody>

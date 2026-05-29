@@ -30,6 +30,10 @@ export default function EdgeDetailsPanel({ edge, scope = "batch", isDark = false
                 <p className="mt-1 text-sm font-medium">{edge.pair_count ?? edge.weight ?? "-"}</p>
               </div>
             ) : null}
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Signals</p>
+              <p className="mt-1 text-sm font-medium">{edge.quarantine_status || (Number.isFinite(Number(edge.contradiction_score)) ? `contradiction ${Number(edge.contradiction_score).toFixed(2)}` : "-")}</p>
+            </div>
           </div>
           {scope === "batch" && Array.isArray(edge.example_reviews) && edge.example_reviews.length ? (
             <div className={`mt-4 rounded-xl p-3 text-sm ${isDark ? "bg-slate-900 text-slate-200" : "bg-slate-50 text-slate-700"}`}>

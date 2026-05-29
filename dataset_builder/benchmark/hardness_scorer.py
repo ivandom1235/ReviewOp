@@ -26,6 +26,9 @@ def score_row_hardness(row: BenchmarkRow) -> str:
         
     if has_mixed:
         return "H2"
+    # Treat ambiguous implicit rows as abstain-relevant hardness.
+    if has_implicit and float(row.ambiguity_score or 0.0) >= 0.45:
+        return "H2"
     if has_implicit:
         return "H1"
         

@@ -73,7 +73,10 @@ export default function GraphExplorer({
   const hasActiveFilters = Boolean(
     String(graphFilters.domain || "").trim() ||
       String(graphFilters.product_id || "").trim() ||
-      Number(graphFilters.min_edge_weight || 1) > 1
+      Number(graphFilters.min_edge_weight || 1) > 1 ||
+      String(graphFilters.contradiction_type || "").trim() ||
+      String(graphFilters.quarantine_status || "").trim() ||
+      String(graphFilters.graph_support_score || "").trim()
   );
 
   return (
@@ -122,6 +125,43 @@ export default function GraphExplorer({
                   }`}
                 />
                 <p className={`text-xs ${isDark ? "text-slate-400" : "text-slate-500"}`}>Higher values hide weaker co-occurrence edges.</p>
+              </label>
+              <label className="min-w-[220px] space-y-2 text-sm">
+                <span className="font-semibold">Contradiction type</span>
+                <input
+                  value={graphFilters.contradiction_type}
+                  onChange={(e) => setGraphFilters((p) => ({ ...p, contradiction_type: e.target.value }))}
+                  placeholder="sentiment_conflict"
+                  className={`w-full rounded-2xl border px-3 py-2.5 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-emerald-400/30 ${
+                    isDark ? "border-slate-700 bg-slate-900 text-slate-100" : "border-slate-200 bg-white text-slate-900"
+                  }`}
+                />
+              </label>
+              <label className="min-w-[220px] space-y-2 text-sm">
+                <span className="font-semibold">Quarantine status</span>
+                <input
+                  value={graphFilters.quarantine_status}
+                  onChange={(e) => setGraphFilters((p) => ({ ...p, quarantine_status: e.target.value }))}
+                  placeholder="watch"
+                  className={`w-full rounded-2xl border px-3 py-2.5 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-emerald-400/30 ${
+                    isDark ? "border-slate-700 bg-slate-900 text-slate-100" : "border-slate-200 bg-white text-slate-900"
+                  }`}
+                />
+              </label>
+              <label className="min-w-[220px] space-y-2 text-sm">
+                <span className="font-semibold">Graph support score</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={graphFilters.graph_support_score}
+                  onChange={(e) => setGraphFilters((p) => ({ ...p, graph_support_score: e.target.value }))}
+                  placeholder="0.50"
+                  className={`w-full rounded-2xl border px-3 py-2.5 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-emerald-400/30 ${
+                    isDark ? "border-slate-700 bg-slate-900 text-slate-100" : "border-slate-200 bg-white text-slate-900"
+                  }`}
+                />
               </label>
               <div className="flex items-end gap-3">
                 <button type="submit" disabled={graphLoading} className="rounded-2xl bg-emerald-500 px-5 py-2.5 font-semibold text-slate-950 shadow-sm transition hover:bg-emerald-400 disabled:opacity-50">

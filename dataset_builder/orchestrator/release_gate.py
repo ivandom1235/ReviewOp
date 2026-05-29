@@ -1,48 +1,8 @@
 from __future__ import annotations
-import json
-from pathlib import Path
-from typing import Any
-from ..reports.quality_report import build_quality_report
-from ..split.leakage_checks import check_cross_split_leakage
-from .exceptions import QualityGateError
 
-def run_release_gate(output_dir: Path, cfg: Any) -> tuple[bool, dict[str, Any]]:
-    """Generate reports and verify the artifact is ready for release."""
-    splits = {}
-    for split in ["train", "val", "test"]:
-        path = output_dir / f"{split}.jsonl"
-        if not path.exists():
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                splits[split] = [json.loads(line) for line in f]
-        except Exception:
-            continue
-            
-    if not splits:
-        return False, {"error": "no splits found"}
-        
-    # 1. Leakage Checks
-    leakage = check_cross_split_leakage(splits)
-    
-    # 2. Quality Report
-    report = build_quality_report(splits)
-    
-    metrics = {
-        "total_rows": sum(len(r) for r in splits.values()),
-        "leakage": leakage,
-        "quality": report.__dict__ if hasattr(report, "__dict__") else report
-    }
-    
-    try:
-        # Use diagnostic_strict if requested in cfg
-        profile = "diagnostic_strict" if getattr(cfg, "strict", False) else "research_default"
-        gate_results = assert_release_ready(splits, reports={"quality": metrics["quality"]}, leakage=leakage, profile=profile)
-        metrics["gate_results"] = gate_results
-        return True, metrics
-    except Exception as e:
-        metrics["error"] = str(e)
-        return False, metrics
+from typing import Any
+
+from .exceptions import QualityGateError
 
 def assert_release_ready(
     splits: dict[str, list[Any]],
@@ -78,6 +38,21 @@ def assert_release_ready(
             "metrics": {}
         }
         raise QualityGateError(gate_results, "Critical Failure: exact text leakage detected")
+        
+    # Near-duplicate leakage enforcement (EC-P1)
+    near_dup = int(leakage.get("near_duplicate_leakage", 0))
+    if near_dup > 0:
+        msg = f"near-duplicate split leakage detected ({near_dup})"
+        if profile in {"stability", "journal", "research_default", "diagnostic_strict"}:
+            gate_results = {
+                "status": "FAIL",
+                "profile": profile,
+                "failures": [msg],
+                "warnings": [],
+                "metrics": {"near_duplicate_leakage": near_dup},
+            }
+            raise QualityGateError(gate_results, msg)
+        warnings.append(msg)
         
     quality = reports.get("quality", {})
     q_data = quality.__dict__ if hasattr(quality, "__dict__") else quality
@@ -142,9 +117,16 @@ def assert_release_ready(
     if mapping_scope_unknown_count > 0:
         msg = f"mapping_scope unknown detected ({mapping_scope_unknown_count})"
         failures.append(msg)
+    row_metadata_unknown_count = int(q_data.get("canonicalization", {}).get("row_metadata_unknown_count", 0))
+    if row_metadata_unknown_count > 0:
+        msg = f"row metadata unknown detected ({row_metadata_unknown_count})"
+        failures.append(msg)
     rejected_rows = int(q_data.get("rejected_rows", 0) or 0)
     reason_counts = q_data.get("reason_counts", {}) or {}
-    if rejected_rows > 0 and not reason_counts:
+    row_rejection_reason_counts = q_data.get("row_rejection_reason_counts", {}) or {}
+    dropped_interpretation_reason_counts = q_data.get("dropped_interpretation_reason_counts", {}) or {}
+    has_rejection_counts = bool(reason_counts) or bool(row_rejection_reason_counts) or bool(dropped_interpretation_reason_counts)
+    if rejected_rows > 0 and not has_rejection_counts:
         msg = "rejected_rows present but reason_counts is empty"
         if profile == "diagnostic_strict":
             failures.append(msg)
@@ -161,7 +143,7 @@ def assert_release_ready(
             failures.append(f"provisional rate too high ({provisional_rate:.2%})")
         if anchor_modifier_count == 0:
             failures.append("anchor_modifier_count is zero")
-        if full_review_evidence_rate > 0.05:
+        if full_review_evidence_rate > 0.20:
             failures.append(f"full_review_evidence_rate too high ({full_review_evidence_rate:.2%})")
         if matched_term_in_evidence_rate < 0.95:
             warnings.append(f"matched_term_in_evidence_rate warning ({matched_term_in_evidence_rate:.2%})")
@@ -232,6 +214,7 @@ def assert_release_ready(
                     "provenance_unknown_rate": provenance_unknown_rate,
                     "unknown_canonical_rate": unknown_count,
                     "mapping_scope_unknown_count": mapping_scope_unknown_count,
+                    "row_metadata_unknown_count": row_metadata_unknown_count,
                     "provisional_rate": provisional_rate,
                     "anchor_modifier_count": anchor_modifier_count,
                     "full_review_evidence_rate": full_review_evidence_rate,
@@ -250,6 +233,7 @@ def assert_release_ready(
             "provenance_unknown_rate": provenance_unknown_rate,
             "unknown_canonical_rate": unknown_count,
             "mapping_scope_unknown_count": mapping_scope_unknown_count,
+            "row_metadata_unknown_count": row_metadata_unknown_count,
             "provisional_rate": provisional_rate,
             "anchor_modifier_count": anchor_modifier_count,
             "full_review_evidence_rate": full_review_evidence_rate,

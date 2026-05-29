@@ -104,6 +104,21 @@ Write-Host '  Location: backend\core\config.py' -ForegroundColor $warning
 Write-Host '  Update: MySQL username and password' -ForegroundColor $warning
 Read-Host 'Press ENTER once you have updated the config file'
 
+Write-Section 'Applying Database Schema Migration'
+Push-Location $backendPath
+try {
+    Write-Host 'Running schema migration bootstrap...' -ForegroundColor $info
+    python -m scripts.migrate_schema
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '[x] Schema migration failed.' -ForegroundColor $errorColor
+        exit 1
+    }
+    Write-Host '[ok] Schema migration completed.' -ForegroundColor $success
+}
+finally {
+    Pop-Location
+}
+
 Write-Section 'Setting up Frontend'
 
 if (-not (Test-Path $frontendPath)) {
